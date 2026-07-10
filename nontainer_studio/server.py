@@ -81,7 +81,11 @@ async def _run_turn(session: Any, message: str) -> None:
     abort work. Caller holds the turn lock; released here."""
     run_id = None
     try:
-        await session.emit({"type": "user", "text": message})
+        # head here = the workspace BEFORE this turn: the user event's
+        # stamp is the undo anchor (restore to it = unwind this turn)
+        await session.emit(
+            {"type": "user", "text": message, "head": session.ws.head}
+        )
         async for ev in session.agent.arun(message, stream=True, stream_events=True):
             run_id = getattr(ev, "run_id", None) or run_id
             payload = _client_event(ev)
