@@ -83,5 +83,15 @@ uv sync --extra dev
 uv run pytest
 ```
 
-The suite drives the real server plumbing (workspaces, forks, publish,
-restore) with a fake agent — no LLM key needed.
+No LLM key needed anywhere in the suite:
+
+- `test_server.py` drives the server plumbing (workspaces, forks,
+  publish, restore) with a fake agent.
+- `test_e2e.py` runs the whole stack in a real browser — uvicorn, SSE,
+  the built frontend, agno's run loop, real tools — with only the model
+  scripted (`NONTAINER_STUDIO_MODEL=dummy`; see `nontainer_studio/dummy.py`
+  for the `!tool` / `!text` directive DSL). Needs the committed frontend
+  build and `playwright install chromium`; skips cleanly otherwise.
+
+The dummy model is also handy interactively: run the server with
+`NONTAINER_STUDIO_MODEL=dummy` and type directives to puppet the agent.

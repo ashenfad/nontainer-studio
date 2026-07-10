@@ -655,6 +655,40 @@ def test_published_urls_survive_restart(studio, tmp_path):
     reborn.close()
 
 
+# -- dummy model: the real agent loop, scripted -----------------------------------
+
+
+def test_dummy_model_drives_real_agent(tmp_path):
+    """The E2E test double: DummyModel fakes only the LLM — the agno
+    run loop, WorkspaceTools, and the workspace all execute for real.
+    Directives in the user message script the turn."""
+    from nontainer_studio.dummy import DummyModel
+
+    registry = sessions_mod.Registry(model_factory=DummyModel, store=tmp_path)
+    with TestClient(server.build_app(registry)) as client:
+        client.post("/api/sessions", json={"name": "s1"})
+        message = (
+            '!tool file_write {"path": "/notes.md", "content": "scripted"}\n'
+            "!text Wrote your note."
+        )
+        client.post("/api/sessions/s1/chat", json={"message": message})
+        events = _collect_until_done(client, "s1")
+
+        kinds = [e["type"] for e in events]
+        assert "tool_start" in kinds and "tool_end" in kinds
+        started = next(e for e in events if e["type"] == "tool_start")
+        assert started["name"] == "file_write"
+        reply = "".join(e["delta"] for e in events if e["type"] == "text")
+        assert reply == "Wrote your note."
+        # the tool REALLY ran: the workspace has the file, checkpointed
+        ws = registry.get("s1").ws
+        assert ws.fs.read("/notes.md") == b"scripted"
+        # and the done event carries the run mapping for undo
+        done = next(e for e in events if e["type"] == "done")
+        assert done["run_id"] and done["head"]
+    registry.close()
+
+
 def test_v1_manifest_format_tolerated(studio, tmp_path):
     (tmp_path / "sessions.json").write_text('["old-style"]')
     reborn = sessions_mod.Registry(model_factory=lambda: None, store=tmp_path)
