@@ -114,7 +114,12 @@ export class SessionRuntime {
             })
         } else if (ev.type === 'tool_end') {
             const items = this.#agentItems()
-            const open = items.findLast((i) => i.kind === 'tool' && i.running)
+            // tool calls can run in PARALLEL (several starts, then the
+            // ends) — pair by name first, oldest open call wins
+            const open =
+                items.find(
+                    (i) => i.kind === 'tool' && i.running && i.name === ev.name,
+                ) ?? items.find((i) => i.kind === 'tool' && i.running)
             if (open) {
                 open.result = ev.result
                 open.running = false
