@@ -1,0 +1,56 @@
+[project]
+name = "nontainer-studio"
+version = "0.0.1"
+description = "A local AI workbench over nontainer: chat, versioned workspaces, live app preview."
+readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "ashenfad"},
+]
+requires-python = ">=3.10"
+dependencies = [
+    "nontainer[agno,apps]>=0.0.1",
+    "uvicorn>=0.30",
+    # agno's SqliteDb (durable chat) requires sqlalchemy
+    "sqlalchemy>=2",
+    # the agent's data stack — nontainer presets grant these
+    # opportunistically; the studio wants them out of the box
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "matplotlib",
+    "plotly",
+    # default LLM provider (ANTHROPIC_API_KEY); see extras for openai
+    "anthropic",
+]
+
+[project.optional-dependencies]
+openai = ["openai"]
+dev = [
+    "ruff",
+    "pytest",
+    "pytest-asyncio",
+    "httpx2",  # starlette TestClient
+]
+
+[project.scripts]
+nontainer-studio = "nontainer_studio.server:main"
+
+[project.urls]
+"Source" = "https://github.com/ashenfad/nontainer-studio"
+
+# nontainer isn't on PyPI yet (and the studio needs core changes that
+# currently live on its `studio` branch) — develop against a sibling
+# checkout. TODO: switch to a git/PyPI source once those changes land.
+[tool.uv.sources]
+nontainer = { path = "../nontainer", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nontainer_studio"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
