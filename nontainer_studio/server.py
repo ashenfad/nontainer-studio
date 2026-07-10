@@ -330,6 +330,32 @@ def build_app(registry: Registry) -> Starlette:
             headers=headers,
         )
 
+    # -- models: what this server's env unlocks; per-session switching ---
+
+    async def list_models(request: Any) -> JSONResponse:
+        from . import providers
+
+        return JSONResponse(providers.available())
+
+    @with_session
+    async def set_model(request: Any, session: Any) -> JSONResponse:
+        if session.busy:
+            return JSONResponse(
+                {"error": "can't switch models while a turn is running"},
+                status_code=409,
+            )
+        spec = ((await request.json()).get("model") or "").strip()
+        if not spec:
+            return JSONResponse({"error": "missing model"}, status_code=400)
+        try:
+            await anyio.to_thread.run_sync(registry.set_model, session, spec)
+        except (ValueError, SystemExit) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        await session.emit(
+            {"type": "notice", "text": f"model → {spec} (memory carries over)"}
+        )
+        return JSONResponse({"ok": True, "model": spec})
+
     # -- publish: freeze a snapshot behind a capability token ------------
 
     @with_session
@@ -350,8 +376,10 @@ def build_app(registry: Registry) -> Starlette:
     return Starlette(
         routes=[
             Route("/", index),
+            Route("/api/models", list_models, methods=["GET"]),
             Route("/api/sessions", list_sessions, methods=["GET"]),
             Route("/api/sessions", open_session, methods=["POST"]),
+            Route("/api/sessions/{name}/model", set_model, methods=["POST"]),
             Route("/api/sessions/{name}/chat", chat, methods=["POST"]),
             Route("/api/sessions/{name}/events", events, methods=["GET"]),
             Route("/api/sessions/{name}/upload", upload, methods=["POST"]),
@@ -373,13 +401,33 @@ def build_app(registry: Registry) -> Starlette:
     )
 
 
+def _load_dotenv() -> None:
+    """A `.env` beside where you launched from (KEY=VALUE lines, # for
+    comments) — real env always wins. Keeps 'my studio defaults to
+    openrouter' out of your shell profile."""
+    env_file = Path.cwd() / ".env"
+    if not env_file.is_file():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
 def main() -> None:
     import uvicorn
 
-    from .model import pick_model
+    from . import providers
 
+    _load_dotenv()
     registry = Registry(
-        model_factory=pick_model, store=os.getenv("NONTAINER_STUDIO_STORE")
+        model_factory=providers.build_model,
+        store=os.getenv("NONTAINER_STUDIO_STORE"),
+        # resolves the env NOW: fails fast with a helpful message when
+        # no provider key is present
+        default_model=providers.default_spec(),
     )
     port = int(os.getenv("NONTAINER_STUDIO_PORT", "8321"))
     print(f"nontainer-studio → http://127.0.0.1:{port}")

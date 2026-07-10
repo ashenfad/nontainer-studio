@@ -39,6 +39,19 @@ export function peekRuntime(name) {
 
 export const rail = $state({ sessions: [] })
 
+// what the server's env unlocks (GET /api/models) — loaded once
+export const catalog = $state({ providers: [], default: null })
+
+export async function loadCatalog() {
+    try {
+        const data = await api('/api/models')
+        catalog.providers = data.providers
+        catalog.default = data.default
+    } catch {
+        /* picker just stays hidden */
+    }
+}
+
 export async function refreshSessions() {
     try {
         const data = await api('/api/sessions')

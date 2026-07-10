@@ -35,12 +35,30 @@ ANTHROPIC_API_KEY=... uv run nontainer-studio
 # → http://127.0.0.1:8321
 ```
 
-`OPENAI_API_KEY` works too (`uv sync --extra openai`). The frontend is a
-committed build — no node needed to run.
+The frontend is a committed build — no node needed to run.
 
-Environment knobs: `NONTAINER_STUDIO_PORT`, `NONTAINER_STUDIO_STORE`
-(defaults to `~/.nontainer-studio`), `NONTAINER_STUDIO_MODEL`,
-`NONTAINER_STUDIO_CSP` (override the published-app CSP; `none` disables).
+### Models & providers
+
+Providers are **detected from the environment** — whichever keys are set
+show up in the in-app model picker (keys never reach the browser):
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
+`GOOGLE_API_KEY` (needs `pip install google-genai`), `OLLAMA_HOST`
+(needs `pip install ollama`).
+
+Each session has its own model, switchable mid-conversation — chat
+memory is keyed by session, so the new model inherits the whole
+conversation. The default comes from `NONTAINER_STUDIO_MODEL`:
+`provider:model` (`openrouter:deepseek/deepseek-v4-flash`), a bare
+provider (`openrouter` — its default model), or `dummy` (the scripted
+test model). Unset, it's the first available of anthropic → openai →
+openrouter → google → ollama.
+
+A `.env` file next to where you launch is loaded at startup (real env
+wins) — see `.env.example`.
+
+Other knobs: `NONTAINER_STUDIO_PORT`, `NONTAINER_STUDIO_STORE`
+(defaults to `~/.nontainer-studio`), `NONTAINER_STUDIO_CSP` (override
+the published-app CSP; `none` disables).
 
 > **Note:** nontainer isn't on PyPI yet — `pyproject.toml` currently
 > points at a sibling `../nontainer` checkout.

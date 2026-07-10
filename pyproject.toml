@@ -20,12 +20,14 @@ dependencies = [
     "pyarrow",
     "matplotlib",
     "plotly",
-    # default LLM provider (ANTHROPIC_API_KEY); see extras for openai
+    # provider SDKs: anthropic + openai cover the default detection
+    # order (openai also carries OpenRouter and OpenAI-compatible
+    # endpoints); google/ollama SDKs are opt-in installs
     "anthropic",
+    "openai",
 ]
 
 [project.optional-dependencies]
-openai = ["openai"]
 dev = [
     "ruff",
     "pytest",
