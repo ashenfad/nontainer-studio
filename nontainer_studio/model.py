@@ -4,6 +4,12 @@ import os
 
 
 def pick_model():
+    if os.getenv("NONTAINER_STUDIO_MODEL") == "dummy":
+        # scripted model for E2E tests: real agent loop + real tools,
+        # no LLM (see dummy.py for the !tool / !text directive DSL)
+        from .dummy import DummyModel
+
+        return DummyModel()
     if os.getenv("ANTHROPIC_API_KEY"):
         from agno.models.anthropic import Claude
 
