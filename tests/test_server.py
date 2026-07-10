@@ -464,7 +464,9 @@ def test_transcript_survives_restart(studio, tmp_path):
     reborn._build_agent = lambda *a, **k: FakeAgent()
     session = reborn.open("s1")
     assert [e["type"] for e in session.events] == [e["type"] for e in events]
-    assert session.events[0] == {"type": "user", "text": "hello"}
+    assert session.events[0]["type"] == "user"
+    assert session.events[0]["text"] == "hello"
+    assert session.events[0]["head"]  # the undo anchor rides the user event
     reborn.close()
 
 

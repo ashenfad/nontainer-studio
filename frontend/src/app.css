@@ -1,0 +1,199 @@
+@import 'highlight.js/styles/github-dark-dimmed.css';
+
+/* ---------------------------------------------------------------------------
+ * Typography — the agex-studio voice, carried over: Fraunces (variable
+ * serif, soft axis) for display, Public Sans for body, system mono for
+ * code. One visual identity across the studio portfolio.
+ * --------------------------------------------------------------------------- */
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:wght,SOFT@300..900,0..100&family=Public+Sans:wght@300..700&display=swap');
+
+:root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface-hover: #1a2744;
+    --border: #0f3460;
+    --text: #e0e0e0;
+    --text-muted: #888;
+    --accent: #e94560;
+    --accent-hover: #d63851;
+    --input-bg: #0f3460;
+    --user-bubble: #0f3460;
+    --agent-bubble: #1e2a45;
+    --success: #4caf50;
+    --warning: #ff9800;
+    --error: #e94560;
+    --purple: #a371f7;
+    --link: #7cb7ff;
+
+    --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+    --font-body: 'Public Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace;
+}
+
+.hljs {
+    background: transparent !important;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+    height: 100%;
+    overflow: hidden;
+}
+
+body {
+    font-family: var(--font-body);
+    background: var(--bg);
+    color: var(--text);
+    letter-spacing: -0.005em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-family: var(--font-display);
+    letter-spacing: -0.015em;
+    font-variation-settings: 'opsz' 36, 'SOFT' 60;
+}
+
+code,
+kbd,
+samp,
+pre {
+    font-family: var(--font-mono);
+}
+
+button {
+    font-family: inherit;
+}
+
+/* ---------------------------------------------------------------------------
+ * Shared markdown styling — apply `.markdown` to any container holding
+ * renderMarkdown output. Matches the chat-bubble look.
+ * --------------------------------------------------------------------------- */
+
+.markdown {
+    white-space: normal;
+    line-height: 1.5;
+}
+
+.markdown p {
+    margin: 0.4em 0;
+}
+.markdown p:first-child {
+    margin-top: 0;
+}
+.markdown p:last-child {
+    margin-bottom: 0;
+}
+
+.markdown ul,
+.markdown ol {
+    margin: 0.4em 0;
+    padding-left: 1.4em;
+}
+.markdown li {
+    margin: 0.15em 0;
+}
+
+.markdown strong {
+    font-weight: 600;
+}
+
+.markdown code {
+    background: rgba(255, 255, 255, 0.1);
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+}
+
+.markdown pre {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    padding: 0.5em 0.7em;
+    overflow-x: auto;
+    margin: 0.4em 0;
+}
+.markdown pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.8em;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+    margin: 0.5em 0 0.3em;
+    font-weight: 600;
+}
+.markdown h1 {
+    font-size: 1.1em;
+}
+.markdown h2 {
+    font-size: 1em;
+}
+.markdown h3 {
+    font-size: 0.95em;
+}
+
+.markdown a {
+    color: var(--link);
+    text-decoration: underline;
+}
+
+.markdown table {
+    border-collapse: collapse;
+    margin: 0.5em 0;
+    width: 100%;
+    font-size: 0.88em;
+}
+.markdown th,
+.markdown td {
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    padding: 0.35em 0.6em;
+    text-align: left;
+}
+.markdown th {
+    background: rgba(255, 255, 255, 0.08);
+    font-weight: 600;
+}
+.markdown tr:nth-child(even) {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.markdown blockquote {
+    border-left: 3px solid rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.06);
+    margin: 0.5em 0;
+    padding: 0.4em 0.8em;
+    border-radius: 0 4px 4px 0;
+}
+
+/* Shared keyframes */
+@keyframes pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.3;
+    }
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
