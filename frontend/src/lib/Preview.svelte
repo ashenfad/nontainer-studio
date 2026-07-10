@@ -25,6 +25,19 @@
     }
 
     const src = $derived(`/preview/${rt.name}/?v=${rt.version + manual}`)
+
+    // the iframe is an opaque origin (we can't read its document), so
+    // probe from the shell: no /app yet → friendly empty state, not a
+    // raw 404 body
+    let hasApp = $state(true)
+    $effect(() => {
+        void src
+        let dead = false
+        fetch(`/preview/${rt.name}/`, { method: 'GET' })
+            .then((r) => !dead && (hasApp = r.ok))
+            .catch(() => {})
+        return () => (dead = true)
+    })
 </script>
 
 <div class="preview">
@@ -53,10 +66,22 @@
             publish
         </button>
     </div>
-    {#key src}
-        <iframe title="app preview" {src} sandbox="allow-scripts allow-forms"
-        ></iframe>
-    {/key}
+    {#if hasApp}
+        {#key src}
+            <iframe title="app preview" {src} sandbox="allow-scripts allow-forms"
+            ></iframe>
+        {/key}
+    {:else}
+        <div class="no-app">
+            <div>
+                <h3>no app yet</h3>
+                <p>
+                    Ask the agent to build one — anything it writes under
+                    <code>/app</code> serves live here as it takes shape.
+                </p>
+            </div>
+        </div>
+    {/if}
 </div>
 
 <style>
@@ -120,5 +145,28 @@
         flex: 1;
         border: none;
         background: #fff;
+    }
+    .no-app {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        color: var(--text-muted);
+    }
+    .no-app h3 {
+        color: var(--text);
+        margin-bottom: 0.4rem;
+        font-variation-settings: 'opsz' 48, 'SOFT' 80;
+    }
+    .no-app p {
+        font-size: 0.8rem;
+        max-width: 300px;
+        line-height: 1.5;
+    }
+    .no-app code {
+        background: rgba(255, 255, 255, 0.08);
+        padding: 0 0.25rem;
+        border-radius: 3px;
     }
 </style>
