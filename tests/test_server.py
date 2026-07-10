@@ -39,7 +39,7 @@ class FakeAgent:
 def studio(tmp_path):
     """A real Registry over a tmp store, with the agent faked out —
     everything else (workspaces, dbs, forks, publish) is real."""
-    registry = sessions_mod.Registry(model_factory=lambda: None, store=tmp_path)
+    registry = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     registry._build_agent = lambda *a, **k: FakeAgent()
     with TestClient(server.build_app(registry)) as client:
         yield client, registry
@@ -131,7 +131,7 @@ def test_busy_session_409s_chat_and_restore(studio):
             == 409
         )
         assert client.get("/api/sessions").json()["sessions"] == [
-            {"name": "s1", "busy": True}
+            {"name": "s1", "busy": True, "model": None}
         ]
     finally:
         session.turn_lock.release()
@@ -434,9 +434,9 @@ def test_session_manifest_survives_restart(studio, tmp_path):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
 
-    reborn = sessions_mod.Registry(model_factory=lambda: None, store=tmp_path)
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
-    assert reborn.list() == [{"name": "s1", "busy": False}]
+    assert reborn.list() == [{"name": "s1", "busy": False, "model": None}]
     # and it opens lazily with its files intact
     registry.get("s1").ws.write_file("keep.txt", "here")
     session = reborn.open("s1")
@@ -460,7 +460,7 @@ def test_transcript_survives_restart(studio, tmp_path):
     client.post("/api/sessions/s1/chat", json={"message": "hello"})
     events = _collect_until_done(client, "s1")
 
-    reborn = sessions_mod.Registry(model_factory=lambda: None, store=tmp_path)
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
     session = reborn.open("s1")
     assert [e["type"] for e in session.events] == [e["type"] for e in events]
@@ -645,7 +645,7 @@ def test_published_urls_survive_restart(studio, tmp_path):
     assert client.get(f"{pub['url']}api/names").json() == {"names": ["before-restart"]}
 
     # "restart": a fresh registry over the same store, sessions unopened
-    reborn = sessions_mod.Registry(model_factory=lambda: None, store=tmp_path)
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
     with TestClient(server.build_app(reborn)) as client2:
         r = client2.get(f"{pub['url']}api/names")
@@ -653,6 +653,87 @@ def test_published_urls_survive_restart(studio, tmp_path):
         assert r.json() == {"names": ["before-restart"]}  # same db file
         assert client2.get("/apps/not-a-real-token/").status_code == 404
     reborn.close()
+
+
+# -- models: registry, per-session switching --------------------------------------
+
+
+def test_provider_spec_parsing(monkeypatch):
+    from nontainer_studio import providers
+
+    assert providers.parse_spec("dummy") == ("dummy", "dummy")
+    assert providers.parse_spec("openrouter:deepseek/deepseek-v4-flash") == (
+        "openrouter",
+        "deepseek/deepseek-v4-flash",
+    )
+    # bare provider -> its default model
+    provider, model = providers.parse_spec("anthropic")
+    assert provider == "anthropic" and model
+    # legacy bare model id rides the default provider
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    assert providers.parse_spec("claude-sonnet-5") == (
+        "anthropic",
+        "claude-sonnet-5",
+    )
+    with pytest.raises(ValueError):
+        providers.parse_spec("nope:whatever")
+
+
+def test_models_endpoint_reflects_env(studio, monkeypatch):
+    client, _ = studio
+    monkeypatch.setenv("NONTAINER_STUDIO_MODEL", "dummy")
+    data = client.get("/api/models").json()
+    assert data["default"] == "dummy"
+    names = [p["name"] for p in data["providers"]]
+    assert "dummy" in names  # advertised only because it's the default
+    monkeypatch.setenv("OPENROUTER_API_KEY", "x")
+    monkeypatch.setenv("NONTAINER_STUDIO_MODEL", "openrouter")
+    data = client.get("/api/models").json()
+    assert data["default"] == "openrouter:anthropic/claude-sonnet-5"
+    openrouter = next(
+        p for p in data["providers"] if p["name"] == "openrouter"
+    )
+    assert openrouter["models"]  # curated picks for the picker
+
+
+def test_model_switch_persists_and_notices(studio, tmp_path):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    r = client.post("/api/sessions/s1/model", json={"model": "dummy"})
+    assert r.json() == {"ok": True, "model": "dummy"}
+    assert session.model == "dummy"
+    assert any(
+        e["type"] == "notice" and "model → dummy" in e["text"]
+        for e in session.events
+    )
+    # the rail shows it, and a restart remembers it
+    listed = client.get("/api/sessions").json()["sessions"]
+    assert listed == [{"name": "s1", "busy": False, "model": "dummy"}]
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    reborn._build_agent = lambda *a, **k: FakeAgent()
+    assert reborn.open("s1").model == "dummy"
+    reborn.close()
+
+    # busy sessions can't switch; empty spec 400s
+    session.turn_lock.acquire()
+    try:
+        assert (
+            client.post("/api/sessions/s1/model", json={"model": "dummy"}).status_code
+            == 409
+        )
+    finally:
+        session.turn_lock.release()
+    assert client.post("/api/sessions/s1/model", json={}).status_code == 400
+
+
+def test_fork_inherits_model(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/model", json={"model": "dummy"})
+    client.post("/api/sessions/s1/fork", json={"name": "s2"})
+    assert registry.get("s2").model == "dummy"
 
 
 # -- dummy model: the real agent loop, scripted -----------------------------------
@@ -664,7 +745,9 @@ def test_dummy_model_drives_real_agent(tmp_path):
     Directives in the user message script the turn."""
     from nontainer_studio.dummy import DummyModel
 
-    registry = sessions_mod.Registry(model_factory=DummyModel, store=tmp_path)
+    registry = sessions_mod.Registry(
+        model_factory=lambda spec=None: DummyModel(), store=tmp_path
+    )
     with TestClient(server.build_app(registry)) as client:
         client.post("/api/sessions", json={"name": "s1"})
         message = (
@@ -691,8 +774,8 @@ def test_dummy_model_drives_real_agent(tmp_path):
 
 def test_v1_manifest_format_tolerated(studio, tmp_path):
     (tmp_path / "sessions.json").write_text('["old-style"]')
-    reborn = sessions_mod.Registry(model_factory=lambda: None, store=tmp_path)
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
-    assert {"name": "old-style", "busy": False} in reborn.list()
+    assert {"name": "old-style", "busy": False, "model": None} in reborn.list()
     assert reborn.resolve("nope") is None
     reborn.close()

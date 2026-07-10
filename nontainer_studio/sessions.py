@@ -94,6 +94,10 @@ class Session:
     agent: Any
     db: Db
     turn_lock: threading.Lock
+    model: str | None = None
+    """This session's model spec (``provider:model``). Switchable mid-
+    session — chat memory lives in the db keyed by session_id, so a
+    rebuilt agent keeps the conversation."""
     """One agent turn at a time per session — chat 409s while a turn
     runs. Turns run as server-side tasks decoupled from the HTTP
     request, so disconnects/reloads/session switches never abort work."""
@@ -150,10 +154,12 @@ class Registry:
 
     def __init__(
         self,
-        model_factory: Callable[[], Any],
+        model_factory: Callable[..., Any],
         store: Path | str | None = None,
+        default_model: str | None = None,
     ) -> None:
-        self._model_factory = model_factory
+        self._model_factory = model_factory  # (spec) -> agno Model
+        self._default_model = default_model
         self._store = Path(store) if store else DEFAULT_STORE
         self._sessions: dict[str, Session] = {}
         self._published: dict[str, Workspace] = {}  # token -> frozen snapshot
@@ -164,11 +170,15 @@ class Registry:
         workspaces and dbs survive restarts, so the rail should too
         (opening stays lazy; a listed-but-unopened session constructs
         on first use)."""
-        names = self._load_manifest() | set(self._sessions)
+        manifest = self._manifest()
+        names = set(manifest["sessions"]) | set(self._sessions)
         return [
             {
                 "name": name,
                 "busy": (s := self._sessions.get(name)) is not None and s.busy,
+                "model": (
+                    s.model if s is not None else manifest["models"].get(name)
+                ),
             }
             for name in sorted(names)
         ]
@@ -178,7 +188,8 @@ class Registry:
 
     def _manifest(self) -> dict:
         """{"sessions": [...], "published": {token: {branch, session,
-        checkpoint}}} — tolerant of the v1 bare-list format."""
+        checkpoint}}, "models": {name: spec}} — tolerant of the v1
+        bare-list format."""
         try:
             data = json.loads(self._manifest_path().read_text())
         except Exception:
@@ -188,6 +199,7 @@ class Registry:
         return {
             "sessions": data.get("sessions", []),
             "published": data.get("published", {}),
+            "models": data.get("models", {}),
         }
 
     def _load_manifest(self) -> set[str]:
@@ -197,10 +209,12 @@ class Registry:
         self._manifest_path().parent.mkdir(parents=True, exist_ok=True)
         self._manifest_path().write_text(json.dumps(manifest, indent=1))
 
-    def _record(self, name: str) -> None:
+    def _record(self, name: str, model: str | None = None) -> None:
         """Add to the durable session manifest (caller holds _lock)."""
         manifest = self._manifest()
         manifest["sessions"] = sorted(set(manifest["sessions"]) | {name})
+        if model is not None:
+            manifest["models"][name] = model
         self._save_manifest(manifest)
 
     def get(self, name: str) -> Session | None:
@@ -212,12 +226,13 @@ class Registry:
             existing = self._sessions.get(name)
             if existing is not None:
                 return existing
+            model = self._manifest()["models"].get(name) or self._default_model
             db = Db(self._store / "dbs" / f"{name}.sqlite")
             ws = workspace(name, store=self._store, python=self._python_config(db))
-            session = self._assemble(name, ws, db)
+            session = self._assemble(name, ws, db, model)
             session.events.extend(self._load_events(session.log_path))
             self._sessions[name] = session
-            self._record(name)
+            self._record(name, model)
             return session
 
     @staticmethod
@@ -238,7 +253,9 @@ class Registry:
                 pass
         return PythonConfig(modules=modules, host_objects={"db": db})
 
-    def _assemble(self, name: str, ws: Workspace, db: Db) -> Session:
+    def _assemble(
+        self, name: str, ws: Workspace, db: Db, model: str | None = None
+    ) -> Session:
         runtime = enable_apps(ws)
         log_dir = self._store / "events"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -246,9 +263,10 @@ class Registry:
             name=name,
             ws=ws,
             runtime=runtime,
-            agent=self._build_agent(name, ws, runtime),
+            agent=self._build_agent(name, ws, runtime, model),
             db=db,
             turn_lock=threading.Lock(),
+            model=model,
             log_path=log_dir / f"{name}.jsonl",
         )
 
@@ -279,12 +297,14 @@ class Registry:
 
             return JsonDb(db_path=str(self._store / "chat"))
 
-    def _build_agent(self, name: str, ws: Workspace, runtime: AppRuntime) -> Any:
+    def _build_agent(
+        self, name: str, ws: Workspace, runtime: AppRuntime, model: str | None = None
+    ) -> Any:
         from agno.agent import Agent
 
         toolkit = WorkspaceTools(ws, apps=runtime, python_primer=DB_PRIMER)
         return Agent(
-            model=self._model_factory(),
+            model=self._model_factory(model),
             tools=[toolkit],
             # Durable chat, keyed by the session name: after a server
             # restart the agent still remembers the conversation (and
@@ -323,10 +343,26 @@ class Registry:
             # deliberately NOT copied: chat + transcript (conversation
             # belongs to the harness; a fork is a fresh conversation
             # over the branched files)
-            session = self._assemble(new_name, ws, db)
+            session = self._assemble(new_name, ws, db, parent.model)
             self._sessions[new_name] = session
-            self._record(new_name)
+            self._record(new_name, parent.model)
             return session
+
+    # -- model switching ----------------------------------------------------
+
+    def set_model(self, session: Session, spec: str) -> None:
+        """Rebuild the session's agent on a different model. The chat
+        db is keyed by session_id, so the new agent keeps the whole
+        conversation — switch models mid-project freely. Raises
+        ValueError (via the model factory) on an unknown spec."""
+        session.agent = self._build_agent(
+            session.name, session.ws, session.runtime, spec
+        )
+        session.model = spec
+        with self._lock:
+            manifest = self._manifest()
+            manifest["models"][session.name] = spec
+            self._save_manifest(manifest)
 
     # -- restore: synchronized time travel ---------------------------------
 

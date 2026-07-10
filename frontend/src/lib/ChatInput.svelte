@@ -3,6 +3,7 @@
     // a checkpointed workspace write under /uploads/); the queue chips
     // just decide what the NEXT message mentions.
     import { uploadFiles } from './api.js'
+    import ModelPicker from './ModelPicker.svelte'
 
     let { rt } = $props()
 
@@ -94,6 +95,9 @@
             {rt.busy ? 'running…' : 'send'}
         </button>
     </div>
+    <div class="footer">
+        <ModelPicker {rt} />
+    </div>
 </div>
 
 <style>
@@ -137,6 +141,11 @@
         display: flex;
         gap: 0.6rem;
         align-items: flex-end;
+    }
+    .footer {
+        display: flex;
+        align-items: center;
+        padding-top: 0.45rem;
     }
     .attach {
         display: flex;

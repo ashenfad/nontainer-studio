@@ -5,6 +5,7 @@
     import {
         ensureSession,
         getRuntime,
+        loadCatalog,
         peekRuntime,
         refreshSessions,
         rail,
@@ -42,6 +43,7 @@
 
     $effect(() => {
         refreshSessions()
+        loadCatalog()
         const t = setInterval(refreshSessions, 4000)
         return () => clearInterval(t)
     })

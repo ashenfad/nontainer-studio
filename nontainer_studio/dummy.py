@@ -26,7 +26,7 @@ Select it with ``NONTAINER_STUDIO_MODEL=dummy``.
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator, Iterator, List, Optional
+from typing import Any, AsyncIterator, Iterator, List
 
 from agno.models.base import Model
 from agno.models.message import Message
@@ -112,12 +112,3 @@ class DummyModel(Model):
 
     def _parse_provider_response_delta(self, response: Any) -> ModelResponse:
         return response  # already a ModelResponse
-
-
-def pick_dummy() -> Optional[DummyModel]:
-    """Hook for model.pick_model: NONTAINER_STUDIO_MODEL=dummy."""
-    import os
-
-    if os.getenv("NONTAINER_STUDIO_MODEL") == "dummy":
-        return DummyModel()
-    return None
