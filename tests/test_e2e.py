@@ -159,6 +159,39 @@ def test_preview_serves_the_agents_app(page, server):
     expect(frame.locator("#marker")).to_have_text("hi from the app", timeout=15000)
 
 
+def test_preview_app_json_post_passes_cors_preflight(page, server):
+    """App code fetching its own api with a JSON body triggers a real
+    CORS preflight from the sandboxed (opaque-origin) iframe — the
+    case a plain header-on-response can't cover."""
+    import json as _json
+
+    html = (
+        "<html><body><div id=out>waiting</div><script>"
+        "fetch('api/echo',{method:'POST',"
+        "headers:{'content-type':'application/json'},"
+        "body:JSON.stringify({v:'pong'})})"
+        ".then(r=>r.json()).then(d=>{"
+        "document.getElementById('out').textContent='echo:'+d.v})"
+        ".catch(e=>{document.getElementById('out').textContent='ERR '+e})"
+        "</script></body></html>"
+    )
+    echo = "def post(req):\n    return {'v': 'pong'}\n"
+    message = (
+        "!tool file_write "
+        + _json.dumps({"path": "/app/index.html", "content": html})
+        + "\n!tool file_write "
+        + _json.dumps({"path": "/app/api/echo.py", "content": echo})
+        + "\n!text cors app up"
+    )
+    page.goto(f"{server}/?session=e2e-cors")
+    _send(page, message)
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "cors app up", timeout=15000
+    )
+    frame = page.frame_locator("iframe[title='app preview']")
+    expect(frame.locator("#out")).to_have_text("echo:pong", timeout=15000)
+
+
 def test_delete_session_from_rail(page, server):
     page.goto(f"{server}/?session=e2e-del1")
     _send(page, "!text del1 alive")
