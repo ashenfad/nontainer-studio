@@ -119,6 +119,27 @@ def test_turn_streams_into_transcript(page, server):
     expect(page.locator(".modal")).to_have_count(0)
 
 
+def test_stop_button_cancels_the_turn(page, server):
+    """The send button morphs to stop while busy; clicking it cancels
+    via agno (real cancel machinery — only the model is scripted), the
+    'turn stopped' notice lands, and the scripted reply never does."""
+    page.goto(f"{server}/?session=e2e-stop")
+    _send(
+        page,
+        '!tool run_python {"code": "import time\\ntime.sleep(8)"}\n'
+        "!text finished anyway",
+    )
+    stop = page.locator(".send-btn.stop")
+    expect(stop).to_be_visible(timeout=5000)
+    stop.click()
+    expect(page.locator(".notice", has_text="turn stopped")).to_be_visible(
+        timeout=20000
+    )
+    expect(page.locator(".agent-msg .bubble", has_text="finished anyway")).to_have_count(0)
+    # composer back to send: the session is usable again
+    expect(page.locator(".send-btn.stop")).to_have_count(0, timeout=10000)
+
+
 def test_long_tool_lines_scroll_instead_of_widening_layout(page, server):
     """A single long unwrapped line in a tool block must scroll inside
     its pre — not inflate the chat pane and squeeze the preview away

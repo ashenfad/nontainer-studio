@@ -316,6 +316,18 @@ export class SessionRuntime {
         }
     }
 
+    /** gracefully stop the running turn (agno cancels at the next
+     * checkpoint; partial work stays in files AND agent memory) */
+    async stop() {
+        if (!this.busy) return false
+        try {
+            await api(`/api/sessions/${this.name}/cancel`, {})
+            return true
+        } catch {
+            return false // raced the turn's end; nothing to stop
+        }
+    }
+
     /** edit an earlier prompt: the server rewinds files + agent
      * memory to before that turn, truncates the visible transcript,
      * and runs the edited message as a fresh turn */

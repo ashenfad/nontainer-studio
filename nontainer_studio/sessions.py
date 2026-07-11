@@ -106,8 +106,11 @@ class Session:
 
     turn_task: Any = None
     """The running turn's asyncio task. Held so the event loop's weak
-    reference isn't the only one (the classic create_task GC footgun) —
-    and it's the handle a future cancel button needs."""
+    reference isn't the only one (the classic create_task GC footgun)."""
+
+    run_id: str | None = None
+    """The running turn's agno run id, as soon as the stream reveals it
+    — the handle the stop button needs (agno's cancel-by-run-id)."""
 
     log_path: Path | None = None
     """Durable transcript: emit appends each event as a jsonl line;
@@ -635,15 +638,16 @@ class Registry:
 
 
 def repair_aborted_run(session: Session, run_id: str | None, note: str) -> None:
-    """agno's history builder SKIPS runs with status=error — so a
-    transport hiccup (API credit, network) at the end of a long turn
-    would erase the whole turn from the agent's memory while the human
-    transcript still shows it. That divergence produces confident
-    confabulation, not "I don't remember".
+    """agno's history builder SKIPS runs with status=error or
+    status=cancelled — so a transport hiccup at the end of a long turn
+    (or a user hitting stop) would erase the whole turn from the
+    agent's memory while the human transcript still shows it. That
+    divergence produces confident confabulation, not "I don't
+    remember".
 
-    The messages up to the failure are real work: append a closing
-    note explaining the abnormal end, mark the run completed, and the
-    agent keeps its memory AND knows the turn was cut short."""
+    The messages up to the cut are real work: append a closing note
+    explaining the abnormal end, mark the run completed, and the agent
+    keeps its memory AND knows the turn was cut short."""
     db = getattr(session.agent, "db", None)
     if db is None or run_id is None:
         return
@@ -658,7 +662,7 @@ def repair_aborted_run(session: Session, run_id: str | None, note: str) -> None:
         run = next(
             (r for r in record.runs if getattr(r, "run_id", None) == run_id), None
         )
-        if run is None or run.status != RunStatus.error:
+        if run is None or run.status not in (RunStatus.error, RunStatus.cancelled):
             return
         run.status = RunStatus.completed
         run.messages = (run.messages or []) + [

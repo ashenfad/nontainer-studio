@@ -135,16 +135,31 @@
             </div>
             <div class="toolbar-right">
                 <ModelPicker {rt} />
-                <button
-                    class="send-btn"
-                    disabled={rt.busy || !text.trim()}
-                    onclick={submit}
-                    title={rt.busy ? 'a turn is running' : 'send (Enter)'}
-                    aria-label="Send"
-                >
-                    {#if rt.busy}
-                        <span class="spin">◌</span>
-                    {:else}
+                {#if rt.busy}
+                    <button
+                        class="send-btn stop"
+                        onclick={() => rt.stop()}
+                        title="stop this turn (work so far is kept)"
+                        aria-label="Stop"
+                    >
+                        <svg
+                            width="11"
+                            height="11"
+                            viewBox="0 0 24 24"
+                            fill="currentColor"
+                            aria-hidden="true"
+                        >
+                            <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+                        </svg>
+                    </button>
+                {:else}
+                    <button
+                        class="send-btn"
+                        disabled={!text.trim()}
+                        onclick={submit}
+                        title="send (Enter)"
+                        aria-label="Send"
+                    >
                         <svg
                             width="15"
                             height="15"
@@ -159,8 +174,8 @@
                             <line x1="12" y1="19" x2="12" y2="5"></line>
                             <polyline points="5 12 12 5 19 12"></polyline>
                         </svg>
-                    {/if}
-                </button>
+                    </button>
+                {/if}
             </div>
         </div>
     </div>
@@ -283,6 +298,17 @@
     .send-btn:disabled {
         opacity: 0.4;
         cursor: default;
+    }
+    .send-btn.stop {
+        background: var(--surface-hover);
+        color: var(--text);
+        border: 1px solid var(--border);
+        animation: pulse 1.6s ease-in-out infinite;
+    }
+    .send-btn.stop:hover {
+        background: color-mix(in srgb, var(--error) 25%, var(--surface));
+        border-color: var(--error);
+        animation: none;
     }
     .spin {
         display: inline-block;
