@@ -528,6 +528,33 @@ def build_app(registry: Registry) -> Starlette:
             {"token": token, "url": f"/apps/{token}/", "checkpoint": commit}
         )
 
+    async def api_fallback(request: Any) -> Response:
+        """Unmatched /api/* — almost always an app in the preview
+        iframe using ABSOLUTE urls, which escape the /preview/{name}/
+        prefix and land here. Without CORS headers the sandboxed
+        iframe (opaque origin) sees only an unexplained CORS block;
+        answer preflights and 404 WITH the teaching text instead."""
+        cors = {"access-control-allow-origin": "*"}
+        if request.method == "OPTIONS":
+            return Response(
+                status_code=204,
+                headers={
+                    **cors,
+                    "access-control-allow-methods": ", ".join(verbs),
+                    "access-control-allow-headers": request.headers.get(
+                        "access-control-request-headers", "*"
+                    ),
+                },
+            )
+        return Response(
+            "nontainer: absolute path -- this app is served under a "
+            "prefix (/preview/<session>/) and must use RELATIVE urls "
+            "(fetch('api/x'), not fetch('/api/x'))",
+            status_code=404,
+            media_type="text/plain",
+            headers=cors,
+        )
+
     @asynccontextmanager
     async def lifespan(app: Any):
         try:
@@ -557,6 +584,9 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions/{name}/restore", restore, methods=["POST"]),
             Route("/api/sessions/{name}/fork", fork, methods=["POST"]),
             Route("/api/sessions/{name}/publish", publish, methods=["POST"]),
+            # after every real /api route: absolute-path fetches from
+            # preview'd apps get a CORS-readable teaching 404
+            Route("/api/{path:path}", api_fallback, methods=preview_verbs),
             Route("/preview/{name}", preview, methods=preview_verbs),
             Route("/preview/{name}/{path:path}", preview, methods=preview_verbs),
             # frozen snapshots: read-only, concurrent, token-addressed.

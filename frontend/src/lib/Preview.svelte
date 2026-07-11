@@ -69,7 +69,14 @@
     </div>
     {#if hasApp}
         {#key src}
-            <iframe title="app preview" {src} sandbox="allow-scripts allow-forms"
+            <!-- allow-modals: agent apps use alert()/confirm() for
+                 error surfacing; a localhost demo pane gains nothing
+                 by muting them. Still NO allow-same-origin — the app
+                 stays an opaque origin, unable to reach the studio API. -->
+            <iframe
+                title="app preview"
+                {src}
+                sandbox="allow-scripts allow-forms allow-modals"
             ></iframe>
         {/key}
     {:else}
