@@ -30,8 +30,14 @@ _PROVIDERS: dict[str, tuple[str, str, str, list[str]]] = {
     "openai": (
         "OPENAI_API_KEY",
         "openai",
-        "gpt-5.4-mini",
-        ["gpt-5.4-mini", "gpt-5.4", "gpt-5"],
+        "gpt-5.6-sol",
+        [
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.4-mini",
+            "gpt-5.4",
+        ],
     ),
     "openrouter": (
         "OPENROUTER_API_KEY",
@@ -43,6 +49,7 @@ _PROVIDERS: dict[str, tuple[str, str, str, list[str]]] = {
             "openai/gpt-5.6-luna",
             "openai/gpt-5.6-sol",
             "google/gemini-2.5-pro",
+            "google/gemma-4-26b-a4b-it",
             "deepseek/deepseek-v4-flash",
             "moonshotai/kimi-k2.6",
         ],
