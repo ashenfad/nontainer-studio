@@ -1,9 +1,8 @@
 <script>
     // A run of consecutive tool calls, collapsed to one activity chip
     // (the agex-studio idiom: a calm transcript with drill-down on
-    // demand). Expands inline to the per-call timeline.
-    import { fileUrl } from './api.js'
-    import { viewFile } from './viewer.svelte.js'
+    // demand). Expands inline; each call renders by type (ToolStep).
+    import ToolStep from './ToolStep.svelte'
 
     let { tools, session } = $props()
 
@@ -26,31 +25,7 @@
     {#if open}
         <div class="timeline">
             {#each tools as t, i (i)}
-                <div class="step">
-                    <div class="step-name">
-                        {t.name}
-                        {#if t.running}<span class="working">working…</span>{/if}
-                    </div>
-                    {#if t.args}<pre class="args">{t.args}</pre>{/if}
-                    {#if t.result != null}<pre class="result">{t.result}</pre>{/if}
-                    {#if t.images?.length}
-                        <div class="step-images">
-                            {#each t.images as p (p)}
-                                <button
-                                    class="img-btn"
-                                    title={p}
-                                    onclick={() => viewFile(p)}
-                                >
-                                    <img
-                                        class="step-img"
-                                        src={fileUrl(session, p)}
-                                        alt={p}
-                                    />
-                                </button>
-                            {/each}
-                        </div>
-                    {/if}
-                </div>
+                <ToolStep tool={t} {session} />
             {/each}
         </div>
     {/if}
@@ -97,52 +72,5 @@
         display: flex;
         flex-direction: column;
         gap: 0.5rem;
-    }
-    .step-name {
-        font-size: 0.72rem;
-        font-weight: 600;
-        color: var(--purple);
-        display: flex;
-        gap: 0.5rem;
-        align-items: baseline;
-    }
-    .working {
-        color: var(--accent);
-        font-weight: 400;
-        animation: pulse 1.2s ease-in-out infinite;
-    }
-    pre {
-        font-size: 0.72rem;
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 6px;
-        padding: 0.4rem 0.6rem;
-        margin: 0.25rem 0 0;
-        overflow-x: auto;
-        max-height: 240px;
-        overflow-y: auto;
-        white-space: pre-wrap;
-        word-break: break-word;
-    }
-    .args {
-        color: var(--text-muted);
-    }
-    .step-images {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.4rem;
-        margin-top: 0.3rem;
-    }
-    .img-btn {
-        background: none;
-        border: none;
-        padding: 0;
-        cursor: zoom-in;
-    }
-    .step-img {
-        max-width: 320px;
-        max-height: 220px;
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        display: block;
     }
 </style>

@@ -162,6 +162,41 @@ def test_preview_serves_the_agents_app(page, server):
     expect(frame.locator("#marker")).to_have_text("hi from the app", timeout=15000)
 
 
+def test_tool_steps_render_by_type(page, server):
+    """The activity drill-down renders per tool: terminal commands as
+    a prompt block, file edits as a computed line diff."""
+    page.goto(f"{server}/?session=e2e-steps")
+    _send(
+        page,
+        '!tool file_write {"path": "/app.py", "content": "x = 1\\ny = 2\\n"}\n'
+        "!text seeded",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "seeded", timeout=15000
+    )
+    _send(
+        page,
+        '!tool terminal {"command": "cat /app.py"}\n'
+        '!tool file_edit {"path": "/app.py", "old_string": "y = 2", "new_string": "y = 3"}\n'
+        "!text edited",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "edited", timeout=15000
+    )
+    page.locator(".chip", has_text="terminal").click()
+    timeline = page.locator(".timeline")
+    # terminal: prompt-prefixed command block
+    expect(timeline.locator(".terminal")).to_contain_text("$ cat /app.py")
+    # file_edit: old-then-new line diff with the path in the label
+    expect(timeline.locator(".step-name", has_text="edit — /app.py")).to_be_visible()
+    expect(timeline.locator(".diff-removed")).to_contain_text("y = 2")
+    expect(timeline.locator(".diff-added")).to_contain_text("y = 3")
+    # write: highlighted content (hljs spans present) in the first turn
+    prev_chip = page.locator(".chip", has_text="file_write").first
+    prev_chip.click()
+    expect(page.locator(".timeline .hljs").first).to_be_visible()
+
+
 def test_chat_markdown_link_opens_file_modal(page, server):
     """The agent linking a workspace path in prose makes it clickable:
     the shared FileModal opens with the per-type render."""
