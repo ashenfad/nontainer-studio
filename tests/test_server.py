@@ -709,6 +709,56 @@ def test_app_probe_flips_when_app_lands(studio):
     assert client.get("/api/sessions/s1/app").json() == {"exists": True}
 
 
+def test_ui_dir_exists_from_the_start(studio):
+    """Agents predictably savefig straight into /ui instead of
+    assigning objects to `ui` — the near-miss should work, not
+    FileNotFoundError (VFS open doesn't create parents)."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    assert ws.fs.isdir("/ui")
+    result = ws.run_python("open('/ui/x.png', 'wb').write(b'png-ish')")
+    assert not result.error
+    assert ws.fs.read("/ui/x.png") == b"png-ish"
+
+
+def test_error_truncation_keeps_the_exception_line(studio):
+    """Tracebacks cap by cutting the MIDDLE: the final line (the
+    exception) is the whole point of the message."""
+    from nontainer_studio.server import _short_middle
+
+    trace = (
+        "Traceback (most recent call last):\n"
+        + "\n".join(f'  File "<x>", line {i}, in frame_{i}' for i in range(200))
+        + "\nFileNotFoundError: No such file or directory: '/ui/plot.png'"
+    )
+    capped = _short_middle(trace)
+    assert len(capped) <= 2_100
+    assert capped.startswith("Traceback")
+    assert capped.endswith("FileNotFoundError: No such file or directory: '/ui/plot.png'")
+    assert "…[truncated]…" in capped
+    # short messages pass through untouched
+    assert _short_middle("boom") == "boom"
+
+
+class LongExplodingAgent(FakeAgent):
+    async def arun(self, message, stream=True, stream_events=True):
+        self.seen.append(message)
+        yield SimpleNamespace(event="RunContent", content="working…", run_id="run-1")
+        raise RuntimeError("x" * 5_000 + " THE ACTUAL ERROR")
+
+
+def test_error_event_tail_survives_capping(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    registry.get("s1").agent = LongExplodingAgent()
+    client.post("/api/sessions/s1/chat", json={"message": "go"})
+    events = _collect_until_done(client, "s1")
+    error = next(e for e in events if e["type"] == "error")
+    assert error["message"].endswith("THE ACTUAL ERROR")
+    assert len(error["message"]) < 2_200
+
+
 # -- delete -----------------------------------------------------------------------
 
 

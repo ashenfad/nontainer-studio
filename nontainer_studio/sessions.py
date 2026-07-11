@@ -234,6 +234,13 @@ class Registry:
             model = self._manifest()["models"].get(name) or self._default_model
             db = Db(self._store / "dbs" / f"{name}.sqlite")
             ws = workspace(name, store=self._store, python=self._python_config(db))
+            # /ui exists from the start: agents predictably savefig
+            # into it directly (instead of assigning objects to `ui`),
+            # and VFS open honors real-fs semantics — no parent, no
+            # write. Forgive the near-miss.
+            if not ws.fs.isdir("/ui"):
+                ws.fs.makedirs("/ui", exist_ok=True)
+                ws.checkpoint(info={"tool": "init"})
             session = self._assemble(name, ws, db, model)
             session.events.extend(self._load_events(session.log_path))
             self._sessions[name] = session

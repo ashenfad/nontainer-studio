@@ -44,6 +44,17 @@ def _short(value: Any, limit: int = 2_000) -> str:
     return text if len(text) <= limit else text[:limit] + " …[truncated]"
 
 
+def _short_middle(value: Any, limit: int = 2_000) -> str:
+    """Cap by cutting the MIDDLE — for tracebacks, where the last line
+    (the exception) is the one that matters."""
+    text = value if isinstance(value, str) else repr(value)
+    if len(text) <= limit:
+        return text
+    head = limit // 2
+    tail = limit - head
+    return text[:head] + "\n…[truncated]…\n" + text[-tail:]
+
+
 def _tool_args(tool: Any) -> Any:
     """Structured args when possible (the client renders tool calls
     per-type: highlighted code, file diffs, terminal commands), a
@@ -85,7 +96,10 @@ def _client_event(ev: Any) -> dict | None:
             "result": _short(getattr(tool, "result", "")),
         }
     if kind == "RunError":
-        return {"type": "error", "message": _short(getattr(ev, "content", "run error"))}
+        return {
+            "type": "error",
+            "message": _short_middle(getattr(ev, "content", "run error")),
+        }
     return None
 
 
@@ -111,12 +125,12 @@ async def _run_turn(session: Any, message: str) -> None:
             if payload is not None:
                 await session.emit(payload)
     except Exception as e:
-        await session.emit({"type": "error", "message": _short(str(e))})
+        await session.emit({"type": "error", "message": _short_middle(str(e))})
         # agno stamps the stored run status=error, and its history
         # builder skips error runs — repair it so the turn's real work
         # stays in the agent's memory (see repair_aborted_run).
         await asyncio.to_thread(
-            repair_aborted_run, session, run_id, _short(str(e), 300)
+            repair_aborted_run, session, run_id, _short_middle(str(e), 300)
         )
     finally:
         # done BEFORE the lock releases: the buffer is the permanent
