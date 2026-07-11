@@ -6,9 +6,8 @@
         ensureSession,
         getRuntime,
         loadCatalog,
-        peekRuntime,
         refreshSessions,
-        rail,
+        setForegroundName,
     } from './lib/runtime.svelte.js'
     import SessionRail from './lib/SessionRail.svelte'
     import SplitPane from './lib/SplitPane.svelte'
@@ -24,19 +23,17 @@
     let tab = $state('preview')
     let ready = $state(false)
 
-    // open (create-or-resume) the active session; flip foreground flags
+    // open (create-or-resume) the active session; only the foreground
+    // session streams (cleanup backgrounds the previous one)
     $effect(() => {
         const name = active
+        setForegroundName(name)
+        const rt = getRuntime(name)
+        rt.setForeground(true)
         ensureSession(name)
             .then(() => (ready = true))
             .catch(() => {})
-        for (const s of rail.sessions) {
-            const rt = peekRuntime(s.name)
-            if (rt) rt.foreground = s.name === name
-        }
-        const rt = getRuntime(name)
-        rt.foreground = true
-        rt.unseen = false
+        return () => rt.setForeground(false)
     })
 
     const rt = $derived(getRuntime(active))
@@ -50,8 +47,6 @@
 
     function switchTo(name) {
         history.replaceState(null, '', `?session=${encodeURIComponent(name)}`)
-        const prev = peekRuntime(active)
-        if (prev) prev.foreground = false
         active = name
     }
 </script>

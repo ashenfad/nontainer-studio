@@ -9,9 +9,12 @@
     let name = $state('')
 
     function status(s) {
+        // server busy is the truth for background sessions (they hold
+        // no event stream); the foreground runtime is fresher between
+        // rail polls
         const rt = peekRuntime(s.name)
-        if (rt?.busy || (!rt && s.busy)) return 'busy'
-        if (rt?.unseen) return 'unseen'
+        if (s.busy || (rt?.foreground && rt.busy)) return 'busy'
+        if (rail.unseen.includes(s.name) || rt?.unseen) return 'unseen'
         return ''
     }
 
