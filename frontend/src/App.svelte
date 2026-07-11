@@ -13,6 +13,7 @@
         setForegroundName,
     } from './lib/runtime.svelte.js'
     import SessionRail from './lib/SessionRail.svelte'
+    import FileModal from './lib/FileModal.svelte'
     import SplitPane from './lib/SplitPane.svelte'
     import MessageList from './lib/MessageList.svelte'
     import ChatInput from './lib/ChatInput.svelte'
@@ -110,6 +111,8 @@
             {/snippet}
         </SplitPane>
     {/if}
+    <!-- one viewer for every surface that mentions a workspace path -->
+    <FileModal session={active} />
 </div>
 
 <style>

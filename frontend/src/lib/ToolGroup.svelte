@@ -3,6 +3,7 @@
     // (the agex-studio idiom: a calm transcript with drill-down on
     // demand). Expands inline to the per-call timeline.
     import { fileUrl } from './api.js'
+    import { viewFile } from './viewer.svelte.js'
 
     let { tools, session } = $props()
 
@@ -35,18 +36,17 @@
                     {#if t.images?.length}
                         <div class="step-images">
                             {#each t.images as p (p)}
-                                <a
-                                    href={fileUrl(session, p)}
-                                    target="_blank"
-                                    rel="noopener"
+                                <button
+                                    class="img-btn"
                                     title={p}
+                                    onclick={() => viewFile(p)}
                                 >
                                     <img
                                         class="step-img"
                                         src={fileUrl(session, p)}
                                         alt={p}
                                     />
-                                </a>
+                                </button>
                             {/each}
                         </div>
                     {/if}
@@ -131,6 +131,12 @@
         flex-wrap: wrap;
         gap: 0.4rem;
         margin-top: 0.3rem;
+    }
+    .img-btn {
+        background: none;
+        border: none;
+        padding: 0;
+        cursor: zoom-in;
     }
     .step-img {
         max-width: 320px;
