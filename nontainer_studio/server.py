@@ -114,6 +114,8 @@ def _client_events(ev: Any) -> list[dict]:
                 "result": _short(getattr(tool, "result", "")),
             }
         ]
+    if kind == "RunCancelled":
+        return [{"type": "notice", "text": "turn stopped"}]
     if kind == "RunError":
         return [
             {
@@ -134,6 +136,7 @@ async def _run_turn(session: Any, message: str) -> None:
     from a cursor. Disconnects, reloads, and session switches never
     abort work. Caller holds the turn lock; released here."""
     run_id = None
+    cancelled = False
     try:
         # head here = the workspace BEFORE this turn: the user event's
         # stamp is the undo anchor (restore to it = unwind this turn)
@@ -142,8 +145,17 @@ async def _run_turn(session: Any, message: str) -> None:
         )
         async for ev in session.agent.arun(message, stream=True, stream_events=True):
             run_id = getattr(ev, "run_id", None) or run_id
+            session.run_id = run_id  # the stop button's cancel handle
+            cancelled = cancelled or getattr(ev, "event", "") == "RunCancelled"
             for payload in _client_events(ev):
                 await session.emit(payload)
+        if cancelled:
+            # agno stores the run status=cancelled and its history
+            # builder skips those — repair keeps the partial work in
+            # the agent's memory (see repair_aborted_run)
+            await asyncio.to_thread(
+                repair_aborted_run, session, run_id, "stopped by the user"
+            )
     except Exception as e:
         await session.emit({"type": "error", "message": _short_middle(str(e))})
         # agno stamps the stored run status=error, and its history
@@ -159,6 +171,7 @@ async def _run_turn(session: Any, message: str) -> None:
         # It carries the turn's agno run_id and the workspace head at
         # turn end — the checkpoint <-> conversation mapping that lets
         # restore rewind the agent's memory in sync with the files.
+        session.run_id = None
         await session.emit({"type": "done", "run_id": run_id, "head": session.ws.head})
         session.turn_lock.release()
 
@@ -253,6 +266,28 @@ def build_app(registry: Registry) -> Starlette:
         await session.emit({"type": "truncate", "to": seq})
         session.turn_task = asyncio.create_task(_run_turn(session, message))
         return JSONResponse({"ok": True, "since": len(session.events)})
+
+    @with_session
+    async def cancel(request: Any, session: Any) -> Any:
+        """Stop the running turn GRACEFULLY: agno's cancel-by-run-id
+        raises at the loop's next checkpoint (a mid-flight tool call
+        finishes first), the run persists with its partial work, and
+        the turn ends with a RunCancelled event -> 'turn stopped'
+        notice. Nothing is torn down — the next prompt just works."""
+        if not session.busy:
+            return JSONResponse({"error": "no turn is running"}, status_code=409)
+        # the run id lands with the first streamed event; a stop click
+        # can race it by a beat
+        for _ in range(20):
+            if session.run_id is not None or not session.busy:
+                break
+            await asyncio.sleep(0.05)
+        if session.run_id is None:
+            return JSONResponse(
+                {"error": "turn not started yet; try again"}, status_code=409
+            )
+        await session.agent.acancel_run(session.run_id)
+        return JSONResponse({"ok": True})
 
     @with_session
     async def events(request: Any, session: Any) -> Any:
@@ -512,6 +547,7 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions/{name}", delete_session, methods=["DELETE"]),
             Route("/api/sessions/{name}/chat", chat, methods=["POST"]),
             Route("/api/sessions/{name}/edit", edit, methods=["POST"]),
+            Route("/api/sessions/{name}/cancel", cancel, methods=["POST"]),
             Route("/api/sessions/{name}/events", events, methods=["GET"]),
             Route("/api/sessions/{name}/upload", upload, methods=["POST"]),
             Route("/api/sessions/{name}/files", files, methods=["GET"]),

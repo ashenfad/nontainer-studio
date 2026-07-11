@@ -746,6 +746,70 @@ def test_edit_validations(studio):
     assert not session.busy
 
 
+# -- stop: graceful mid-turn cancel ------------------------------------------------
+
+
+class CancellableAgent(FakeAgent):
+    """Streams forever until acancel_run flips the flag, then ends the
+    stream with RunCancelled (the agno contract)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        import asyncio
+
+        self.cancelled = asyncio.Event()
+        self.cancel_requests: list[str] = []
+
+    async def acancel_run(self, run_id: str) -> bool:
+        self.cancel_requests.append(run_id)
+        self.cancelled.set()
+        return True
+
+    async def arun(self, message, stream=True, stream_events=True):
+        import asyncio
+
+        self.seen.append(message)
+        yield SimpleNamespace(event="RunContent", content="working…", run_id="run-9")
+        await self.cancelled.wait()
+        yield SimpleNamespace(event="RunCancelled", run_id="run-9")
+
+
+def test_cancel_stops_the_turn_and_repairs_memory(studio):
+    client, registry = studio
+    agent = CancellableAgent()
+    registry._build_agent = lambda *a, **k: agent
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    chat_db = FakeChatDb()
+    session.agent.db = chat_db
+    from agno.run.base import RunStatus
+
+    chat_db.record = SimpleNamespace(
+        runs=[SimpleNamespace(run_id="run-9", status=RunStatus.cancelled, messages=[])]
+    )
+
+    client.post("/api/sessions/s1/chat", json={"message": "long job"})
+    deadline = time.monotonic() + 5  # wait for the stream to reveal run_id
+    while session.run_id is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    r = client.post("/api/sessions/s1/cancel", json={})
+    assert r.status_code == 200 and agent.cancel_requests == ["run-9"]
+
+    events = _collect_until_done(client, "s1")
+    assert {"type": "notice", "text": "turn stopped"} in events
+    assert not session.busy and session.run_id is None
+    # the cancelled run was repaired: memory keeps the partial work
+    run = chat_db.record.runs[0]
+    assert run.status == RunStatus.completed
+    assert "stopped by the user" in run.messages[-1].content
+
+
+def test_cancel_when_idle_409s(studio):
+    client, _ = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    assert client.post("/api/sessions/s1/cancel", json={}).status_code == 409
+
+
 # -- aborted-run repair -----------------------------------------------------------
 
 
