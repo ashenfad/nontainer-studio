@@ -220,6 +220,11 @@ class Registry:
     def get(self, name: str) -> Session | None:
         return self._sessions.get(name)
 
+    def known(self) -> set[str]:
+        """Names that exist durably (manifest) or in memory — the set
+        the server may lazily open on GET (never creating new ones)."""
+        return self._load_manifest() | set(self._sessions)
+
     def open(self, name: str) -> Session:
         """Create-or-return. Raises SessionIdError for bad names."""
         with self._lock:

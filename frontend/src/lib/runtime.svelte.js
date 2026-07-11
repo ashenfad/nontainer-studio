@@ -64,7 +64,9 @@ export async function refreshSessions() {
 export async function ensureSession(name) {
     await api('/api/sessions', { name })
     await refreshSessions()
-    return getRuntime(name)
+    const rt = getRuntime(name)
+    rt.markOpen() // the follower waits for this — no 404 race on create
+    return rt
 }
 
 // ---------------------------------------------------------------------------
@@ -89,11 +91,22 @@ export class SessionRuntime {
 
     constructor(name) {
         this.name = name
+        this.#opened = new Promise((resolve) => (this.#markOpen = resolve))
         this.#follow()
+    }
+
+    #opened
+    #markOpen
+    /** the session exists server-side — start (or keep) following.
+     * Called by ensureSession after POST /api/sessions succeeds, so
+     * the follower never races session creation. */
+    markOpen() {
+        this.#markOpen()
     }
 
     // -- the SSE follower: replay from cursor, then live; reconnect forever
     async #follow() {
+        await this.#opened
         for (;;) {
             try {
                 this.connected = true
