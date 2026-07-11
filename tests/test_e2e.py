@@ -119,8 +119,8 @@ def test_turn_streams_into_transcript(page, server):
     expect(page.locator(".modal")).to_have_count(0)
 
 
-def test_undo_rewinds_files_and_shows_notice(page, server):
-    page.goto(f"{server}/?session=e2e-undo")
+def test_edit_rewinds_files_and_truncates_transcript(page, server):
+    page.goto(f"{server}/?session=e2e-edit")
     _send(page, '!tool file_write {"path": "/a.txt", "content": "A"}\n!text one done')
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "one done", timeout=15000
@@ -130,19 +130,27 @@ def test_undo_rewinds_files_and_shows_notice(page, server):
         "two done", timeout=15000
     )
 
-    # undo the SECOND turn: hover its user row, click undo
+    # edit the SECOND prompt: hover its user row, click edit, replace it
     rows = page.locator(".user-row")
     rows.last.hover()
-    rows.last.locator(".undo").click()
-
-    # restore notice lands in the transcript (files + memory rewound)
-    expect(page.locator(".notice", has_text="restored files AND agent memory")).to_be_visible(
-        timeout=10000
+    rows.last.locator(".edit").click()
+    box = page.locator(".edit-box textarea")
+    box.fill(
+        '!tool file_write {"path": "/c.txt", "content": "C"}\n!text two revised'
     )
+    page.locator(".edit-actions .send").click()
 
-    # files tab: a.txt survives, b.txt is gone
+    # the old turn is gone from the transcript; the edited turn replaces it
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "two revised", timeout=15000
+    )
+    expect(page.locator(".agent-msg .bubble", has_text="two done")).to_have_count(0)
+    expect(page.locator(".user-row")).to_have_count(2)
+
+    # files tab: a.txt survives, b.txt rewound away, c.txt from the redo
     page.get_by_role("button", name="files", exact=True).click()
     expect(page.locator(".file", has_text="/a.txt")).to_be_visible(timeout=5000)
+    expect(page.locator(".file", has_text="/c.txt")).to_be_visible(timeout=5000)
     expect(page.locator(".file", has_text="/b.txt")).to_have_count(0)
 
 

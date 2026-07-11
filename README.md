@@ -5,10 +5,11 @@ chat with an agent that works inside a **versioned workspace** — files,
 sandboxed Python, a live app preview — where every turn is a checkpoint
 you can rewind, fork, or publish.
 
-- **Synchronized undo.** Restoring a checkpoint rewinds the files *and*
-  the agent's memory together — no post-undo gaslighting where the agent
-  remembers work the files no longer show. Hover any of your messages
-  and hit `undo`.
+- **Edit = synchronized time travel.** Hover any of your messages and
+  hit `edit`: the files, the agent's memory, and the transcript rewind
+  together, and the revised prompt runs from there — everything below
+  is replaced, and no post-rewind gaslighting where the agent remembers
+  work the files no longer show.
 - **Background sessions.** Turns run server-side, decoupled from the
   browser. Switch sessions, reload, or close the tab mid-turn; the work
   continues and the rail dots show what's running (pulsing) and what
@@ -75,7 +76,7 @@ Three kinds of state, on purpose:
 |---|---|---|---|---|
 | **workspace** (files, cache, cwd) | kvgit branch per session | rewinds | branches (O(1)) | frozen snapshot |
 | **app `db`** (live SQLite host object) | file per session | untouched — external state has no history | copied | **shared** — frozen code, live state |
-| **conversation** | agno db + jsonl transcript | agent memory rewinds in sync; the visible transcript keeps its record | fresh chat | — |
+| **conversation** | agno db + jsonl transcript | agent memory rewinds in sync; an `edit` trims the visible transcript too, a history-tab restore keeps its record | fresh chat | — |
 
 ## Hacking on the frontend
 

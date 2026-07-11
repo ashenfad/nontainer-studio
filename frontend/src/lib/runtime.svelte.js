@@ -5,13 +5,16 @@
 // rail's busy/unseen dots and instant session switching work).
 //
 // The server's event schema (all events also ride a `cursor`):
-//   {type:'user',   text, head}      — head = pre-turn workspace commit (undo anchor)
+//   {type:'user',   text, head}      — head = pre-turn workspace commit (edit anchor)
 //   {type:'text',   delta}           — streamed reply tokens
 //   {type:'tool_start', name, args}
 //   {type:'tool_end',   name, result}
 //   {type:'notice', text}            — uploads, restores, ...
 //   {type:'error',  message}
 //   {type:'done',   run_id, head}    — turn boundary
+//   {type:'truncate', to}            — an edit cut the transcript at seq `to`:
+//                                      drop that event and everything after
+//                                      from the projection (the log keeps them)
 //
 // Folding: each turn becomes [user message, agent message]; the agent
 // message is an ordered item list — text runs, tool events, images,
@@ -189,7 +192,12 @@ export class SessionRuntime {
         if (ev.type === 'user') {
             this.busy = true
             this.#turnArts = []
-            this.messages.push({ role: 'user', text: ev.text, head: ev.head ?? null })
+            this.messages.push({
+                role: 'user',
+                text: ev.text,
+                head: ev.head ?? null,
+                seq: ev.cursor ?? null, // its event-log position: the edit handle
+            })
         } else if (ev.type === 'text') {
             const items = this.#agentItems()
             const last = items.at(-1)
@@ -218,6 +226,15 @@ export class SessionRuntime {
             tool.result = ev.result
             tool.running = false
             this.#harvest(ev.result, tool)
+        } else if (ev.type === 'truncate') {
+            // an edit rewound the session: only user messages carry a
+            // seq, and everything after the cut derives from events
+            // after it — slice at the first user message at/past `to`
+            const at = this.messages.findIndex(
+                (m) => m.seq != null && m.seq >= ev.to,
+            )
+            if (at !== -1) this.messages.splice(at)
+            this.version++
         } else if (ev.type === 'notice') {
             this.messages.push({ role: 'notice', text: ev.text })
             this.version++
@@ -292,8 +309,23 @@ export class SessionRuntime {
         }
     }
 
-    /** restore to a user message's pre-turn head (the inline undo) or
-     * to an explicit checkpoint id (the history rail) */
+    /** edit an earlier prompt: the server rewinds files + agent
+     * memory to before that turn, truncates the visible transcript,
+     * and runs the edited message as a fresh turn */
+    async edit(seq, message) {
+        if (!message.trim() || this.busy) return false
+        try {
+            await api(`/api/sessions/${this.name}/edit`, { seq, message })
+            this.version++
+            return true
+        } catch (e) {
+            this.messages.push({ role: 'error', text: e.message })
+            return false
+        }
+    }
+
+    /** restore to an explicit checkpoint id (the history rail) —
+     * unlike edit, the visible transcript keeps its record */
     async restore(checkpoint) {
         try {
             await api(`/api/sessions/${this.name}/restore`, { checkpoint })
