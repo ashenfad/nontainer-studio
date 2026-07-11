@@ -166,11 +166,15 @@ def build_model(spec: str | None = None) -> Any:
 
         extra_body = None
         if model.startswith("google/gemma"):
-            # Novita's gemma serving intermittently doubles token pairs
-            # in tool-call output (`<div>` -> `<<divdiv>`, ~50% of HTML
-            # generations when sampled 2026-07); other providers were
-            # clean, so route around it.
-            extra_body = {"provider": {"ignore": ["novita"]}}
+            # gemma-4's native tool-call format (token-level, not JSON)
+            # needs a provider-side parser, and third-party ones are
+            # rough: Novita doubled token pairs in HTML tool args
+            # (`<div>` -> `<<divdiv>`, ~50% when sampled 2026-07),
+            # NextBit truncated them mid-string. Prefer Google's own
+            # serving; keep Novita out of the fallback pool.
+            extra_body = {
+                "provider": {"order": ["google-vertex"], "ignore": ["novita"]}
+            }
         # the agno default (1024) truncates real coding turns
         return OpenRouter(id=model, max_tokens=16384, extra_body=extra_body)
     if provider == "google":
