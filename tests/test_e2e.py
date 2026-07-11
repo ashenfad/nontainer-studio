@@ -159,6 +159,38 @@ def test_preview_serves_the_agents_app(page, server):
     expect(frame.locator("#marker")).to_have_text("hi from the app", timeout=15000)
 
 
+def test_delete_session_from_rail(page, server):
+    page.goto(f"{server}/?session=e2e-del1")
+    _send(page, "!text del1 alive")
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "del1 alive", timeout=15000
+    )
+    page.fill(".new input", "e2e-del2")
+    page.press(".new input", "Enter")
+    expect(page.locator(".row.active", has_text="e2e-del2")).to_be_visible(
+        timeout=10000
+    )
+
+    # two-tap delete on the ACTIVE session: × arms, 'sure?' confirms
+    row = page.locator(".row", has_text="e2e-del2")
+    row.hover()
+    row.locator(".delete").click()
+    expect(row.locator(".delete")).to_have_text("sure?")
+    row.locator(".delete").click()
+
+    # the row disappears and the shell falls back to SOME surviving
+    # session (the rail is shared across this module's tests, so which
+    # one isn't ours to assume)
+    expect(page.locator(".row", has_text="e2e-del2")).to_have_count(0, timeout=10000)
+    expect(page.locator(".row.active")).to_be_visible(timeout=10000)
+
+    # the sibling session was untouched: its transcript replays intact
+    page.locator(".row", has_text="e2e-del1").locator(".item").click()
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "del1 alive", timeout=10000
+    )
+
+
 def test_background_turn_survives_session_switch(page, server):
     page.goto(f"{server}/?session=e2e-bg1")
     _send(page, "!text first session reply")
@@ -168,7 +200,7 @@ def test_background_turn_survives_session_switch(page, server):
     # switch away via the rail's new-session box, then back
     page.fill(".new input", "e2e-bg2")
     page.press(".new input", "Enter")
-    expect(page.locator(".item.active", has_text="e2e-bg2")).to_be_visible(
+    expect(page.locator(".row.active", has_text="e2e-bg2")).to_be_visible(
         timeout=10000
     )
     page.locator(".item", has_text="e2e-bg1").click()

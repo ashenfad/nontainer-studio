@@ -1,8 +1,8 @@
 // Thin HTTP client over the studio API.
 
-export async function api(path, body) {
+export async function api(path, body, method) {
     const res = await fetch(path, {
-        method: body === undefined ? 'GET' : 'POST',
+        method: method ?? (body === undefined ? 'GET' : 'POST'),
         headers: { 'content-type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
     })

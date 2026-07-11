@@ -680,6 +680,62 @@ def test_app_probe_flips_when_app_lands(studio):
     assert client.get("/api/sessions/s1/app").json() == {"exists": True}
 
 
+# -- delete -----------------------------------------------------------------------
+
+
+def test_delete_removes_the_whole_universe(studio, tmp_path):
+    """Delete takes the workspace branch, app db, transcript, chat
+    record, AND published snapshots (views of the same universe)."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    session.ws.write_file("keep.txt", "data")
+    _seed_app(session.ws)
+    pub = client.post("/api/sessions/s1/publish").json()
+    client.post("/api/sessions/s1/upload?name=u.txt", content=b"x")
+    assert (tmp_path / "dbs" / "s1.sqlite").exists()
+    assert (tmp_path / "events" / "s1.jsonl").exists()
+
+    assert client.delete("/api/sessions/s1").json() == {"ok": True}
+
+    assert client.get("/api/sessions").json()["sessions"] == []
+    assert client.get("/api/sessions/s1/events?wait=0").status_code == 404
+    assert client.get(pub["url"]).status_code == 404
+    assert not (tmp_path / "dbs" / "s1.sqlite").exists()
+    assert not (tmp_path / "events" / "s1.jsonl").exists()
+
+    # recreating the name is a FRESH universe — the branch really died
+    # (an orphaned branch would resurrect the old files here)
+    client.post("/api/sessions", json={"name": "s1"})
+    reborn = registry.get("s1")
+    assert not reborn.ws.fs.exists("keep.txt")
+    assert not reborn.ws.fs.exists("/app/index.html")
+
+
+def test_delete_busy_409s_and_unknown_404s(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    session.turn_lock.acquire()
+    try:
+        assert client.delete("/api/sessions/s1").status_code == 409
+    finally:
+        session.turn_lock.release()
+    assert client.delete("/api/sessions/nope").status_code == 404
+
+
+def test_delete_leaves_other_sessions_alone(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions", json={"name": "s2"})
+    registry.get("s2").ws.write_file("mine.txt", "s2 data")
+    client.delete("/api/sessions/s1")
+    assert client.get("/api/sessions").json()["sessions"] == [
+        {"name": "s2", "busy": False, "model": None}
+    ]
+    assert registry.get("s2").ws.fs.read("mine.txt") == b"s2 data"
+
+
 # -- models: registry, per-session switching --------------------------------------
 
 

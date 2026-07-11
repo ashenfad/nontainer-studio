@@ -353,6 +353,90 @@ class Registry:
             self._record(new_name, parent.model)
             return session
 
+    # -- delete: remove a session's whole universe ---------------------------
+
+    def delete(self, session: Session) -> None:
+        """Delete a session and everything it owns: the workspace
+        branch, the app db, the transcript, the agent's chat record —
+        and any published snapshots (they're views of this universe;
+        their branches and tokens go too). Caller ensures not busy."""
+        name = session.name
+        doomed = {name}
+        with self._lock:
+            self._sessions.pop(name, None)
+            manifest = self._manifest()
+            for token, entry in list(manifest["published"].items()):
+                if entry.get("session") == name:
+                    snapshot = self._published.pop(token, None)
+                    if snapshot is not None:
+                        snapshot.close()
+                    doomed.add(entry["branch"])
+                    del manifest["published"][token]
+            manifest["sessions"] = [s for s in manifest["sessions"] if s != name]
+            manifest["models"].pop(name, None)
+            self._save_manifest(manifest)
+        self._wipe_chat(session)
+        session.ws.close()  # before branch deletion: it holds the branch
+        session.db.close()
+        self._delete_branches(doomed)
+        (self._store / "dbs" / f"{name}.sqlite").unlink(missing_ok=True)
+        (self._store / "events" / f"{name}.jsonl").unlink(missing_ok=True)
+
+    @staticmethod
+    def _wipe_chat(session: Session) -> None:
+        """Drop the agno session record (best-effort: fakes and
+        JsonDb quirks must never block a delete)."""
+        db = getattr(session.agent, "db", None)
+        if db is None:
+            return
+        try:
+            db.delete_session(session_id=session.name)
+        except Exception:
+            pass
+
+    def _delete_branches(self, names: set[str]) -> None:
+        """Remove kvgit branches. kvgit can't delete the current
+        branch, so deletions run from a hidden ``__void__`` anchor
+        branch (created on first delete; never listed — the rail is
+        manifest-driven). Orphaning instead would be worse: recreating
+        a deleted name would resume the old branch, resurrecting
+        'deleted' files."""
+        path = self._store / "kvgit"
+        if not path.is_dir():
+            return  # non-kvgit or never-materialized store
+        import kvgit
+
+        def close(staged: Any) -> None:
+            store = getattr(staged.versioned, "store", None)
+            if callable(getattr(store, "close", None)):
+                store.close()
+
+        anchor = next(iter(names))
+        probe = kvgit.store(kind="disk", path=str(path), branch=anchor)
+        try:
+            if "__void__" not in probe.list_branches():
+                probe.create_branch("__void__")
+        finally:
+            close(probe)
+        admin = kvgit.store(kind="disk", path=str(path), branch="__void__")
+        try:
+            branches = set(admin.list_branches())
+            for branch in names & branches:
+                admin.delete_branch(branch)
+                # kvgit bug (as of 0.3.x): delete_branch leaves the
+                # prev-HEAD recovery backup, and a same-name branch
+                # opened later "recovers" the deleted state — files
+                # rising from the grave. Remove the backup too.
+                # TODO: fix upstream in kvgit, then drop this.
+                try:
+                    admin.versioned.store.remove(
+                        f"__branch_head_prev__{branch}"
+                    )
+                except Exception:
+                    pass
+        finally:
+            close(admin)
+
     # -- model switching ----------------------------------------------------
 
     def set_model(self, session: Session, spec: str) -> None:

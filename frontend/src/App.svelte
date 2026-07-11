@@ -2,10 +2,13 @@
     // The shell: a projection of the foreground session's runtime.
     // Runtimes live in a module map and keep streaming while
     // backgrounded — switching sessions is just switching projections.
+    import { api } from './lib/api.js'
     import {
+        dropRuntime,
         ensureSession,
         getRuntime,
         loadCatalog,
+        rail,
         refreshSessions,
         setForegroundName,
     } from './lib/runtime.svelte.js'
@@ -49,10 +52,28 @@
         history.replaceState(null, '', `?session=${encodeURIComponent(name)}`)
         active = name
     }
+
+    async function deleteSession(name) {
+        try {
+            await api(`/api/sessions/${name}`, undefined, 'DELETE')
+        } catch (e) {
+            getRuntime(active).messages.push({ role: 'error', text: e.message })
+            return
+        }
+        dropRuntime(name)
+        await refreshSessions()
+        if (name === active)
+            switchTo(rail.sessions.find((s) => s.name !== name)?.name ?? 'scratch')
+    }
 </script>
 
 <div class="shell">
-    <SessionRail {active} onSwitch={switchTo} onCreate={switchTo} />
+    <SessionRail
+        {active}
+        onSwitch={switchTo}
+        onCreate={switchTo}
+        onDelete={deleteSession}
+    />
     {#if ready}
         <SplitPane>
             {#snippet left()}

@@ -267,6 +267,15 @@ def build_app(registry: Registry) -> Starlette:
         return Response(data, media_type=media or "application/octet-stream")
 
     @with_session
+    async def delete_session(request: Any, session: Any) -> JSONResponse:
+        if session.busy:
+            return JSONResponse(
+                {"error": "can't delete while a turn is running"}, status_code=409
+            )
+        await anyio.to_thread.run_sync(registry.delete, session)
+        return JSONResponse({"ok": True})
+
+    @with_session
     async def app_exists(request: Any, session: Any) -> JSONResponse:
         """The preview pane's probe. A JSON 200 either way — probing
         /preview/ itself means a console-logged 404 on every empty
@@ -397,6 +406,7 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions", list_sessions, methods=["GET"]),
             Route("/api/sessions", open_session, methods=["POST"]),
             Route("/api/sessions/{name}/model", set_model, methods=["POST"]),
+            Route("/api/sessions/{name}", delete_session, methods=["DELETE"]),
             Route("/api/sessions/{name}/chat", chat, methods=["POST"]),
             Route("/api/sessions/{name}/events", events, methods=["GET"]),
             Route("/api/sessions/{name}/upload", upload, methods=["POST"]),
