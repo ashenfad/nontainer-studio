@@ -110,7 +110,7 @@ def test_turn_streams_into_transcript(page, server):
     expect(page.locator(".timeline")).to_contain_text("wrote /notes.md")
 
     # the files tab lists the real workspace write
-    page.get_by_role("button", name="files").click()
+    page.get_by_role("button", name="files", exact=True).click()
     expect(page.locator(".file", has_text="/notes.md")).to_be_visible(timeout=5000)
     page.locator(".file", has_text="/notes.md").click()
     expect(page.locator(".view pre")).to_contain_text("hello")
@@ -138,7 +138,7 @@ def test_undo_rewinds_files_and_shows_notice(page, server):
     )
 
     # files tab: a.txt survives, b.txt is gone
-    page.get_by_role("button", name="files").click()
+    page.get_by_role("button", name="files", exact=True).click()
     expect(page.locator(".file", has_text="/a.txt")).to_be_visible(timeout=5000)
     expect(page.locator(".file", has_text="/b.txt")).to_have_count(0)
 
