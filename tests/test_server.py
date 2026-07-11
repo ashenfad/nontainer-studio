@@ -746,6 +746,28 @@ def test_edit_validations(studio):
     assert not session.busy
 
 
+def test_unmatched_api_gets_cors_teaching_404(studio):
+    """An app in the preview iframe using absolute urls escapes its
+    /preview/{name}/ prefix and lands on the studio origin — without
+    CORS headers the sandboxed (opaque-origin) iframe sees only an
+    unexplained CORS block. The fallback answers readably."""
+    client, _ = studio
+    r = client.get("/api/explorer")
+    assert r.status_code == 404
+    assert r.headers["access-control-allow-origin"] == "*"
+    assert "RELATIVE urls" in r.text and "/preview/" in r.text
+
+    # preflight for a JSON POST from the iframe
+    r = client.options(
+        "/api/explorer", headers={"access-control-request-headers": "content-type"}
+    )
+    assert r.status_code == 204
+    assert r.headers["access-control-allow-origin"] == "*"
+
+    # real API routes are untouched (registered before the fallback)
+    assert client.get("/api/sessions").status_code == 200
+
+
 # -- stop: graceful mid-turn cancel ------------------------------------------------
 
 
