@@ -336,6 +336,23 @@ def build_app(registry: Registry) -> Starlette:
 
     @with_session
     async def preview(request: Any, session: Any) -> Any:
+        if request.method == "OPTIONS":
+            # CORS preflight: the sandboxed iframe is an opaque origin,
+            # and any non-simple request from app code (a JSON POST is
+            # the canonical case) preflights first. Answer it, or the
+            # browser blocks the real request no matter what headers
+            # the response would have carried.
+            return Response(
+                status_code=204,
+                headers={
+                    "access-control-allow-origin": "*",
+                    "access-control-allow-methods": ", ".join(verbs),
+                    "access-control-allow-headers": request.headers.get(
+                        "access-control-request-headers", "*"
+                    ),
+                    "access-control-max-age": "600",
+                },
+            )
         path = "/" + request.path_params.get("path", "")
         url = path + (f"?{request.url.query}" if request.url.query else "")
         body = await request.body()
@@ -399,6 +416,7 @@ def build_app(registry: Registry) -> Starlette:
             registry.close()
 
     verbs = ["GET", "POST", "PUT", "DELETE", "PATCH"]
+    preview_verbs = verbs + ["OPTIONS"]
     return Starlette(
         routes=[
             Route("/", index),
@@ -417,8 +435,8 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions/{name}/restore", restore, methods=["POST"]),
             Route("/api/sessions/{name}/fork", fork, methods=["POST"]),
             Route("/api/sessions/{name}/publish", publish, methods=["POST"]),
-            Route("/preview/{name}", preview, methods=verbs),
-            Route("/preview/{name}/{path:path}", preview, methods=verbs),
+            Route("/preview/{name}", preview, methods=preview_verbs),
+            Route("/preview/{name}/{path:path}", preview, methods=preview_verbs),
             # frozen snapshots: read-only, concurrent, token-addressed.
             # NONTAINER_STUDIO_CSP overrides the default policy
             # ("none" disables it entirely).

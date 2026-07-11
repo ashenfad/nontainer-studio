@@ -414,6 +414,32 @@ def test_event_cap_never_swallows_done(studio):
     assert not any(e.get("delta") == "dropped" for e in session.events)
 
 
+def test_preview_answers_cors_preflight(studio):
+    """A JSON POST from app code is a non-simple request: the opaque-
+    origin iframe preflights with OPTIONS first. No preflight answer =
+    the browser blocks the real request regardless of its headers."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+    r = client.options(
+        "/preview/s1/api/count",
+        headers={
+            "origin": "null",
+            "access-control-request-method": "POST",
+            "access-control-request-headers": "content-type",
+        },
+    )
+    assert r.status_code == 204
+    assert r.headers["access-control-allow-origin"] == "*"
+    assert "POST" in r.headers["access-control-allow-methods"]
+    assert r.headers["access-control-allow-headers"] == "content-type"
+    # and the preflighted request itself still dispatches
+    r = client.post(
+        "/preview/s1/api/count", headers={"content-type": "application/json"}
+    )
+    assert r.status_code == 200
+
+
 def test_preview_sends_cors_for_sandboxed_iframe(studio):
     """The preview iframe is an opaque origin (sandbox without
     allow-same-origin), so the app's own fetches need CORS — and the
