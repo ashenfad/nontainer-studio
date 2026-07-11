@@ -37,6 +37,13 @@ export function peekRuntime(name) {
     return runtimes.get(name)
 }
 
+/** forget a deleted session's runtime (stops any follower) */
+export function dropRuntime(name) {
+    const rt = runtimes.get(name)
+    if (rt) rt.setForeground(false)
+    runtimes.delete(name)
+}
+
 // -- the session rail's list (server view + live overlay) -------------------
 
 export const rail = $state({ sessions: [], unseen: [] })

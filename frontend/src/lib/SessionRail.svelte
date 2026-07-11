@@ -4,9 +4,23 @@
     // you were elsewhere (cleared on focus).
     import { rail, peekRuntime } from './runtime.svelte.js'
 
-    let { active, onSwitch, onCreate } = $props()
+    let { active, onSwitch, onCreate, onDelete } = $props()
 
     let name = $state('')
+    let armed = $state(null) // session name whose delete is one tap away
+
+    function del(s, e) {
+        e.stopPropagation()
+        if (armed !== s.name) {
+            armed = s.name // first tap arms; second confirms
+            setTimeout(() => {
+                if (armed === s.name) armed = null
+            }, 3000)
+            return
+        }
+        armed = null
+        onDelete(s.name)
+    }
 
     function status(s) {
         // server busy is the truth for background sessions (they hold
@@ -31,14 +45,29 @@
     <div class="rail-title">sessions</div>
     <div class="items">
         {#each rail.sessions as s (s.name)}
-            <button
-                class="item"
-                class:active={s.name === active}
-                onclick={() => onSwitch(s.name)}
-            >
-                <span class="dot {status(s)}"></span>
-                <span class="name">{s.name}</span>
-            </button>
+            <div class="row" class:active={s.name === active}>
+                <button
+                    class="item"
+                    onclick={() => {
+                        armed = null
+                        onSwitch(s.name)
+                    }}
+                >
+                    <span class="dot {status(s)}"></span>
+                    <span class="name">{s.name}</span>
+                </button>
+                <button
+                    class="delete"
+                    class:armed={armed === s.name}
+                    title={armed === s.name
+                        ? 'click again to delete everything this session owns'
+                        : `delete ${s.name}`}
+                    aria-label="delete {s.name}"
+                    onclick={(e) => del(s, e)}
+                >
+                    {armed === s.name ? 'sure?' : '×'}
+                </button>
+            </div>
         {/each}
     </div>
     <form
@@ -88,26 +117,60 @@
         flex-direction: column;
         padding: 0 0.5rem;
     }
+    .row {
+        display: flex;
+        align-items: center;
+        border-radius: 6px;
+    }
+    .row:hover,
+    .row.active {
+        background: var(--surface-hover);
+    }
+    .row.active .item {
+        color: var(--text);
+        font-weight: 600;
+    }
     .item {
         display: flex;
         align-items: center;
         gap: 0.5rem;
+        flex: 1;
+        min-width: 0;
         background: none;
         border: none;
         color: var(--text-muted);
         font-size: 0.82rem;
         padding: 0.4rem 0.5rem;
-        border-radius: 6px;
         cursor: pointer;
         text-align: left;
     }
-    .item:hover {
-        background: var(--surface-hover);
+    .row:hover .item {
         color: var(--text);
     }
-    .item.active {
-        background: var(--surface-hover);
-        color: var(--text);
+    .delete {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        font-size: 0.85rem;
+        line-height: 1;
+        padding: 0.25rem 0.45rem;
+        margin-right: 0.15rem;
+        border-radius: 5px;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 0.15s;
+        flex-shrink: 0;
+    }
+    .row:hover .delete,
+    .delete.armed {
+        opacity: 1;
+    }
+    .delete:hover {
+        color: var(--error);
+    }
+    .delete.armed {
+        color: var(--error);
+        font-size: 0.68rem;
         font-weight: 600;
     }
     .name {
