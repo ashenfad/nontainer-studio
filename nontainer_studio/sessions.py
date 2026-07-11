@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets
 import sqlite3
 import threading
@@ -263,7 +264,17 @@ class Registry:
                 modules.append(getattr(presets, preset)())
             except ImportError:
                 pass
-        return PythonConfig(modules=modules, host_objects={"db": db})
+        # Crash containment: agent code runs in a forked worker (the
+        # workspace fs, cache, and db stay host-side, RPC-bridged) — a
+        # segfault or OOM in C-extension guts costs the turn, not the
+        # server. NONTAINER_STUDIO_ISOLATION=none opts out; =kernel
+        # adds syscall/network lockdown on top.
+        isolation = os.getenv("NONTAINER_STUDIO_ISOLATION", "process")
+        if isolation not in ("none", "process", "kernel"):
+            isolation = "process"
+        return PythonConfig(
+            modules=modules, host_objects={"db": db}, isolation=isolation
+        )
 
     def _assemble(
         self, name: str, ws: Workspace, db: Db, model: str | None = None
