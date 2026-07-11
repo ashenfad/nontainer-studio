@@ -72,8 +72,13 @@ def test_gemma_routes_around_broken_tool_call_parsers():
 
 
 def test_gpt56_rides_the_responses_endpoint():
+    """chat-completions rejects tools + reasoning for gpt-5.6 — both
+    the openrouter AND direct-openai paths take the Responses API."""
     model = _shape("openrouter:openai/gpt-5.6-luna")
     assert type(model).__name__ == "OpenRouterResponses"
+    model = _shape("openai:gpt-5.6-luna")
+    assert type(model).__name__ == "OpenAIResponses"
+    assert _shape("openai:gpt-5.4-mini").__class__.__name__ == "OpenAIChat"
 
 
 def test_supports_vision_consults_openrouter_modalities(monkeypatch):
