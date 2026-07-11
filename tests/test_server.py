@@ -92,6 +92,9 @@ def test_turn_runs_in_background_and_transcript_replays(studio):
     kinds = [e["type"] for e in events]
     assert kinds == ["user", "tool_start", "tool_end", "text", "text", "done"]
     assert events[0]["text"] == "build me a thing"
+    # args ride STRUCTURED (the client renders tool calls per-type)
+    started = next(e for e in events if e["type"] == "tool_start")
+    assert started["args"] == {"command": "ls"}
     assert "".join(e["delta"] for e in events if e["type"] == "text") == "hello world"
 
     # a SECOND subscriber replays the identical transcript from 0 —
@@ -868,6 +871,7 @@ def test_dummy_model_drives_real_agent(tmp_path):
         assert "tool_start" in kinds and "tool_end" in kinds
         started = next(e for e in events if e["type"] == "tool_start")
         assert started["name"] == "file_write"
+        assert started["args"]["path"] == "/notes.md"  # structured through agno
         reply = "".join(e["delta"] for e in events if e["type"] == "text")
         assert reply == "Wrote your note."
         # the tool REALLY ran: the workspace has the file, checkpointed

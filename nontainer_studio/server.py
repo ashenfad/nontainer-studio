@@ -44,6 +44,25 @@ def _short(value: Any, limit: int = 2_000) -> str:
     return text if len(text) <= limit else text[:limit] + " …[truncated]"
 
 
+def _tool_args(tool: Any) -> Any:
+    """Structured args when possible (the client renders tool calls
+    per-type: highlighted code, file diffs, terminal commands), a
+    capped string otherwise. Values are capped generously — file
+    contents ARE the rendering."""
+    args = getattr(tool, "tool_args", None)
+    if isinstance(args, dict):
+        shaped = {
+            k: _short(v, 16_000) if isinstance(v, str) else v
+            for k, v in args.items()
+        }
+        try:
+            json.dumps(shaped)
+            return shaped
+        except (TypeError, ValueError):
+            pass
+    return _short(args if args is not None else "")
+
+
 def _client_event(ev: Any) -> dict | None:
     kind = getattr(ev, "event", "")
     if kind == "RunContent":
@@ -56,7 +75,7 @@ def _client_event(ev: Any) -> dict | None:
         return {
             "type": "tool_start",
             "name": getattr(tool, "tool_name", "?"),
-            "args": _short(getattr(tool, "tool_args", "")),
+            "args": _tool_args(tool),
         }
     if kind == "ToolCallCompleted":
         tool = getattr(ev, "tool", None)
