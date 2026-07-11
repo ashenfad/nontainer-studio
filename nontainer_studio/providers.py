@@ -171,6 +171,34 @@ def _sanitize_tool_calls(messages: list) -> list:
     return out
 
 
+def _merge_reasoning_details(details: list) -> list:
+    """OpenRouter streams ``reasoning_details`` as index-keyed FRAGMENTS
+    (docs: preserving reasoning); agno accumulates them by naive list-
+    extend, and replaying fragments breaks models with signed thinking
+    blocks (Anthropic: "Invalid `signature` in `thinking` block").
+    Merge fragments back into whole blocks: concatenate the text-ish
+    fields per index, last non-empty wins for the rest."""
+    merged: dict[Any, dict] = {}
+    order: list[Any] = []
+    for frag in details:
+        if not isinstance(frag, dict):
+            continue
+        key = frag.get("index")
+        if key is None or key not in merged:
+            key = key if key is not None else f"pos-{len(order)}"
+            merged[key] = dict(frag)
+            order.append(key)
+            continue
+        block = merged[key]
+        for field in ("text", "summary", "data"):
+            if isinstance(frag.get(field), str):
+                block[field] = (block.get(field) or "") + frag[field]
+        for field in ("signature", "id", "format", "type"):
+            if frag.get(field):
+                block[field] = frag[field]
+    return [merged[k] for k in order]
+
+
 _safe_openrouter_cls: Any = None
 
 
@@ -187,6 +215,15 @@ def _safe_openrouter() -> Any:
                     _sanitize_tool_calls(messages), *args, **kwargs
                 )
 
+            def _format_message(self, message, *args, **kwargs):  # type: ignore[override]
+                formatted = super()._format_message(message, *args, **kwargs)
+                details = formatted.get("reasoning_details")
+                if isinstance(details, list) and len(details) > 1:
+                    formatted["reasoning_details"] = _merge_reasoning_details(
+                        details
+                    )
+                return formatted
+
         _safe_openrouter_cls = SafeOpenRouter
     return _safe_openrouter_cls
 
@@ -201,7 +238,13 @@ def build_model(spec: str | None = None) -> Any:
     if provider == "anthropic":
         from agno.models.anthropic import Claude
 
-        return Claude(id=model)
+        # native extended thinking, streamed into the transcript's
+        # thinking blocks (budget must stay under max_tokens)
+        return Claude(
+            id=model,
+            thinking={"type": "enabled", "budget_tokens": 4096},
+            max_tokens=16384,
+        )
     if provider == "openai":
         from agno.models.openai import OpenAIChat
 
@@ -213,8 +256,17 @@ def build_model(spec: str | None = None) -> Any:
         if model.startswith("openai/gpt-5.6"):
             from agno.models.openrouter import OpenRouterResponses
 
-            return OpenRouterResponses(id=model, max_output_tokens=16384)
+            # reasoning summaries are all OpenAI exposes of its CoT
+            return OpenRouterResponses(
+                id=model, max_output_tokens=16384, reasoning_summary="auto"
+            )
         extra_body = None
+        if model.startswith("anthropic/"):
+            # Claude via OpenRouter doesn't reason unless asked. The
+            # signed thinking blocks survive tool round-trips only
+            # because SafeOpenRouter re-merges the streamed
+            # reasoning_details fragments (see _merge_reasoning_details).
+            extra_body = {"reasoning": {"max_tokens": 4096}}
         if model.startswith("google/gemma"):
             # gemma-4's native tool-call format (token-level, not JSON)
             # needs a provider-side parser, and quality varies wildly
@@ -234,7 +286,8 @@ def build_model(spec: str | None = None) -> Any:
     if provider == "google":
         from agno.models.google import Gemini
 
-        return Gemini(id=model)
+        # thought summaries stream into the transcript's thinking blocks
+        return Gemini(id=model, include_thoughts=True)
     if provider == "ollama":
         from agno.models.ollama import Ollama
 

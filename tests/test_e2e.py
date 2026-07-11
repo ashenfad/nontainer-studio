@@ -119,6 +119,27 @@ def test_turn_streams_into_transcript(page, server):
     expect(page.locator(".modal")).to_have_count(0)
 
 
+def test_thinking_streams_and_folds_to_a_chip(page, server):
+    page.goto(f"{server}/?session=e2e-think")
+    _send(
+        page,
+        "!think Considering the request carefully.\n"
+        '!tool file_write {"path": "/t.txt", "content": "x"}\n'
+        "!text Done pondering.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Done pondering.", timeout=15000
+    )
+    # folded once the reply landed; expands on click with the reasoning
+    toggle = page.locator(".think-toggle").first
+    expect(toggle).to_be_visible()
+    expect(page.locator(".think-text")).to_have_count(0)
+    toggle.click()
+    expect(page.locator(".think-text")).to_contain_text(
+        "Considering the request carefully."
+    )
+
+
 def test_edit_rewinds_files_and_truncates_transcript(page, server):
     page.goto(f"{server}/?session=e2e-edit")
     _send(page, '!tool file_write {"path": "/a.txt", "content": "A"}\n!text one done')

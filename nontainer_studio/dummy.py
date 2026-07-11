@@ -10,6 +10,7 @@ E2E tests exercise the true stack.
 The script rides IN the user message — no side channel between the
 test process and the server. Directive lines:
 
+    !think Hmm, let me consider this.
     !tool file_write {"path": "/notes.md", "content": "hi"}
     !tool run_python {"code": "print(1)"}
     !text Here is your reply.
@@ -52,6 +53,7 @@ class DummyModel(Model):
 
         tool_calls: list[dict] = []
         reply: list[str] = []
+        thinking: list[str] = []
         for line in text.splitlines():
             if line.startswith("!tool "):
                 name, _, args = line[len("!tool ") :].partition(" ")
@@ -65,8 +67,13 @@ class DummyModel(Model):
                 )
             elif line.startswith("!text "):
                 reply.append(line[len("!text ") :])
+            elif line.startswith("!think "):
+                thinking.append(line[len("!think ") :])
 
         response = ModelResponse(role="assistant")
+        if thinking and not tools_ran:
+            # thinking precedes the first action, like real reasoners
+            response.reasoning_content = "\n".join(thinking)
         if tool_calls and not tools_ran:
             response.tool_calls = tool_calls
         else:
@@ -95,8 +102,14 @@ class DummyModel(Model):
     @staticmethod
     def _stream_chunks(response: ModelResponse) -> Iterator[ModelResponse]:
         """Split a text reply into two deltas so streaming assembly is
-        actually exercised; tool calls ride one delta (as providers do)."""
+        actually exercised; tool calls ride one delta (as providers do);
+        thinking streams first, as its own delta (as reasoners do)."""
+        if response.reasoning_content:
+            yield ModelResponse(
+                role="assistant", reasoning_content=response.reasoning_content
+            )
         if response.tool_calls:
+            response.reasoning_content = None
             yield response
             return
         text = response.content or ""
