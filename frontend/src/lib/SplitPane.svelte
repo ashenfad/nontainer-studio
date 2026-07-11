@@ -57,6 +57,10 @@
         display: flex;
         flex: 1;
         min-height: 0;
+        /* a flex item's min-width defaults to its content width — one
+           long unwrapped pre line would inflate the whole split past
+           the viewport instead of scrolling inside its block */
+        min-width: 0;
         position: relative;
     }
     .pane {

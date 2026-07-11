@@ -119,6 +119,30 @@ def test_turn_streams_into_transcript(page, server):
     expect(page.locator(".modal")).to_have_count(0)
 
 
+def test_long_tool_lines_scroll_instead_of_widening_layout(page, server):
+    """A single long unwrapped line in a tool block must scroll inside
+    its pre — not inflate the chat pane and squeeze the preview away
+    (flex min-width:auto regression)."""
+    page.goto(f"{server}/?session=e2e-wide")
+    long_cmd = "echo " + " ".join(f"--flag-{i}=value" for i in range(80))
+    _send(page, f'!tool terminal {{"command": "{long_cmd}"}}\n!text ran it')
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "ran it", timeout=15000
+    )
+    page.locator(".chip", has_text="terminal").click()
+    expect(page.locator(".timeline")).to_be_visible()
+    metrics = page.evaluate(
+        """() => ({
+            doc: document.documentElement.scrollWidth,
+            win: window.innerWidth,
+            pre: document.querySelector('.timeline pre.block').scrollWidth,
+            preBox: document.querySelector('.timeline pre.block').clientWidth,
+        })"""
+    )
+    assert metrics["doc"] <= metrics["win"], f"layout widened: {metrics}"
+    assert metrics["pre"] > metrics["preBox"], f"pre should scroll: {metrics}"
+
+
 def test_thinking_streams_and_folds_to_a_chip(page, server):
     page.goto(f"{server}/?session=e2e-think")
     _send(
