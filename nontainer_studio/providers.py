@@ -51,6 +51,7 @@ _PROVIDERS: dict[str, tuple[str, str, str, list[str]]] = {
             "google/gemini-2.5-pro",
             "google/gemma-4-26b-a4b-it",
             "qwen/qwen3.6-35b-a3b",
+            "z-ai/glm-5.2",
         ],
     ),
     "google": (
