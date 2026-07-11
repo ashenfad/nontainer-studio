@@ -39,6 +39,24 @@ DEFAULT_STORE = Path.home() / ".nontainer-studio"
 
 MAX_EVENTS = 10_000  # per session; a demo bound, not a product knob
 
+STUDIO_PRIMER = (
+    "You work inside nontainer-studio; the human sees your workspace "
+    "live. Anything under /app serves in a PREVIEW PANE beside the "
+    "chat as you build it — they watch it take shape. After changing "
+    "the app, always verify with test_app before saying it works, and "
+    "assert on DATA-bearing elements (a chart rendered, a count "
+    "non-zero), not just static text — a page can look loaded while "
+    "every fetch failed. When endpoints misbehave, tail "
+    "/app/logs/api.log: handler errors, prints, and dispatch notes "
+    "land there. Files the human uploads arrive under /uploads/. In "
+    "run_python, set `ui = {...}` (figure/DataFrame/image values) to "
+    "render results inline in your reply. Every turn is a checkpoint "
+    "the human can rewind, edit, or fork — prefer small complete "
+    "steps over big-bang changes. They may also PUBLISH the app: a "
+    "frozen copy of the code serving live, behind a share URL, over "
+    "the same live `db`."
+)
+
 DB_PRIMER = (
     "`db` is a shared SQLite store for LIVE app state — it survives "
     "publish and is shared with published copies of your app; it does "
@@ -344,6 +362,11 @@ class Registry:
         return Agent(
             model=self._model_factory(model),
             tools=[toolkit],
+            # studio-owned context: nontainer's tool descriptions cover
+            # the MECHANICS (workspace, handlers, curl); this covers the
+            # product the human is looking at (preview, artifacts,
+            # checkpoints, publish)
+            instructions=STUDIO_PRIMER,
             # Durable chat, keyed by the session name: after a server
             # restart the agent still remembers the conversation (and
             # the jsonl event log restores the visible transcript).
