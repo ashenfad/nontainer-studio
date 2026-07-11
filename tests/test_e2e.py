@@ -109,11 +109,14 @@ def test_turn_streams_into_transcript(page, server):
     page.locator(".chip", has_text="file_write").click()
     expect(page.locator(".timeline")).to_contain_text("wrote /notes.md")
 
-    # the files tab lists the real workspace write
+    # the files tab lists the real workspace write; clicking opens the
+    # shared file modal with a RENDERED view (markdown, not raw text)
     page.get_by_role("button", name="files", exact=True).click()
     expect(page.locator(".file", has_text="/notes.md")).to_be_visible(timeout=5000)
     page.locator(".file", has_text="/notes.md").click()
-    expect(page.locator(".view pre")).to_contain_text("hello")
+    expect(page.locator(".modal .markdown")).to_contain_text("hello", timeout=5000)
+    page.keyboard.press("Escape")
+    expect(page.locator(".modal")).to_have_count(0)
 
 
 def test_undo_rewinds_files_and_shows_notice(page, server):
@@ -157,6 +160,26 @@ def test_preview_serves_the_agents_app(page, server):
     # preview tab renders the live app in the sandboxed iframe
     frame = page.frame_locator("iframe[title='app preview']")
     expect(frame.locator("#marker")).to_have_text("hi from the app", timeout=15000)
+
+
+def test_chat_markdown_link_opens_file_modal(page, server):
+    """The agent linking a workspace path in prose makes it clickable:
+    the shared FileModal opens with the per-type render."""
+    page.goto(f"{server}/?session=e2e-modal")
+    _send(
+        page,
+        '!tool file_write {"path": "/report.md", "content": "# Findings\\n\\nAll good."}\n'
+        "!text Wrote it up — see [the report](/report.md).",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Wrote it up", timeout=15000
+    )
+    page.locator(".agent-msg .bubble a", has_text="the report").click()
+    expect(page.locator(".modal .markdown h1")).to_have_text(
+        "Findings", timeout=5000
+    )
+    expect(page.locator(".modal .path")).to_have_text("/report.md")
+    page.keyboard.press("Escape")
 
 
 def test_tool_result_images_stay_in_the_timeline(page, server):
