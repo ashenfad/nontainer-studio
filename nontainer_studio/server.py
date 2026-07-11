@@ -203,6 +203,38 @@ def build_app(registry: Registry) -> Starlette:
         return JSONResponse({"ok": True, "since": len(session.events)})
 
     @with_session
+    async def edit(request: Any, session: Any) -> Any:
+        """Edit an earlier prompt: rewind files + agent memory to just
+        before that turn, drop it and everything after from the visible
+        transcript, and run the edited message as a fresh turn. The
+        event log stays append-only — a `truncate {to}` event marks the
+        cut and projections (client + _visible) apply it."""
+        body = await request.json()
+        message = (body.get("message") or "").strip()
+        seq = body.get("seq")
+        if not message:
+            return JSONResponse({"error": "empty message"}, status_code=400)
+        if (
+            not isinstance(seq, int)
+            or isinstance(seq, bool)
+            or not 0 <= seq < len(session.events)
+            or session.events[seq].get("type") != "user"
+        ):
+            return JSONResponse(
+                {"error": "seq must index a user event"}, status_code=400
+            )
+        if not session.turn_lock.acquire(blocking=False):
+            return JSONResponse({"error": "a turn is already running"}, status_code=409)
+        try:
+            await anyio.to_thread.run_sync(registry.rewind_to_event, session, seq)
+        except Exception as e:
+            session.turn_lock.release()
+            return JSONResponse({"error": str(e)}, status_code=400)
+        await session.emit({"type": "truncate", "to": seq})
+        session.turn_task = asyncio.create_task(_run_turn(session, message))
+        return JSONResponse({"ok": True, "since": len(session.events)})
+
+    @with_session
     async def events(request: Any, session: Any) -> Any:
         """Transcript feed. Default: SSE — replay from ?since=N, then
         follow live (each event rides with its cursor so clients
@@ -459,6 +491,7 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions/{name}/model", set_model, methods=["POST"]),
             Route("/api/sessions/{name}", delete_session, methods=["DELETE"]),
             Route("/api/sessions/{name}/chat", chat, methods=["POST"]),
+            Route("/api/sessions/{name}/edit", edit, methods=["POST"]),
             Route("/api/sessions/{name}/events", events, methods=["GET"]),
             Route("/api/sessions/{name}/upload", upload, methods=["POST"]),
             Route("/api/sessions/{name}/files", files, methods=["GET"]),

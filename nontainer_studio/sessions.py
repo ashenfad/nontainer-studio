@@ -12,9 +12,10 @@ Ownership model, on display:
 - CONVERSATION + event log: durable but session-scoped — agno persists
   chat (SqliteDb when sqlalchemy is installed, JsonDb otherwise) keyed
   by session_id, and the transcript event log appends to a jsonl per
-  session. Restore is SYNCHRONIZED: the agent's memory (agno runs)
-  rewinds with the workspace via the head+run_id stamps on each
-  turn's done event, while the visible transcript keeps its record.
+  session. Rewinds are SYNCHRONIZED: the agent's memory (agno runs)
+  rewinds with the workspace. An EDIT (rewind_to_event) trims the
+  visible transcript too — via an appended `truncate` event, never by
+  mutating the log — while a history-tab restore keeps the record.
   Fork = fresh chat over branched files (conversation never forks).
 """
 
@@ -484,7 +485,7 @@ class Registry:
         target = position[checkpoint]
 
         last_kept_run_id = None
-        for event in session.events:
+        for _, event in self._visible(session.events):
             if event.get("type") != "done":
                 continue
             head = event.get("head")
@@ -494,6 +495,46 @@ class Registry:
 
         session.ws.restore(checkpoint)
         self._truncate_chat(session, last_kept_run_id)
+
+    # -- edit: rewind + retry as one verb -----------------------------------
+
+    def rewind_to_event(self, session: Session, seq: int) -> None:
+        """The rewind half of an EDIT: restore the workspace to the
+        user event's pre-turn head and truncate agent memory to the
+        turns before it in the transcript. Position in the event log
+        (not commit order) decides what survives — commit order can't
+        tell a no-file-change turn from its predecessor (same head),
+        the transcript can. The caller emits the `truncate` event and
+        starts the new turn."""
+        event = session.events[seq]
+        head = event.get("head")
+        if event.get("type") != "user" or not head:
+            raise ValueError(f"event {seq} is not an editable user message")
+        last_kept_run_id = None
+        for _, ev in self._visible(session.events[:seq]):
+            if ev.get("type") == "done":
+                last_kept_run_id = ev.get("run_id") or last_kept_run_id
+        session.ws.restore(head)
+        self._truncate_chat(session, last_kept_run_id)
+
+    @staticmethod
+    def _visible(events: list[dict]) -> list[tuple[int, dict]]:
+        """The transcript PROJECTION: (seq, event) pairs with truncate
+        events applied. An edit appends {type: 'truncate', to: seq}
+        instead of mutating the log — it's append-only by design (SSE
+        cursors, jsonl durability) — so anything reasoning about 'what
+        the transcript now says' must look through this, not the raw
+        list: a done event after a cut refers to a run that no longer
+        exists in agent memory."""
+        visible: list[tuple[int, dict]] = []
+        for i, event in enumerate(events):
+            if event.get("type") == "truncate":
+                to = event.get("to", 0)
+                while visible and visible[-1][0] >= to:
+                    visible.pop()
+            else:
+                visible.append((i, event))
+        return visible
 
     @staticmethod
     def _truncate_chat(session: Session, last_kept_run_id: str | None) -> None:

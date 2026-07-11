@@ -596,6 +596,126 @@ def test_restore_unknown_mapping_leaves_memory_alone(studio):
     assert [r.run_id for r in chat_db.record.runs] == ["mystery"]
 
 
+# -- edit: rewind + retry as one verb ---------------------------------------------
+
+
+def _user_seqs(session) -> list[int]:
+    return [i for i, e in enumerate(session.events) if e["type"] == "user"]
+
+
+def test_edit_rewinds_truncates_and_reruns(studio):
+    """Editing an earlier prompt rewinds files + agent memory to just
+    before that turn, marks the transcript cut with a `truncate` event
+    (the log stays append-only), and runs the edited message fresh."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    chat_db = FakeChatDb()
+    session.agent.db = chat_db
+
+    _turn(client, "s1", "one")
+    session.ws.write_file("a.txt", "A")
+    _turn(client, "s1", "two")
+    session.ws.write_file("b.txt", "B")
+    chat_db.record = SimpleNamespace(
+        runs=[SimpleNamespace(run_id="run-1"), SimpleNamespace(run_id="run-2")]
+    )
+
+    seq = _user_seqs(session)[1]
+    r = client.post(
+        "/api/sessions/s1/edit", json={"seq": seq, "message": "two, but better"}
+    )
+    assert r.status_code == 200
+    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
+
+    # files rewound to the edited turn's pre-turn head
+    assert session.ws.fs.exists("a.txt") and not session.ws.fs.exists("b.txt")
+    # agent memory: turn two forgotten — even though it changed no
+    # files (commit order can't see that; the transcript can)
+    assert [run.run_id for run in chat_db.record.runs] == ["run-1"]
+    # the log: ... truncate{to:seq}, then the fresh turn
+    kinds = [e["type"] for e in session.events]
+    cut = kinds.index("truncate")
+    assert session.events[cut]["to"] == seq
+    assert kinds[cut + 1] == "user"
+    assert session.events[cut + 1]["text"] == "two, but better"
+    assert session.agent.seen[-1] == "two, but better"
+
+
+def test_edit_first_message_clears_memory(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    chat_db = FakeChatDb()
+    session.agent.db = chat_db
+    _turn(client, "s1", "one")
+    chat_db.record = SimpleNamespace(runs=[SimpleNamespace(run_id="run-1")])
+
+    seq = _user_seqs(session)[0]
+    r = client.post("/api/sessions/s1/edit", json={"seq": seq, "message": "redo"})
+    assert r.status_code == 200
+    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
+    assert chat_db.record.runs == []  # nothing precedes the first turn
+
+
+def test_edit_after_edit_respects_the_projection(studio):
+    """A second edit must reason about the transcript AS PROJECTED:
+    done events behind an earlier cut refer to runs that no longer
+    exist in agent memory, and matching one would corrupt the rewind."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    chat_db = FakeChatDb()
+    session.agent.db = chat_db
+
+    _turn(client, "s1", "one")  # run-1
+    _turn(client, "s1", "two")  # run-2
+    chat_db.record = SimpleNamespace(
+        runs=[SimpleNamespace(run_id="run-1"), SimpleNamespace(run_id="run-2")]
+    )
+    first_cut = _user_seqs(session)[1]
+    r = client.post(
+        "/api/sessions/s1/edit", json={"seq": first_cut, "message": "two v2"}
+    )
+    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
+    # agno would have appended the fresh turn's run (run-3)
+    chat_db.record.runs.append(SimpleNamespace(run_id="run-3"))
+
+    # edit the REPLACEMENT prompt: the kept prefix is just turn one —
+    # a raw (unprojected) scan would land on stale run-2 instead
+    second_cut = _user_seqs(session)[-1]
+    assert second_cut > first_cut
+    r = client.post(
+        "/api/sessions/s1/edit", json={"seq": second_cut, "message": "two v3"}
+    )
+    assert r.status_code == 200
+    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
+    assert [run.run_id for run in chat_db.record.runs] == ["run-1"]
+
+
+def test_edit_validations(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _turn(client, "s1", "one")
+    seq = _user_seqs(session)[0]
+
+    post = lambda body: client.post("/api/sessions/s1/edit", json=body)  # noqa: E731
+    assert post({"seq": seq, "message": "  "}).status_code == 400
+    assert post({"seq": "0", "message": "x"}).status_code == 400
+    assert post({"seq": True, "message": "x"}).status_code == 400
+    assert post({"seq": len(session.events) + 5, "message": "x"}).status_code == 400
+    assert post({"seq": seq + 1, "message": "x"}).status_code == 400  # not a user event
+
+    session.turn_lock.acquire()  # simulate a running turn
+    try:
+        assert post({"seq": seq, "message": "x"}).status_code == 409
+    finally:
+        session.turn_lock.release()
+    # failed edits never leak the lock
+    assert not session.busy
+
+
 # -- aborted-run repair -----------------------------------------------------------
 
 
