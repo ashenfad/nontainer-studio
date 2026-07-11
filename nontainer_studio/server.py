@@ -546,12 +546,14 @@ def build_app(registry: Registry) -> Starlette:
                     ),
                 },
             )
-        return Response(
-            "nontainer: absolute path -- this app is served under a "
-            "prefix (/preview/<session>/) and must use RELATIVE urls "
-            "(fetch('api/x'), not fetch('/api/x'))",
+        # JSON so the app's own res.json() error path can read it
+        return JSONResponse(
+            {
+                "error": "nontainer: absolute path -- this app is served "
+                "under a prefix (/preview/<session>/) and must use "
+                "RELATIVE urls (fetch('api/x'), not fetch('/api/x'))"
+            },
             status_code=404,
-            media_type="text/plain",
             headers=cors,
         )
 
