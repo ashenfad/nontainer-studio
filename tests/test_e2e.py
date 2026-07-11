@@ -159,6 +159,26 @@ def test_preview_serves_the_agents_app(page, server):
     expect(frame.locator("#marker")).to_have_text("hi from the app", timeout=15000)
 
 
+def test_tool_result_images_stay_in_the_timeline(page, server):
+    """A screenshot/plot path in a tool RESULT renders inside the
+    activity drill-down, not the transcript — inline placement is
+    earned by the agent referencing the image in prose."""
+    page.goto(f"{server}/?session=e2e-shots")
+    _send(
+        page,
+        '!tool file_write {"path": "/shots/shot-1.png", "content": "not-a-real-png"}\n'
+        "!text Took a screenshot for verification.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Took a screenshot", timeout=15000
+    )
+    # nothing rendered inline in the transcript...
+    expect(page.locator(".agent-msg .artifact-img")).to_have_count(0)
+    # ...but the expanded tool timeline carries it
+    page.locator(".chip", has_text="file_write").click()
+    expect(page.locator(".timeline .step-img")).to_have_count(1, timeout=5000)
+
+
 def test_preview_app_json_post_passes_cors_preflight(page, server):
     """App code fetching its own api with a JSON body triggers a real
     CORS preflight from the sandboxed (opaque-origin) iframe — the

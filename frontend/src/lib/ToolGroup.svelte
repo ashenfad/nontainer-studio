@@ -2,7 +2,9 @@
     // A run of consecutive tool calls, collapsed to one activity chip
     // (the agex-studio idiom: a calm transcript with drill-down on
     // demand). Expands inline to the per-call timeline.
-    let { tools } = $props()
+    import { fileUrl } from './api.js'
+
+    let { tools, session } = $props()
 
     let open = $state(false)
 
@@ -30,6 +32,24 @@
                     </div>
                     {#if t.args}<pre class="args">{t.args}</pre>{/if}
                     {#if t.result != null}<pre class="result">{t.result}</pre>{/if}
+                    {#if t.images?.length}
+                        <div class="step-images">
+                            {#each t.images as p (p)}
+                                <a
+                                    href={fileUrl(session, p)}
+                                    target="_blank"
+                                    rel="noopener"
+                                    title={p}
+                                >
+                                    <img
+                                        class="step-img"
+                                        src={fileUrl(session, p)}
+                                        alt={p}
+                                    />
+                                </a>
+                            {/each}
+                        </div>
+                    {/if}
                 </div>
             {/each}
         </div>
@@ -105,5 +125,18 @@
     }
     .args {
         color: var(--text-muted);
+    }
+    .step-images {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        margin-top: 0.3rem;
+    }
+    .step-img {
+        max-width: 320px;
+        max-height: 220px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        display: block;
     }
 </style>
