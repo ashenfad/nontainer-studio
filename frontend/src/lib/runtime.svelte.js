@@ -17,6 +17,8 @@
 // message is an ordered item list — text runs, tool events, images,
 // trailing ui artifacts — that MessageList renders.
 
+import { untrack } from 'svelte'
+
 import { api, followEvents } from './api.js'
 
 const runtimes = new Map() // deliberately non-reactive (agex lesson)
@@ -37,7 +39,24 @@ export function peekRuntime(name) {
 
 // -- the session rail's list (server view + live overlay) -------------------
 
-export const rail = $state({ sessions: [] })
+export const rail = $state({ sessions: [], unseen: [] })
+
+// unseen detection rides the rail poll (busy -> idle transition on a
+// backgrounded session), because background runtimes hold NO event
+// stream: browsers cap HTTP/1.1 at ~6 connections per origin, and a
+// never-ending SSE per visited session exhausts the pool — after which
+// every new fetch (including the chat POST) queues silently forever.
+let _prevBusy = new Map()
+let _foregroundName = null
+
+export function setForegroundName(name) {
+    _foregroundName = name
+    // untracked: callers are effects, and a tracked read-then-write of
+    // rail.unseen would make them retrigger themselves forever
+    untrack(() => {
+        rail.unseen = rail.unseen.filter((n) => n !== name)
+    })
+}
 
 // what the server's env unlocks (GET /api/models) — loaded once
 export const catalog = $state({ providers: [], default: null })
@@ -56,6 +75,13 @@ export async function refreshSessions() {
     try {
         const data = await api('/api/sessions')
         rail.sessions = data.sessions
+        for (const s of data.sessions) {
+            const finished = _prevBusy.get(s.name) && !s.busy
+            if (finished && s.name !== _foregroundName)
+                if (!rail.unseen.includes(s.name))
+                    rail.unseen = [...rail.unseen, s.name]
+            _prevBusy.set(s.name, s.busy)
+        }
     } catch {
         /* transient; next poll wins */
     }
@@ -85,37 +111,69 @@ export class SessionRuntime {
     attachments = $state([])
     lastError = $state(null)
 
-    foreground = false // set by the shell; gates the unseen dot
+    foreground = false // set via setForeground; gates the SSE stream
     cursor = 0
     #turnArts = []
+    #ctl = null
+    #following = false
 
     constructor(name) {
         this.name = name
         this.#opened = new Promise((resolve) => (this.#markOpen = resolve))
-        this.#follow()
     }
 
     #opened
     #markOpen
-    /** the session exists server-side — start (or keep) following.
-     * Called by ensureSession after POST /api/sessions succeeds, so
-     * the follower never races session creation. */
+    /** the session exists server-side — safe to follow. Called by
+     * ensureSession after POST /api/sessions succeeds, so the follower
+     * doesn't race session creation. */
     markOpen() {
         this.#markOpen()
     }
 
-    // -- the SSE follower: replay from cursor, then live; reconnect forever
-    async #follow() {
-        await this.#opened
-        for (;;) {
+    /** Only the FOREGROUND session holds a live SSE stream — browsers
+     * cap connections per origin (~6 on HTTP/1.1), so one stream per
+     * visited session would eventually starve every other request.
+     * Backgrounding aborts the stream; re-foregrounding resumes from
+     * the cursor, so nothing is missed. */
+    setForeground(fg) {
+        this.foreground = fg
+        if (fg) {
+            this.unseen = false
+            this.#startFollow()
+        } else {
+            this.#following = false
+            this.#ctl?.abort()
+        }
+    }
+
+    #startFollow() {
+        if (this.#following) return
+        this.#following = true
+        this.#followLoop()
+    }
+
+    async #followLoop() {
+        // wait for creation, but never forever: a failed create-POST
+        // must not permanently mute the session (with_session lazily
+        // opens known sessions, so following early is safe)
+        await Promise.race([this.#opened, new Promise((r) => setTimeout(r, 3000))])
+        while (this.#following) {
+            this.#ctl = new AbortController()
             try {
                 this.connected = true
-                await followEvents(this.name, this.cursor, (ev) => this.#apply(ev))
+                await followEvents(
+                    this.name,
+                    this.cursor,
+                    (ev) => this.#apply(ev),
+                    this.#ctl.signal,
+                )
             } catch {
-                /* dropped; resubscribe from cursor */
+                /* dropped or aborted; resubscribe from cursor */
             }
             this.connected = false
-            await new Promise((r) => setTimeout(r, 1500))
+            if (this.#following)
+                await new Promise((r) => setTimeout(r, 1500))
         }
     }
 
