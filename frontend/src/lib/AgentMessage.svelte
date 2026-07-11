@@ -63,14 +63,15 @@
 
 <style>
     .agent-msg {
-        max-width: 92%;
+        max-width: 100%;
     }
+    /* agent prose sits directly on the page (the agex-studio look) —
+       only USER messages get a bubble; the reply is the document */
     .bubble {
-        background: var(--agent-bubble);
-        border-radius: 12px 12px 12px 4px;
-        padding: 0.6rem 0.85rem;
+        padding: 0.15rem 0.1rem;
         margin: 0.35rem 0;
         font-size: 0.88rem;
+        line-height: 1.55;
     }
     .thinking {
         padding: 0.4rem 0.2rem;
