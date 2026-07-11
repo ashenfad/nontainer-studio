@@ -74,3 +74,36 @@ def test_gemma_routes_around_broken_tool_call_parsers():
 def test_gpt56_rides_the_responses_endpoint():
     model = _shape("openrouter:openai/gpt-5.6-luna")
     assert type(model).__name__ == "OpenRouterResponses"
+
+
+def test_streamed_reasoning_fragments_merge_into_whole_blocks():
+    """OpenRouter streams reasoning_details as index-keyed fragments;
+    replaying them unmerged breaks signed thinking blocks (Anthropic:
+    'Invalid `signature` in `thinking` block'). The formatted message
+    must carry whole blocks."""
+    model = _shape("openrouter:anthropic/claude-sonnet-5")
+    msg = Message(
+        role="assistant",
+        content=None,
+        tool_calls=[
+            {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "f", "arguments": "{}"},
+            }
+        ],
+        provider_data={
+            "reasoning_details": [
+                {"type": "reasoning.text", "index": 0, "text": "let me "},
+                {"type": "reasoning.text", "index": 0, "text": "think"},
+                {"type": "reasoning.text", "index": 0, "signature": "sig-abc"},
+                {"type": "reasoning.text", "index": 1, "text": "second block"},
+            ]
+        },
+    )
+    formatted = model._format_message(msg)
+    details = formatted["reasoning_details"]
+    assert len(details) == 2
+    assert details[0]["text"] == "let me think"
+    assert details[0]["signature"] == "sig-abc"
+    assert details[1]["text"] == "second block"

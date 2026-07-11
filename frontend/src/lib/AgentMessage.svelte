@@ -6,6 +6,7 @@
     import Markdown from './Markdown.svelte'
     import Artifact from './Artifact.svelte'
     import ToolGroup from './ToolGroup.svelte'
+    import ThinkingBlock from './ThinkingBlock.svelte'
 
     let { msg, session } = $props()
 
@@ -42,6 +43,8 @@
     {#each groups as g, i (i)}
         {#if g.kind === 'tools'}
             <ToolGroup tools={g.tools} {session} />
+        {:else if g.kind === 'thinking'}
+            <ThinkingBlock item={g} live={msg.streaming && g === msg.items.at(-1)} />
         {:else if g.kind === 'text'}
             <div class="bubble">
                 {#each splice(g.text) as part, j (j)}

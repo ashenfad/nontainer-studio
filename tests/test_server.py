@@ -106,6 +106,36 @@ def test_turn_runs_in_background_and_transcript_replays(studio):
     assert [e["type"] for e in tail] == ["done"]
 
 
+def test_native_thinking_streams_as_thinking_events(studio):
+    """reasoning_content deltas on RunContent (and ReasoningContentDelta
+    events) surface as `thinking` transcript events; mixed chunks split
+    into thinking + text."""
+    client, registry = studio
+
+    class ThinkingAgent(FakeAgent):
+        async def arun(self, message, stream=True, stream_events=True):
+            self.seen.append(message)
+            yield SimpleNamespace(
+                event="RunContent", reasoning_content="hmm, ", run_id="run-1"
+            )
+            yield SimpleNamespace(
+                event="ReasoningContentDelta", reasoning_content="let me see"
+            )
+            yield SimpleNamespace(
+                event="RunContent", reasoning_content="… ok", content="the answer"
+            )
+
+    registry._build_agent = lambda *a, **k: ThinkingAgent()
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/chat", json={"message": "ponder"})
+    events = _collect_until_done(client, "s1")
+    kinds = [e["type"] for e in events]
+    assert kinds == ["user", "thinking", "thinking", "thinking", "text", "done"]
+    thought = "".join(e["delta"] for e in events if e["type"] == "thinking")
+    assert thought == "hmm, let me see… ok"
+    assert [e["delta"] for e in events if e["type"] == "text"] == ["the answer"]
+
+
 def test_chat_missing_session_and_empty_message(studio):
     client, _ = studio
     assert (

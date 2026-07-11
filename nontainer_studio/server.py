@@ -74,33 +74,54 @@ def _tool_args(tool: Any) -> Any:
     return _short(args if args is not None else "")
 
 
-def _client_event(ev: Any) -> dict | None:
+def _client_events(ev: Any) -> list[dict]:
     kind = getattr(ev, "event", "")
     if kind == "RunContent":
+        # native model thinking rides RunContent as a per-chunk
+        # reasoning_content delta (Claude thinking, OpenRouter
+        # reasoning, Gemini thoughts, Responses summaries) — a chunk
+        # can carry thinking, prose, or both
+        out = []
+        think = getattr(ev, "reasoning_content", None)
+        if isinstance(think, str) and think:
+            out.append({"type": "thinking", "delta": think})
         delta = getattr(ev, "content", None)
         if isinstance(delta, str) and delta:
-            return {"type": "text", "delta": delta}
-        return None
+            out.append({"type": "text", "delta": delta})
+        return out
+    if kind == "ReasoningContentDelta":
+        # agno's reasoning-manager stream (reasoning=True agents) —
+        # same client treatment as native thinking
+        think = getattr(ev, "reasoning_content", None)
+        if isinstance(think, str) and think:
+            return [{"type": "thinking", "delta": think}]
+        return []
     if kind == "ToolCallStarted":
         tool = getattr(ev, "tool", None)
-        return {
-            "type": "tool_start",
-            "name": getattr(tool, "tool_name", "?"),
-            "args": _tool_args(tool),
-        }
+        return [
+            {
+                "type": "tool_start",
+                "name": getattr(tool, "tool_name", "?"),
+                "args": _tool_args(tool),
+            }
+        ]
     if kind == "ToolCallCompleted":
         tool = getattr(ev, "tool", None)
-        return {
-            "type": "tool_end",
-            "name": getattr(tool, "tool_name", "?"),
-            "result": _short(getattr(tool, "result", "")),
-        }
+        return [
+            {
+                "type": "tool_end",
+                "name": getattr(tool, "tool_name", "?"),
+                "result": _short(getattr(tool, "result", "")),
+            }
+        ]
     if kind == "RunError":
-        return {
-            "type": "error",
-            "message": _short_middle(getattr(ev, "content", "run error")),
-        }
-    return None
+        return [
+            {
+                "type": "error",
+                "message": _short_middle(getattr(ev, "content", "run error")),
+            }
+        ]
+    return []
 
 
 def _sse(payload: dict) -> str:
@@ -121,8 +142,7 @@ async def _run_turn(session: Any, message: str) -> None:
         )
         async for ev in session.agent.arun(message, stream=True, stream_events=True):
             run_id = getattr(ev, "run_id", None) or run_id
-            payload = _client_event(ev)
-            if payload is not None:
+            for payload in _client_events(ev):
                 await session.emit(payload)
     except Exception as e:
         await session.emit({"type": "error", "message": _short_middle(str(e))})

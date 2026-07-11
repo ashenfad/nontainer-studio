@@ -7,6 +7,8 @@
 // The server's event schema (all events also ride a `cursor`):
 //   {type:'user',   text, head}      — head = pre-turn workspace commit (edit anchor)
 //   {type:'text',   delta}           — streamed reply tokens
+//   {type:'thinking', delta}         — native model reasoning (when the
+//                                      model/provider exposes it)
 //   {type:'tool_start', name, args}
 //   {type:'tool_end',   name, result}
 //   {type:'notice', text}            — uploads, restores, ...
@@ -203,6 +205,11 @@ export class SessionRuntime {
             const last = items.at(-1)
             if (last?.kind === 'text') last.text += ev.delta
             else items.push({ kind: 'text', text: ev.delta })
+        } else if (ev.type === 'thinking') {
+            const items = this.#agentItems()
+            const last = items.at(-1)
+            if (last?.kind === 'thinking') last.text += ev.delta
+            else items.push({ kind: 'thinking', text: ev.delta })
         } else if (ev.type === 'tool_start') {
             this.#agentItems().push({
                 kind: 'tool',
