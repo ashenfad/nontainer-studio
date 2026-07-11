@@ -423,11 +423,12 @@ class Registry:
             branches = set(admin.list_branches())
             for branch in names & branches:
                 admin.delete_branch(branch)
-                # kvgit bug (as of 0.3.x): delete_branch leaves the
-                # prev-HEAD recovery backup, and a same-name branch
-                # opened later "recovers" the deleted state — files
-                # rising from the grave. Remove the backup too.
-                # TODO: fix upstream in kvgit, then drop this.
+                # kvgit <= 0.3.0: delete_branch leaves the prev-HEAD
+                # recovery backup, and a same-name branch opened later
+                # "recovers" the deleted state — files rising from the
+                # grave. Fixed upstream (kvgit nxt); drop this once a
+                # release with the fix ships (a redundant remove of a
+                # missing key is a harmless no-op meanwhile).
                 try:
                     admin.versioned.store.remove(
                         f"__branch_head_prev__{branch}"
