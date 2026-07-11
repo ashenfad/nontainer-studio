@@ -155,6 +155,13 @@ def build_model(spec: str | None = None) -> Any:
 
         return OpenAIChat(id=model)
     if provider == "openrouter":
+        # gpt-5.6 rejects tools + reasoning on chat-completions (and
+        # OpenRouter injects a default reasoning effort) — those models
+        # ride OpenRouter's Responses endpoint instead.
+        if model.startswith("openai/gpt-5.6"):
+            from agno.models.openrouter import OpenRouterResponses
+
+            return OpenRouterResponses(id=model, max_output_tokens=16384)
         from agno.models.openrouter import OpenRouter
 
         # the agno default (1024) truncates real coding turns
