@@ -394,6 +394,9 @@ class Registry:
             manifest["models"].pop(name, None)
             self._save_manifest(manifest)
         self._wipe_chat(session)
+        close_runtime = getattr(session.runtime, "close", None)
+        if callable(close_runtime):  # reap dispatch workers
+            close_runtime()
         session.ws.close()  # before branch deletion: it holds the branch
         session.db.close()
         self._delete_branches(doomed)
@@ -579,6 +582,9 @@ class Registry:
     def close(self) -> None:
         with self._lock:
             for session in self._sessions.values():
+                close_runtime = getattr(session.runtime, "close", None)
+                if callable(close_runtime):  # reap dispatch workers
+                    close_runtime()
                 session.ws.close()
                 session.db.close()
             self._sessions.clear()
