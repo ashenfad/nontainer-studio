@@ -60,10 +60,13 @@ def test_openrouter_clean_messages_pass_through():
     assert [m["role"] for m in formatted] == ["user", "assistant"]
 
 
-def test_gemma_routes_to_google_and_around_novita():
+def test_gemma_routes_around_broken_tool_call_parsers():
     model = _shape("openrouter:google/gemma-4-26b-a4b-it")
     assert model.extra_body == {
-        "provider": {"order": ["google-vertex"], "ignore": ["novita"]}
+        "provider": {
+            "order": ["deepinfra", "cloudflare"],
+            "ignore": ["novita", "google-vertex"],
+        }
     }
     assert _shape("openrouter:qwen/qwen3.6-35b-a3b").extra_body is None
 
