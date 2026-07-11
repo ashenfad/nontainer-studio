@@ -164,8 +164,15 @@ def build_model(spec: str | None = None) -> Any:
             return OpenRouterResponses(id=model, max_output_tokens=16384)
         from agno.models.openrouter import OpenRouter
 
+        extra_body = None
+        if model.startswith("google/gemma"):
+            # Novita's gemma serving intermittently doubles token pairs
+            # in tool-call output (`<div>` -> `<<divdiv>`, ~50% of HTML
+            # generations when sampled 2026-07); other providers were
+            # clean, so route around it.
+            extra_body = {"provider": {"ignore": ["novita"]}}
         # the agno default (1024) truncates real coding turns
-        return OpenRouter(id=model, max_tokens=16384)
+        return OpenRouter(id=model, max_tokens=16384, extra_body=extra_body)
     if provider == "google":
         from agno.models.google import Gemini
 
