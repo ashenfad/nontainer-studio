@@ -58,7 +58,11 @@ wins) — see `.env.example`.
 
 Other knobs: `NONTAINER_STUDIO_PORT`, `NONTAINER_STUDIO_STORE`
 (defaults to `~/.nontainer-studio`), `NONTAINER_STUDIO_CSP` (override
-the published-app CSP; `none` disables).
+the published-app CSP; `none` disables), `NONTAINER_STUDIO_ISOLATION`
+(`process` by default — agent code runs in a forked worker so a
+segfault/OOM in C-extension guts costs the turn, not the server; the
+workspace files, cache, and `db` stay host-side, bridged over RPC.
+`kernel` adds syscall/network lockdown; `none` runs in-process).
 
 > **Note:** nontainer isn't on PyPI yet — `pyproject.toml` currently
 > points at a sibling `../nontainer` checkout.

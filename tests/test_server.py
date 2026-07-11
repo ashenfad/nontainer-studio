@@ -940,3 +940,48 @@ def test_v1_manifest_format_tolerated(studio, tmp_path):
     assert {"name": "old-style", "busy": False, "model": None} in reborn.list()
     assert reborn.resolve("nope") is None
     reborn.close()
+
+
+# -- process isolation --------------------------------------------------------------
+
+
+def test_agent_sandbox_is_process_isolated_and_crash_proof(studio):
+    """The default: agent code runs in a forked worker. Killing that
+    worker (a stand-in for segfault/OOM) costs nothing but the moment —
+    the server survives, and the next execution respawns and still
+    sees the workspace."""
+    import os
+    import signal
+
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+
+    proc = ws._sandbox._process  # only exists under process isolation
+    assert proc.is_alive()
+
+    assert ws.run_python("open('/kept.txt', 'w').write('x')").error is None
+    os.kill(proc.pid, signal.SIGKILL)
+    proc.join(timeout=5.0)
+
+    r = ws.run_python("content = open('/kept.txt').read()")
+    assert r.error is None
+    assert r.namespace["content"] == "x"
+
+
+def test_db_host_object_bridges_through_isolation(studio):
+    """The studio's `db` is a live sqlite wrapper — under process
+    isolation it must cross as an RPC proxy, not vanish as
+    unpicklable."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    r = session.ws.run_python(
+        "db.execute('CREATE TABLE IF NOT EXISTS t (v TEXT)')\n"
+        "db.execute('INSERT INTO t VALUES (?)', ('from worker',))\n"
+        "rows = db.query('SELECT v FROM t')"
+    )
+    assert r.error is None, r.error
+    assert r.namespace["rows"] == [("from worker",)]
+    # the PARENT's db saw the writes (it IS the store)
+    assert session.db.query("SELECT v FROM t") == [("from worker",)]
