@@ -139,6 +139,58 @@ def available() -> dict:
     return {"providers": providers, "default": default}
 
 
+def _sanitize_tool_calls(messages: list) -> list:
+    """Drop the id-only tool-call stubs agno records when a provider
+    streams undecodable arguments (gemma's token-level tool format is
+    parsed provider-side, and truncated parses arrive as ``{'id': ...}``
+    with no ``function``) — plus their paired error tool-results.
+    Replaying a stub 400s on EVERY provider ("function/type field
+    required"), killing the rest of the turn. Dropping it instead lets
+    the model see its valid calls' results and retry the failed one."""
+    import copy
+
+    dropped: set[str] = set()
+    out = []
+    for m in messages:
+        tool_calls = getattr(m, "tool_calls", None)
+        if tool_calls:
+            good = [
+                tc
+                for tc in tool_calls
+                if not isinstance(tc, dict) or "function" in tc
+            ]
+            if len(good) != len(tool_calls):
+                for tc in tool_calls:
+                    if isinstance(tc, dict) and "function" not in tc and tc.get("id"):
+                        dropped.add(tc["id"])
+                m = copy.copy(m)
+                m.tool_calls = good or None
+        if getattr(m, "tool_call_id", None) in dropped:
+            continue
+        out.append(m)
+    return out
+
+
+_safe_openrouter_cls: Any = None
+
+
+def _safe_openrouter() -> Any:
+    """OpenRouter subclass with malformed-tool-call sanitation (built
+    lazily so importing this module never drags agno in)."""
+    global _safe_openrouter_cls
+    if _safe_openrouter_cls is None:
+        from agno.models.openrouter import OpenRouter
+
+        class SafeOpenRouter(OpenRouter):
+            def _format_all_messages(self, messages, *args, **kwargs):  # type: ignore[override]
+                return super()._format_all_messages(
+                    _sanitize_tool_calls(messages), *args, **kwargs
+                )
+
+        _safe_openrouter_cls = SafeOpenRouter
+    return _safe_openrouter_cls
+
+
 def build_model(spec: str | None = None) -> Any:
     """spec -> a constructed agno Model (None = server default)."""
     provider, model = parse_spec(spec or default_spec())
@@ -162,8 +214,6 @@ def build_model(spec: str | None = None) -> Any:
             from agno.models.openrouter import OpenRouterResponses
 
             return OpenRouterResponses(id=model, max_output_tokens=16384)
-        from agno.models.openrouter import OpenRouter
-
         extra_body = None
         if model.startswith("google/gemma"):
             # gemma-4's native tool-call format (token-level, not JSON)
@@ -176,7 +226,7 @@ def build_model(spec: str | None = None) -> Any:
                 "provider": {"order": ["google-vertex"], "ignore": ["novita"]}
             }
         # the agno default (1024) truncates real coding turns
-        return OpenRouter(id=model, max_tokens=16384, extra_body=extra_body)
+        return _safe_openrouter()(id=model, max_tokens=16384, extra_body=extra_body)
     if provider == "google":
         from agno.models.google import Gemini
 
