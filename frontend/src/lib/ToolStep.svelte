@@ -12,9 +12,20 @@
 
     let { tool, session } = $props()
 
-    const args = $derived(
-        tool.args && typeof tool.args === 'object' ? tool.args : null,
-    )
+    const args = $derived.by(() => {
+        if (tool.args && typeof tool.args === 'object') return tool.args
+        // salvage JSON-string args (older events; defensive for any
+        // provider that ships arguments unparsed). Python-repr strings
+        // from pre-structured transcripts stay in the generic view.
+        if (typeof tool.args === 'string' && tool.args.startsWith('{')) {
+            try {
+                return JSON.parse(tool.args)
+            } catch {
+                return null
+            }
+        }
+        return null
+    })
 
     const EXT_LANGS = {
         py: 'python',
