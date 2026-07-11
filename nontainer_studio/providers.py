@@ -217,13 +217,17 @@ def build_model(spec: str | None = None) -> Any:
         extra_body = None
         if model.startswith("google/gemma"):
             # gemma-4's native tool-call format (token-level, not JSON)
-            # needs a provider-side parser, and third-party ones are
-            # rough: Novita doubled token pairs in HTML tool args
-            # (`<div>` -> `<<divdiv>`, ~50% when sampled 2026-07),
-            # NextBit truncated them mid-string. Prefer Google's own
-            # serving; keep Novita out of the fallback pool.
+            # needs a provider-side parser, and quality varies wildly
+            # (surveyed 2026-07 with 10-15KB file_write calls): Novita
+            # doubled token pairs (`<div>` -> `<<divdiv>`, ~50%);
+            # google-vertex silently truncates args at ~3.6KB while
+            # reporting finish_reason=tool_calls; DeepInfra, Cloudflare,
+            # and Venice were clean at 10-15KB.
             extra_body = {
-                "provider": {"order": ["google-vertex"], "ignore": ["novita"]}
+                "provider": {
+                    "order": ["deepinfra", "cloudflare"],
+                    "ignore": ["novita", "google-vertex"],
+                }
             }
         # the agno default (1024) truncates real coding turns
         return _safe_openrouter()(id=model, max_tokens=16384, extra_body=extra_body)
