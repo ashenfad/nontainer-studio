@@ -294,6 +294,15 @@ def build_model(spec: str | None = None) -> Any:
             max_tokens=16384,
         )
     if provider == "openai":
+        # gpt-5.6 rejects tools + reasoning on chat-completions (same
+        # restriction we hit via OpenRouter) — ride the Responses API,
+        # which also streams reasoning summaries into thinking blocks
+        if model.startswith("gpt-5.6"):
+            from agno.models.openai import OpenAIResponses
+
+            return OpenAIResponses(
+                id=model, max_output_tokens=16384, reasoning_summary="auto"
+            )
         from agno.models.openai import OpenAIChat
 
         return OpenAIChat(id=model)
