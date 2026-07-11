@@ -4,8 +4,20 @@
     // the transcript itself keeps its record, so undone turns stay
     // visible above the restore notice).
     import AgentMessage from './AgentMessage.svelte'
+    import { viewFile } from './viewer.svelte.js'
 
     let { rt } = $props()
+
+    // The composer prepends "[attached: /a, /b]" for the AGENT's
+    // benefit; humans get chips. Split it back out for display.
+    function splitAttached(text) {
+        const m = text.match(/^\[attached: ([^\]]+)\]\n?/)
+        if (!m) return { files: [], body: text }
+        return {
+            files: m[1].split(', ').filter((p) => p.startsWith('/')),
+            body: text.slice(m[0].length),
+        }
+    }
 
     let scroller = $state(null)
     let nearBottom = true
@@ -43,8 +55,39 @@
     {/if}
     {#each rt.messages as msg, i (i)}
         {#if msg.role === 'user'}
+            {@const parts = splitAttached(msg.text)}
             <div class="user-row">
-                <div class="user-bubble">{msg.text}</div>
+                <div class="user-bubble">
+                    {#if parts.files.length}
+                        <div class="attach-chips">
+                            {#each parts.files as p (p)}
+                                <button
+                                    class="attach-chip"
+                                    title={p}
+                                    onclick={() => viewFile(p)}
+                                >
+                                    <svg
+                                        width="11"
+                                        height="11"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        aria-hidden="true"
+                                    >
+                                        <path
+                                            d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                                        ></path>
+                                    </svg>
+                                    {p.split('/').pop()}
+                                </button>
+                            {/each}
+                        </div>
+                    {/if}
+                    {parts.body}
+                </div>
                 {#if msg.head && !rt.busy}
                     <button
                         class="undo"
@@ -125,6 +168,35 @@
         max-width: 80%;
         white-space: pre-wrap;
         word-break: break-word;
+    }
+    .attach-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.3rem;
+        padding-bottom: 0.4rem;
+    }
+    .attach-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 999px;
+        color: var(--text);
+        font-size: 0.7rem;
+        padding: 0.14rem 0.55rem;
+        cursor: pointer;
+        max-width: 240px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .attach-chip:hover {
+        background: rgba(255, 255, 255, 0.16);
+    }
+    .attach-chip svg {
+        flex-shrink: 0;
+        opacity: 0.7;
     }
     .notice {
         align-self: center;
