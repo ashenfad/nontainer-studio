@@ -170,8 +170,9 @@
         overflow-x: auto;
         max-height: 260px;
         overflow-y: auto;
-        white-space: pre-wrap;
-        word-break: break-word;
+        /* no wrapping: long lines scroll horizontally (code, terminal
+           output, and df prints read wrong when soft-wrapped) */
+        white-space: pre;
         line-height: 1.45;
     }
     .terminal {
@@ -195,6 +196,9 @@
     }
     .diff span {
         display: block;
+        /* highlight bars span the scrolled width, not just the viewport */
+        width: max-content;
+        min-width: 100%;
     }
     .diff-removed {
         background: color-mix(in srgb, var(--error) 14%, transparent);
