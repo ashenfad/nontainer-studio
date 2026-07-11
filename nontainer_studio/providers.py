@@ -40,6 +40,7 @@ _PROVIDERS: dict[str, tuple[str, str, str, list[str]]] = {
         [
             "anthropic/claude-sonnet-5",
             "anthropic/claude-opus-4.8",
+            "openai/gpt-5.6-luna",
             "openai/gpt-5.6-sol",
             "google/gemini-2.5-pro",
             "deepseek/deepseek-v4-flash",
