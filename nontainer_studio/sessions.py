@@ -329,7 +329,18 @@ class Registry:
     ) -> Any:
         from agno.agent import Agent
 
-        toolkit = WorkspaceTools(ws, apps=runtime, python_primer=DB_PRIMER)
+        from . import providers
+
+        toolkit = WorkspaceTools(
+            ws,
+            apps=runtime,
+            python_primer=DB_PRIMER,
+            # text-only models must not receive screenshot media — the
+            # call AFTER an image-bearing tool result 400s ("no
+            # endpoints support image input"), losing the turn. Model
+            # switches rebuild the agent, so this stays correct.
+            vision=providers.supports_vision(model or self._default_model),
+        )
         return Agent(
             model=self._model_factory(model),
             tools=[toolkit],

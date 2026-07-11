@@ -229,6 +229,53 @@ def _safe_openrouter() -> Any:
     return _safe_openrouter_cls
 
 
+# provider -> assume vision when we can't ask (first-party catalogs are
+# all multimodal; ollama/dummy get the safe text-only default)
+_VISION_BY_PROVIDER = {"anthropic": True, "openai": True, "google": True}
+
+_openrouter_modalities: dict[str, bool] | None = None
+
+
+def _openrouter_vision(model: str) -> bool:
+    """Does this OpenRouter model take image input? Asks the models API
+    once (public metadata; cached for the process). Unknown or
+    unreachable -> False: a wrongly-withheld screenshot degrades to a
+    path mention, a wrongly-attached one kills the next call."""
+    global _openrouter_modalities
+    if _openrouter_modalities is None:
+        try:
+            import json
+            import urllib.request
+
+            with urllib.request.urlopen(
+                "https://openrouter.ai/api/v1/models", timeout=10
+            ) as r:
+                data = json.load(r)
+            _openrouter_modalities = {
+                m["id"]: "image"
+                in ((m.get("architecture") or {}).get("input_modalities") or [])
+                for m in data.get("data", [])
+            }
+        except Exception:
+            _openrouter_modalities = {}
+    return _openrouter_modalities.get(model, False)
+
+
+def supports_vision(spec: str | None) -> bool:
+    """Whether the spec'd model accepts image input — gates screenshot
+    attachment (WorkspaceTools(vision=...)): text-only models 400 on
+    the call AFTER an image-bearing tool result."""
+    try:
+        provider, model = parse_spec(spec or default_spec())
+    except (ValueError, SystemExit):
+        return False
+    if provider == "dummy":
+        return True  # the scripted model tolerates anything; keep e2e real
+    if provider == "openrouter":
+        return _openrouter_vision(model)
+    return _VISION_BY_PROVIDER.get(provider, False)
+
+
 def build_model(spec: str | None = None) -> Any:
     """spec -> a constructed agno Model (None = server default)."""
     provider, model = parse_spec(spec or default_spec())

@@ -76,6 +76,31 @@ def test_gpt56_rides_the_responses_endpoint():
     assert type(model).__name__ == "OpenRouterResponses"
 
 
+def test_supports_vision_consults_openrouter_modalities(monkeypatch):
+    """glm-5.2 has no image endpoints — attaching a test_app screenshot
+    400s the next call. Vision gating rides OpenRouter's modality
+    metadata; unknown models default to text-only (safe degradation)."""
+    from nontainer_studio import providers
+
+    monkeypatch.setattr(
+        providers,
+        "_openrouter_modalities",
+        {"anthropic/claude-sonnet-5": True, "z-ai/glm-5.2": False},
+    )
+    assert providers.supports_vision("openrouter:anthropic/claude-sonnet-5")
+    assert not providers.supports_vision("openrouter:z-ai/glm-5.2")
+    assert not providers.supports_vision("openrouter:unknown/model")
+
+
+def test_supports_vision_provider_defaults():
+    from nontainer_studio import providers
+
+    assert providers.supports_vision("anthropic:claude-sonnet-5")
+    assert providers.supports_vision("openai:gpt-5.6-sol")
+    assert not providers.supports_vision("ollama:llama3.3")
+    assert providers.supports_vision("dummy")  # scripted; keeps e2e real
+
+
 def test_streamed_reasoning_fragments_merge_into_whole_blocks():
     """OpenRouter streams reasoning_details as index-keyed fragments;
     replaying them unmerged breaks signed thinking blocks (Anthropic:
