@@ -50,8 +50,7 @@ _PROVIDERS: dict[str, tuple[str, str, str, list[str]]] = {
             "openai/gpt-5.6-sol",
             "google/gemini-2.5-pro",
             "google/gemma-4-26b-a4b-it",
-            "deepseek/deepseek-v4-flash",
-            "moonshotai/kimi-k2.6",
+            "qwen/qwen3.6-35b-a3b",
         ],
     ),
     "google": (
