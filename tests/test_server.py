@@ -655,6 +655,31 @@ def test_published_urls_survive_restart(studio, tmp_path):
     reborn.close()
 
 
+def test_known_sessions_open_lazily_on_get(studio, tmp_path):
+    """After a restart, a manifest-known session must serve GETs
+    (events, files, preview probe) without waiting for a POST — a
+    reloaded browser tab points at yesterday's session immediately.
+    Unknown names still 404 (GETs never create sessions)."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    reborn._build_agent = lambda *a, **k: FakeAgent()
+    with TestClient(server.build_app(reborn)) as client2:
+        assert client2.get("/api/sessions/s1/events?wait=0").status_code == 200
+        assert client2.get("/api/sessions/s1/app").json() == {"exists": False}
+        assert client2.get("/api/sessions/ghost/events?wait=0").status_code == 404
+    reborn.close()
+
+
+def test_app_probe_flips_when_app_lands(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    assert client.get("/api/sessions/s1/app").json() == {"exists": False}
+    _seed_app(registry.get("s1").ws)
+    assert client.get("/api/sessions/s1/app").json() == {"exists": True}
+
+
 # -- models: registry, per-session switching --------------------------------------
 
 

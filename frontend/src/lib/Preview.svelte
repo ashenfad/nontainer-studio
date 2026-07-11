@@ -27,14 +27,15 @@
     const src = $derived(`/preview/${rt.name}/?v=${rt.version + manual}`)
 
     // the iframe is an opaque origin (we can't read its document), so
-    // probe from the shell: no /app yet → friendly empty state, not a
-    // raw 404 body
-    let hasApp = $state(true)
+    // probe from the shell: no /app yet → friendly empty state. The
+    // probe endpoint 200s either way (a /preview/ probe would console-
+    // log a 404 on every empty session).
+    let hasApp = $state(false)
     $effect(() => {
         void src
         let dead = false
-        fetch(`/preview/${rt.name}/`, { method: 'GET' })
-            .then((r) => !dead && (hasApp = r.ok))
+        api(`/api/sessions/${rt.name}/app`)
+            .then((d) => !dead && (hasApp = d.exists))
             .catch(() => {})
         return () => (dead = true)
     })

@@ -125,12 +125,17 @@ def _csp_kwargs() -> dict:
 def build_app(registry: Registry) -> Starlette:
     def with_session(handler):
         """Resolve the route's {name} to a Session or 404 — every
-        session endpoint starts the same way, so say it once."""
+        session endpoint starts the same way, so say it once.
+        Manifest-known sessions (prior runs) open lazily: a reload
+        pointing at yesterday's session must not 404 until something
+        happens to POST /api/sessions."""
 
         async def wrapped(request: Any) -> Any:
-            session = registry.get(request.path_params["name"])
+            name = request.path_params["name"]
+            session = registry.get(name)
+            if session is None and name in registry.known():
+                session = await anyio.to_thread.run_sync(registry.open, name)
             if session is None:
-                name = request.path_params["name"]
                 return JSONResponse({"error": f"no session {name!r}"}, status_code=404)
             return await handler(request, session)
 
@@ -261,6 +266,18 @@ def build_app(registry: Registry) -> Starlette:
         media, _ = mimetypes.guess_type(path)
         return Response(data, media_type=media or "application/octet-stream")
 
+    @with_session
+    async def app_exists(request: Any, session: Any) -> JSONResponse:
+        """The preview pane's probe. A JSON 200 either way — probing
+        /preview/ itself means a console-logged 404 on every empty
+        session (browsers log failed responses even when handled)."""
+
+        def check() -> bool:
+            with session.ws.lock:
+                return bool(session.ws.fs.isdir("/app"))
+
+        return JSONResponse({"exists": await anyio.to_thread.run_sync(check)})
+
     # -- time travel ------------------------------------------------------
 
     @with_session
@@ -384,6 +401,7 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions/{name}/events", events, methods=["GET"]),
             Route("/api/sessions/{name}/upload", upload, methods=["POST"]),
             Route("/api/sessions/{name}/files", files, methods=["GET"]),
+            Route("/api/sessions/{name}/app", app_exists, methods=["GET"]),
             Route("/api/sessions/{name}/file", file_raw, methods=["GET"]),
             Route("/api/sessions/{name}/history", history, methods=["GET"]),
             Route("/api/sessions/{name}/restore", restore, methods=["POST"]),
