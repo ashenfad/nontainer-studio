@@ -207,23 +207,17 @@ export class SessionRuntime {
             const items = this.#agentItems()
             // tool calls can run in PARALLEL (several starts, then the
             // ends) — pair by name first, oldest open call wins
-            const open =
+            let tool =
                 items.find(
                     (i) => i.kind === 'tool' && i.running && i.name === ev.name,
                 ) ?? items.find((i) => i.kind === 'tool' && i.running)
-            if (open) {
-                open.result = ev.result
-                open.running = false
-            } else {
-                items.push({
-                    kind: 'tool',
-                    name: ev.name,
-                    args: '',
-                    result: ev.result,
-                    running: false,
-                })
+            if (!tool) {
+                tool = { kind: 'tool', name: ev.name, args: '', running: false }
+                items.push(tool)
             }
-            this.#harvest(ev.result, items)
+            tool.result = ev.result
+            tool.running = false
+            this.#harvest(ev.result, tool)
         } else if (ev.type === 'notice') {
             this.messages.push({ role: 'notice', text: ev.text })
             this.version++
@@ -263,7 +257,7 @@ export class SessionRuntime {
     }
 
     /** pull ui artifacts + workspace images out of a tool result */
-    #harvest(result, items) {
+    #harvest(result, tool) {
         if (typeof result !== 'string') return
         const note = result.match(ARTIFACT_NOTE)
         if (note)
@@ -271,11 +265,13 @@ export class SessionRuntime {
                 const [name, path] = pair.split(' -> ')
                 if (path) this.#turnArts.push({ name, path })
             }
-        // surface other workspace images (test_app screenshots, saved
-        // plots) inline — served raw via the file endpoint
+        // workspace images in the result (test_app screenshots, saved
+        // plots) ride WITH the tool call — they render inside its
+        // expandable timeline, not in the transcript. The agent
+        // referencing an image in prose is what puts it inline.
         const images = result.match(IMAGE_PATHS) || []
-        for (const path of [...new Set(images)])
-            if (!path.startsWith('/ui/')) items.push({ kind: 'image', path })
+        const paths = [...new Set(images)].filter((p) => !p.startsWith('/ui/'))
+        if (paths.length) tool.images = paths
     }
 
     // -- verbs ---------------------------------------------------------------

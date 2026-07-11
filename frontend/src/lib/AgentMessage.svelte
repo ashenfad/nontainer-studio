@@ -41,7 +41,7 @@
 <div class="agent-msg">
     {#each groups as g, i (i)}
         {#if g.kind === 'tools'}
-            <ToolGroup tools={g.tools} />
+            <ToolGroup tools={g.tools} {session} />
         {:else if g.kind === 'text'}
             <div class="bubble">
                 {#each splice(g.text) as part, j (j)}
