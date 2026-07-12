@@ -136,6 +136,25 @@ def test_native_thinking_streams_as_thinking_events(studio):
     assert [e["delta"] for e in events if e["type"] == "text"] == ["the answer"]
 
 
+def test_new_sessions_seed_skills(studio):
+    """Session creation installs the repo's starter skills into
+    /skills as ordinary versioned files; existing sessions keep their
+    own (possibly agent-edited) copies."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    files = client.get("/api/sessions/s1/files").json()["files"]
+    assert "/skills/building-apps/SKILL.md" in files
+    assert "/skills/building-apps/references/preact-app.html" in files
+
+    # creation-only: a reseed must not clobber the session's copies
+    session = registry.get("s1")
+    session.ws.write_file("/skills/building-apps/SKILL.md", "agent-edited")
+    registry.close()
+    registry._sessions.clear()
+    session2 = registry.open("s1")
+    assert session2.ws.fs.read("/skills/building-apps/SKILL.md") == b"agent-edited"
+
+
 def test_compression_and_usage_events_reach_the_transcript(studio):
     """Compaction waves surface as notices (the slow turn explains
     itself); per-call token usage rides a `usage` event for the UI."""

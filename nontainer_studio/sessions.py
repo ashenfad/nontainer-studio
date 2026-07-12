@@ -264,11 +264,41 @@ class Registry:
             if not ws.fs.isdir("/ui"):
                 ws.fs.makedirs("/ui", exist_ok=True)
                 ws.checkpoint(info={"tool": "init"})
+            # Seed skills once, at session CREATION — after that they
+            # are the session's own versioned state (agents may edit or
+            # add them; a reseed would clobber that).
+            if not ws.fs.isdir("/skills"):
+                self._seed_skills(ws)
             session = self._assemble(name, ws, db, model)
             session.events.extend(self._load_events(session.log_path))
             self._sessions[name] = session
             self._record(name, model)
             return session
+
+    @staticmethod
+    def _seed_skills(ws: Workspace) -> None:
+        """Install starter skills into a fresh session: each child
+        directory of NONTAINER_STUDIO_SKILLS (default: the repo's
+        skills/) plus any skills EMBEDDED in granted python libraries
+        (<pkg>/skills/ — the nontainer convention). Best-effort: a bad
+        skill must never block a session."""
+        from nontainer import skills
+
+        root = Path(
+            os.getenv("NONTAINER_STUDIO_SKILLS")
+            or Path(__file__).resolve().parent.parent / "skills"
+        ).expanduser()
+        if root.is_dir():
+            for child in sorted(root.iterdir()):
+                if child.is_dir() and (child / "SKILL.md").is_file():
+                    try:
+                        skills.install(ws, child)
+                    except Exception:
+                        pass
+        try:
+            skills.install_from_modules(ws)
+        except Exception:
+            pass
 
     @staticmethod
     def _python_config(db: Db) -> PythonConfig:
