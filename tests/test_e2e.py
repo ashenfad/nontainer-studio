@@ -164,7 +164,10 @@ def test_long_tool_lines_scroll_instead_of_widening_layout(page, server):
     assert metrics["pre"] > metrics["preBox"], f"pre should scroll: {metrics}"
 
 
-def test_thinking_streams_and_folds_to_a_chip(page, server):
+def test_thinking_interleaves_into_the_work_chip(page, server):
+    """Thinking around tool calls folds INTO the activity chip (the
+    think -> act narrative lives in the drill-down); a tool-free
+    thought keeps its standalone toggle block."""
     page.goto(f"{server}/?session=e2e-think")
     _send(
         page,
@@ -175,14 +178,22 @@ def test_thinking_streams_and_folds_to_a_chip(page, server):
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "Done pondering.", timeout=15000
     )
-    # folded once the reply landed; expands on click with the reasoning
+    # no standalone thinking block: it joined the work group
+    expect(page.locator(".think-toggle")).to_have_count(0)
+    page.locator(".chip", has_text="file_write").click()
+    timeline = page.locator(".timeline")
+    expect(timeline).to_contain_text("thinking")
+    expect(timeline).to_contain_text("Considering the request carefully.")
+
+    # a pure thought (no tools) stays a standalone foldable block
+    _send(page, "!think Just musing, no tools.\n!text Mused.")
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Mused.", timeout=15000
+    )
     toggle = page.locator(".think-toggle").first
     expect(toggle).to_be_visible()
-    expect(page.locator(".think-text")).to_have_count(0)
     toggle.click()
-    expect(page.locator(".think-text")).to_contain_text(
-        "Considering the request carefully."
-    )
+    expect(page.locator(".think-text").last).to_contain_text("Just musing")
 
 
 def test_edit_rewinds_files_and_truncates_transcript(page, server):

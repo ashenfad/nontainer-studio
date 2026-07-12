@@ -10,14 +10,28 @@
 
     let { msg, session } = $props()
 
-    // group items: runs of tools together, everything else standalone
+    // Group items: runs of WORK (tools + the thinking interleaved
+    // between them) collapse into one activity chip; prose and
+    // artifacts stand alone. Thinking joins a work group when it
+    // follows one or leads into a tool — EXCEPT the live tail: while
+    // the newest streamed item is thinking, it renders standalone so
+    // the live block stays visible without expanding the chip (it
+    // folds in when the model moves on).
     const groups = $derived.by(() => {
         const out = []
-        for (const item of msg.items) {
+        const items = msg.items
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i]
             const last = out.at(-1)
-            if (item.kind === 'tool') {
-                if (last?.kind === 'tools') last.tools.push(item)
-                else out.push({ kind: 'tools', tools: [item] })
+            const liveTail = msg.streaming && i === items.length - 1
+            const joinsWork =
+                item.kind === 'tool' ||
+                (item.kind === 'thinking' &&
+                    !liveTail &&
+                    (last?.kind === 'tools' || items[i + 1]?.kind === 'tool'))
+            if (joinsWork) {
+                if (last?.kind === 'tools') last.entries.push(item)
+                else out.push({ kind: 'tools', entries: [item] })
             } else out.push(item)
         }
         return out
@@ -42,7 +56,7 @@
 <div class="agent-msg">
     {#each groups as g, i (i)}
         {#if g.kind === 'tools'}
-            <ToolGroup tools={g.tools} {session} />
+            <ToolGroup entries={g.entries} {session} />
         {:else if g.kind === 'thinking'}
             <ThinkingBlock item={g} live={msg.streaming && g === msg.items.at(-1)} />
         {:else if g.kind === 'text'}
