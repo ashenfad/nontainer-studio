@@ -229,8 +229,14 @@ class Registry:
         return set(self._manifest()["sessions"])
 
     def _save_manifest(self, manifest: dict) -> None:
-        self._manifest_path().parent.mkdir(parents=True, exist_ok=True)
-        self._manifest_path().write_text(json.dumps(manifest, indent=1))
+        """Atomic (tmp + rename): a concurrent reader mid-write would
+        parse partial JSON, see an empty manifest, and 404 a session
+        that exists — a transient, maddening-to-reproduce failure."""
+        path = self._manifest_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(manifest, indent=1))
+        tmp.replace(path)
 
     def _record(self, name: str, model: str | None = None) -> None:
         """Add to the durable session manifest (caller holds _lock)."""

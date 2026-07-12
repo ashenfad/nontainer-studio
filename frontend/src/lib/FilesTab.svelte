@@ -7,13 +7,33 @@
     let { rt } = $props()
 
     let paths = $state([])
+    let failed = $state(false)
 
+    // Refetch on turn activity (version), session switch (name), and
+    // SSE reconnect (connected — a server restart mid-view otherwise
+    // leaves this pane frozen). The stale flag guards the async race:
+    // a slow response for session A must not land after B's, and a
+    // FAILED fetch must clear rather than keep showing the previous
+    // session's files as if they were current.
     $effect(() => {
         void rt.version
+        void rt.connected
         const session = rt.name
+        let stale = false
         api(`/api/sessions/${session}/files`)
-            .then((d) => (paths = d.files))
-            .catch(() => {})
+            .then((d) => {
+                if (!stale) {
+                    paths = d.files
+                    failed = false
+                }
+            })
+            .catch(() => {
+                if (!stale) {
+                    paths = []
+                    failed = true
+                }
+            })
+        return () => (stale = true)
     })
 </script>
 
@@ -21,7 +41,9 @@
     {#each paths as p (p)}
         <button class="file" onclick={() => viewFile(p)}>{p}</button>
     {/each}
-    {#if paths.length === 0}
+    {#if failed}
+        <div class="hint">couldn't load files — retrying on next update</div>
+    {:else if paths.length === 0}
         <div class="hint">no files yet</div>
     {/if}
 </div>

@@ -14,14 +14,22 @@
 
     $effect(() => {
         void rt.version
+        void rt.connected // refetch when SSE reconnects (server restart)
         const session = rt.name
+        let stale = false // guard the async race across session switches
         api(`/api/sessions/${session}/history`)
             .then((d) => {
+                if (stale) return
                 entries = d.history
                 head = d.head
                 error = null
             })
-            .catch((e) => (error = e.message))
+            .catch((e) => {
+                if (stale) return
+                entries = [] // never show another session's history as current
+                error = e.message
+            })
+        return () => (stale = true)
     })
 
     async function restore(id) {
