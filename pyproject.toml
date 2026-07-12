@@ -22,6 +22,10 @@ dependencies = [
     "pandas",
     "pyarrow",
     "matplotlib",
+    # NOTE: no kaleido — plotly's fig.write_image can't run inside the
+    # sandbox (kaleido validates the Chrome binary path and builds temp
+    # dirs through the VFS, then needs a real Chrome subprocess). The
+    # primer steers agents to matplotlib for static images.
     "plotly",
     # provider SDKs: anthropic + openai cover the default detection
     # order (openai also carries OpenRouter and OpenAI-compatible
