@@ -134,6 +134,16 @@
                 />
             </div>
             <div class="toolbar-right">
+                {#if rt.usage}
+                    <span
+                        class="ctx"
+                        title={`context sent on the last model call` +
+                            (rt.usage.cached_tokens
+                                ? ` (${Math.round(rt.usage.cached_tokens / 1000)}k cached)`
+                                : '')}
+                        >{Math.round(rt.usage.input_tokens / 1000)}k ctx</span
+                    >
+                {/if}
                 <ModelPicker {rt} />
                 {#if rt.busy}
                     <button
@@ -262,6 +272,11 @@
         display: flex;
         align-items: center;
         gap: 0.35rem;
+    }
+    .ctx {
+        color: var(--text-muted);
+        font-size: 0.68rem;
+        font-family: var(--font-mono);
     }
     .icon-btn {
         display: flex;

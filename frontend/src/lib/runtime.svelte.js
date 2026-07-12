@@ -122,6 +122,8 @@ export class SessionRuntime {
     version = $state(0)
     attachments = $state([])
     lastError = $state(null)
+    /** latest model-call context size: {input_tokens, cached_tokens} */
+    usage = $state(null)
 
     foreground = false // set via setForeground; gates the SSE stream
     cursor = 0
@@ -242,6 +244,11 @@ export class SessionRuntime {
             )
             if (at !== -1) this.messages.splice(at)
             this.version++
+        } else if (ev.type === 'usage') {
+            this.usage = {
+                input_tokens: ev.input_tokens,
+                cached_tokens: ev.cached_tokens ?? 0,
+            }
         } else if (ev.type === 'notice') {
             this.messages.push({ role: 'notice', text: ev.text })
             this.version++

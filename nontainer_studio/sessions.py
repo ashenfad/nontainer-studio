@@ -359,9 +359,23 @@ class Registry:
             # switches rebuild the agent, so this stays correct.
             vision=providers.supports_vision(model or self._default_model),
         )
+        # Compaction: wave-based tool-result compression at a per-model
+        # high-water mark (never count-based, never a sliding window —
+        # both would bust the prompt cache every turn). The transcript
+        # keeps full detail either way; only the MODEL's view of old
+        # tool results coarsens.
+        compression = None
+        limit = providers.compress_token_limit(model or self._default_model)
+        if limit is not None:
+            from agno.compression.manager import CompressionManager
+
+            compression = CompressionManager(compress_token_limit=limit)
+
         return Agent(
             model=self._model_factory(model),
             tools=[toolkit],
+            compress_tool_results=compression is not None,
+            compression_manager=compression,
             # studio-owned context: nontainer's tool descriptions cover
             # the MECHANICS (workspace, handlers, curl); this covers the
             # product the human is looking at (preview, artifacts,
