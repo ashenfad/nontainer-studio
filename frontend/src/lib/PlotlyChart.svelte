@@ -1,7 +1,9 @@
 <script>
     // Renders a *.plotly.json spec artifact. Plotly stays a lazy CDN
     // load (~3MB) — not worth bundling into the shell for a feature
-    // only some sessions use.
+    // only some sessions use. v3 to match plotly.py 6.x's paired
+    // renderer major (v2 is EOL; late v2 does decode 6.x's bdata
+    // typed arrays, but staying on the generator's major is safer).
     let { url } = $props()
 
     let node = $state(null)
@@ -10,7 +12,7 @@
     async function plotly() {
         if (!window.__plotlyPromise) {
             window.__plotlyPromise = import(
-                /* @vite-ignore */ 'https://esm.sh/plotly.js-dist-min@2'
+                /* @vite-ignore */ 'https://esm.sh/plotly.js-dist-min@3'
             ).then((m) => m.default)
         }
         return window.__plotlyPromise
