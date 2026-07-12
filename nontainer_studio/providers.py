@@ -233,16 +233,25 @@ def _safe_openrouter() -> Any:
 # all multimodal; ollama/dummy get the safe text-only default)
 _VISION_BY_PROVIDER = {"anthropic": True, "openai": True, "google": True}
 
-_openrouter_modalities: dict[str, bool] | None = None
+# provider -> context window when we can't ask (conservative floors
+# for the first-party catalogs)
+_CONTEXT_BY_PROVIDER = {
+    "anthropic": 200_000,
+    "openai": 400_000,
+    "google": 1_000_000,
+}
+
+_openrouter_meta: dict[str, tuple[bool, int | None]] | None = None
 
 
-def _openrouter_vision(model: str) -> bool:
-    """Does this OpenRouter model take image input? Asks the models API
-    once (public metadata; cached for the process). Unknown or
-    unreachable -> False: a wrongly-withheld screenshot degrades to a
-    path mention, a wrongly-attached one kills the next call."""
-    global _openrouter_modalities
-    if _openrouter_modalities is None:
+def _openrouter_model_meta(model: str) -> tuple[bool, int | None]:
+    """(vision, context_length) for an OpenRouter model — asks the
+    models API once (public metadata; cached for the process). Unknown
+    or unreachable -> (False, None): a wrongly-withheld screenshot
+    degrades to a path mention, a wrongly-attached one kills the next
+    call; an unknown context just gets the flat default."""
+    global _openrouter_meta
+    if _openrouter_meta is None:
         try:
             import json
             import urllib.request
@@ -251,14 +260,17 @@ def _openrouter_vision(model: str) -> bool:
                 "https://openrouter.ai/api/v1/models", timeout=10
             ) as r:
                 data = json.load(r)
-            _openrouter_modalities = {
-                m["id"]: "image"
-                in ((m.get("architecture") or {}).get("input_modalities") or [])
+            _openrouter_meta = {
+                m["id"]: (
+                    "image"
+                    in ((m.get("architecture") or {}).get("input_modalities") or []),
+                    m.get("context_length"),
+                )
                 for m in data.get("data", [])
             }
         except Exception:
-            _openrouter_modalities = {}
-    return _openrouter_modalities.get(model, False)
+            _openrouter_meta = {}
+    return _openrouter_meta.get(model, (False, None))
 
 
 def supports_vision(spec: str | None) -> bool:
@@ -272,8 +284,43 @@ def supports_vision(spec: str | None) -> bool:
     if provider == "dummy":
         return True  # the scripted model tolerates anything; keep e2e real
     if provider == "openrouter":
-        return _openrouter_vision(model)
+        return _openrouter_model_meta(model)[0]
     return _VISION_BY_PROVIDER.get(provider, False)
+
+
+def context_window(spec: str | None) -> int | None:
+    """The spec'd model's context length in tokens, when knowable."""
+    try:
+        provider, model = parse_spec(spec or default_spec())
+    except (ValueError, SystemExit):
+        return None
+    if provider == "openrouter":
+        return _openrouter_model_meta(model)[1]
+    return _CONTEXT_BY_PROVIDER.get(provider)
+
+
+def compress_token_limit(spec: str | None) -> int | None:
+    """The compaction high-water mark for this model: when the message
+    stack crosses it, agno compresses older tool results IN A WAVE
+    (one cache miss, then a stable prefix again — never a sliding
+    window, which would bust the prompt cache every turn).
+
+    Default: 60% of the model's context window, clamped to [32k, 250k]
+    (the ceiling is a cost bound — a 1M-context model doesn't want
+    600k-token turns). Unknown context -> 100k.
+    NONTAINER_STUDIO_COMPRESS_TOKENS overrides (0/off disables)."""
+    raw = os.getenv("NONTAINER_STUDIO_COMPRESS_TOKENS")
+    if raw:
+        if raw.strip().lower() in ("0", "off", "none", "false"):
+            return None
+        try:
+            return max(1_000, int(raw))
+        except ValueError:
+            pass  # unparseable -> fall through to the default
+    ctx = context_window(spec)
+    if ctx is None:
+        return 100_000
+    return min(max(int(ctx * 0.6), 32_000), 250_000)
 
 
 def build_model(spec: str | None = None) -> Any:

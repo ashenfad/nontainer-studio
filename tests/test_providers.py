@@ -89,12 +89,45 @@ def test_supports_vision_consults_openrouter_modalities(monkeypatch):
 
     monkeypatch.setattr(
         providers,
-        "_openrouter_modalities",
-        {"anthropic/claude-sonnet-5": True, "z-ai/glm-5.2": False},
+        "_openrouter_meta",
+        {
+            "anthropic/claude-sonnet-5": (True, 1_000_000),
+            "z-ai/glm-5.2": (False, 202_752),
+        },
     )
     assert providers.supports_vision("openrouter:anthropic/claude-sonnet-5")
     assert not providers.supports_vision("openrouter:z-ai/glm-5.2")
     assert not providers.supports_vision("openrouter:unknown/model")
+
+
+def test_compress_token_limit_scales_with_context(monkeypatch):
+    """Compaction watermark: 60% of the model's context, clamped to
+    [32k, 250k] (the ceiling is a cost bound); unknown -> 100k; env
+    override wins; 'off' disables."""
+    from nontainer_studio import providers
+
+    monkeypatch.delenv("NONTAINER_STUDIO_COMPRESS_TOKENS", raising=False)
+    monkeypatch.setattr(
+        providers,
+        "_openrouter_meta",
+        {
+            "z-ai/glm-5.2": (False, 202_752),
+            "big/ctx": (False, 1_000_000),
+            "tiny/ctx": (False, 32_768),
+        },
+    )
+    assert providers.compress_token_limit("openrouter:z-ai/glm-5.2") == int(
+        202_752 * 0.6
+    )
+    assert providers.compress_token_limit("openrouter:big/ctx") == 250_000  # ceiling
+    assert providers.compress_token_limit("openrouter:tiny/ctx") == 32_000  # floor
+    assert providers.compress_token_limit("openrouter:unknown/model") == 100_000
+    assert providers.compress_token_limit("anthropic:claude-sonnet-5") == 120_000
+
+    monkeypatch.setenv("NONTAINER_STUDIO_COMPRESS_TOKENS", "50000")
+    assert providers.compress_token_limit("openrouter:big/ctx") == 50_000
+    monkeypatch.setenv("NONTAINER_STUDIO_COMPRESS_TOKENS", "off")
+    assert providers.compress_token_limit("openrouter:big/ctx") is None
 
 
 def test_supports_vision_provider_defaults():

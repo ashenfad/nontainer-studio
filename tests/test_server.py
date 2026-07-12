@@ -136,6 +136,42 @@ def test_native_thinking_streams_as_thinking_events(studio):
     assert [e["delta"] for e in events if e["type"] == "text"] == ["the answer"]
 
 
+def test_compression_and_usage_events_reach_the_transcript(studio):
+    """Compaction waves surface as notices (the slow turn explains
+    itself); per-call token usage rides a `usage` event for the UI."""
+    client, registry = studio
+
+    class CompressingAgent(FakeAgent):
+        async def arun(self, message, stream=True, stream_events=True):
+            self.seen.append(message)
+            yield SimpleNamespace(
+                event="ModelRequestCompleted",
+                input_tokens=123_456,
+                cache_read_tokens=100_000,
+                run_id="run-1",
+            )
+            yield SimpleNamespace(event="CompressionStarted")
+            yield SimpleNamespace(
+                event="CompressionCompleted",
+                tool_results_compressed=7,
+                original_size=90_000,
+                compressed_size=4_000,
+            )
+            yield SimpleNamespace(event="RunContent", content="done")
+
+    registry._build_agent = lambda *a, **k: CompressingAgent()
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/chat", json={"message": "go"})
+    events = _collect_until_done(client, "s1")
+    kinds = [e["type"] for e in events]
+    assert kinds == ["user", "usage", "notice", "notice", "text", "done"]
+    usage = next(e for e in events if e["type"] == "usage")
+    assert usage["input_tokens"] == 123_456 and usage["cached_tokens"] == 100_000
+    notices = [e["text"] for e in events if e["type"] == "notice"]
+    assert "compressing older tool results" in notices[0]
+    assert "7 tool results (90,000 → 4,000 chars)" in notices[1]
+
+
 def test_chat_missing_session_and_empty_message(studio):
     client, _ = studio
     assert (
