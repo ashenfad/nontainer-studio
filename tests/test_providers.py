@@ -130,6 +130,36 @@ def test_compress_token_limit_scales_with_context(monkeypatch):
     assert providers.compress_token_limit("openrouter:big/ctx") is None
 
 
+def test_openrouter_meta_failure_is_cached_with_ttl(monkeypatch):
+    """A DNS blip at first lookup must not disable vision gating for
+    the process lifetime — but an offline machine must not stall on
+    every call either: failure is negatively cached for a TTL, then
+    retried (PR #1 review)."""
+    import urllib.request
+
+    from nontainer_studio import providers
+
+    calls = {"n": 0}
+
+    def boom(*a, **k):
+        calls["n"] += 1
+        raise OSError("no dns")
+
+    monkeypatch.setattr(providers, "_openrouter_meta", None)
+    monkeypatch.setattr(providers, "_openrouter_meta_failed_at", None)
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+
+    assert providers._openrouter_model_meta("any/model") == (False, None)
+    assert calls["n"] == 1
+    # within the TTL: degraded default, NO second network attempt
+    assert providers._openrouter_model_meta("any/model") == (False, None)
+    assert calls["n"] == 1
+    # after the TTL: the fetch is retried
+    providers._openrouter_meta_failed_at -= providers._META_RETRY_SECONDS + 1
+    assert providers._openrouter_model_meta("any/model") == (False, None)
+    assert calls["n"] == 2
+
+
 def test_supports_vision_provider_defaults():
     from nontainer_studio import providers
 

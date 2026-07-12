@@ -50,8 +50,20 @@ export async function followEvents(session, since, onEvent, signal) {
         while ((i = buf.indexOf('\n\n')) >= 0) {
             const chunk = buf.slice(0, i)
             buf = buf.slice(i + 2)
-            for (const line of chunk.split('\n'))
-                if (line.startsWith('data: ')) onEvent(JSON.parse(line.slice(6)))
+            for (const line of chunk.split('\n')) {
+                if (!line.startsWith('data: ')) continue
+                // parse defensively: a poison line would otherwise throw,
+                // resubscribe from the SAME cursor, refetch the same line,
+                // and wedge the follower in a permanent retry loop
+                let ev
+                try {
+                    ev = JSON.parse(line.slice(6))
+                } catch {
+                    console.warn('skipping malformed event line:', line)
+                    continue
+                }
+                onEvent(ev)
+            }
         }
     }
 }

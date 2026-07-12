@@ -242,6 +242,8 @@ _CONTEXT_BY_PROVIDER = {
 }
 
 _openrouter_meta: dict[str, tuple[bool, int | None]] | None = None
+_openrouter_meta_failed_at: float | None = None
+_META_RETRY_SECONDS = 60.0
 
 
 def _openrouter_model_meta(model: str) -> tuple[bool, int | None]:
@@ -249,9 +251,22 @@ def _openrouter_model_meta(model: str) -> tuple[bool, int | None]:
     models API once (public metadata; cached for the process). Unknown
     or unreachable -> (False, None): a wrongly-withheld screenshot
     degrades to a path mention, a wrongly-attached one kills the next
-    call; an unknown context just gets the flat default."""
-    global _openrouter_meta
+    call; an unknown context just gets the flat default.
+
+    Failure is cached with a TTL, not forever: a DNS blip at first
+    session creation shouldn't disable vision gating for the process
+    lifetime — but a genuinely offline machine mustn't stall 10s on
+    every call either (PR #1 review)."""
+    global _openrouter_meta, _openrouter_meta_failed_at
     if _openrouter_meta is None:
+        import time
+
+        now = time.monotonic()
+        if (
+            _openrouter_meta_failed_at is not None
+            and now - _openrouter_meta_failed_at < _META_RETRY_SECONDS
+        ):
+            return (False, None)
         try:
             import json
             import urllib.request
@@ -269,7 +284,8 @@ def _openrouter_model_meta(model: str) -> tuple[bool, int | None]:
                 for m in data.get("data", [])
             }
         except Exception:
-            _openrouter_meta = {}
+            _openrouter_meta_failed_at = now
+            return (False, None)
     return _openrouter_meta.get(model, (False, None))
 
 
