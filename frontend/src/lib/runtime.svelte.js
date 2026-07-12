@@ -138,10 +138,12 @@ export class SessionRuntime {
 
     #opened
     #markOpen
+    #exists = false
     /** the session exists server-side — safe to follow. Called by
      * ensureSession after POST /api/sessions succeeds, so the follower
      * doesn't race session creation. */
     markOpen() {
+        this.#exists = true
         this.#markOpen()
     }
 
@@ -182,8 +184,15 @@ export class SessionRuntime {
                     (ev) => this.#apply(ev),
                     this.#ctl.signal,
                 )
-            } catch {
-                /* dropped or aborted; resubscribe from cursor */
+            } catch (e) {
+                // A 404 on a CONFIRMED session is unambiguous — sessions
+                // are manifest-driven and lazily reopened, so "unknown"
+                // means DELETED (from another tab): stop, don't spin on
+                // retries forever. Before markOpen it may just be a slow
+                // create-POST — keep the old retry behavior.
+                if (this.#exists && String(e?.message).includes('events feed: 404'))
+                    this.#following = false
+                /* otherwise dropped or aborted; resubscribe from cursor */
             }
             this.connected = false
             if (this.#following)
