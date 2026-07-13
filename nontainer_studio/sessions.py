@@ -37,7 +37,26 @@ from nontainer.apps import AppRuntime, enable_apps, mint_token
 
 DEFAULT_STORE = Path.home() / ".nontainer-studio"
 
-MAX_EVENTS = 10_000  # per session; a demo bound, not a product knob
+MAX_EVENTS = 10_000  # in-MEMORY tail window, not a lifetime cap
+
+# streamed chunk events — the only types that compact (a merged run is
+# indistinguishable from one big delta, so clients need no special case)
+_DELTA_TYPES = ("text", "thinking")
+
+
+def _compact(events: list[dict]) -> list[dict]:
+    """Merge contiguous same-type delta runs into single events. The
+    merged event keeps the FIRST seq of its run (monotonicity for
+    followers). Delta granularity is a wire concern; storing it 1:1
+    inflated logs 10-40x — a reasoning turn is thousands of chunks."""
+    out: list[dict] = []
+    for e in events:
+        t = e.get("type")
+        if out and t in _DELTA_TYPES and out[-1].get("type") == t:
+            out[-1] = {**out[-1], "delta": out[-1].get("delta", "") + e.get("delta", "")}
+        else:
+            out.append(e)
+    return out
 
 STUDIO_PRIMER = (
     "You work inside nontainer-studio; the human sees your workspace "
@@ -135,41 +154,82 @@ class Session:
     — the handle the stop button needs (agno's cancel-by-run-id)."""
 
     log_path: Path | None = None
-    """Durable transcript: emit appends each event as a jsonl line;
-    open() reloads the tail. Replay-vs-live needs no special casing —
-    the event feed already serves both from one cursor."""
+    """Durable transcript: the COMPACTED event stream, appended at
+    each non-delta boundary; open() reloads the tail. Replay-vs-live
+    needs no special casing — the event feed serves both from one
+    cursor, and a merged delta replays exactly like a big one."""
 
     events: list[dict] = field(default_factory=list)
     """The transcript, server-side: user messages, streamed agent
-    events, turn boundaries. Subscribers replay from a cursor and then
-    follow live — this is what makes background sessions work."""
+    events, turn boundaries — each stamped with an immutable ``seq``
+    (identity is the seq, NOT the list position: compaction and the
+    memory window reshape the list). Subscribers replay from a seq
+    cursor and then follow live — this is what makes background
+    sessions work."""
+
+    next_seq: int = 0
+    """Monotonic event id; survives compaction/window drops (and, via
+    the jsonl, restarts)."""
+
+    flush_idx: int = field(default=0, repr=False)
+    """Index of the first event not yet written to the jsonl. Deltas
+    buffer in memory until the next non-delta event compacts + flushes
+    them — disk only ever carries the compacted form."""
 
     new_event: asyncio.Condition = field(default_factory=asyncio.Condition)
 
     async def emit(self, event: dict) -> None:
         async with self.new_event:
-            # Control events bypass the cap: dropping a `done` would
-            # leave clients busy forever and pollers hanging.
-            if len(self.events) < MAX_EVENTS or event["type"] in ("done", "error"):
-                self.events.append(event)
-                if self.log_path is not None:
-                    with self.log_path.open("a") as f:
-                        f.write(json.dumps(event) + "\n")
-                if len(self.events) == MAX_EVENTS:
-                    self.events.append({"type": "error", "message": "event log full"})
+            event = {**event, "seq": self.next_seq}
+            self.next_seq += 1
+            self.events.append(event)
+            # Delta chunks buffer; anything else is a boundary: compact
+            # the buffered run and flush, so the log stays current to
+            # within the live delta run (crash loses at most that).
+            if event["type"] not in _DELTA_TYPES:
+                self._compact_and_flush()
             self.new_event.notify_all()
 
+    def _compact_and_flush(self) -> None:
+        """Caller holds ``new_event``. Compact the unflushed tail,
+        append it to the jsonl, then trim memory to the tail window
+        (flushed events only — nothing is ever dropped before it's on
+        disk)."""
+        tail = _compact(self.events[self.flush_idx :])
+        self.events[self.flush_idx :] = tail
+        if self.log_path is not None:
+            with self.log_path.open("a") as f:
+                for e in tail:
+                    f.write(json.dumps(e) + "\n")
+        self.flush_idx = len(self.events)
+        if len(self.events) > MAX_EVENTS:
+            del self.events[: len(self.events) - MAX_EVENTS]
+            self.flush_idx = len(self.events)
+
     async def follow(self, since: int):
-        """Yield events from ``since``, then live. Runs forever; the
-        subscriber disconnecting is the exit path."""
+        """Yield ``(seq, event)`` from seq ``since``, then live. Runs
+        forever; the subscriber disconnecting is the exit path. The
+        cursor is re-resolved against the list each step (bisect on
+        seq) because compaction may reshape it between yields; a
+        follower that was lagging INSIDE a delta run when its turn
+        compacted skips the run's merged remainder — the price of
+        first-seq merging, paid only by slow consumers mid-turn."""
+        import bisect
+
         cursor = max(0, since)
         while True:
             async with self.new_event:
-                while cursor >= len(self.events):
+                while not self.events or self.events[-1]["seq"] < cursor:
                     await self.new_event.wait()
-            while cursor < len(self.events):
-                yield cursor, self.events[cursor]
-                cursor += 1
+            while True:
+                idx = bisect.bisect_left(
+                    self.events, cursor, key=lambda e: e["seq"]
+                )
+                if idx >= len(self.events):
+                    break
+                event = self.events[idx]
+                yield event["seq"], event
+                cursor = event["seq"] + 1
 
     @property
     def busy(self) -> bool:
@@ -280,7 +340,10 @@ class Registry:
             if not ws.fs.isdir("/skills"):
                 self._seed_skills(ws)
             session = self._assemble(name, ws, db, model)
-            session.events.extend(self._load_events(session.log_path))
+            loaded = self._load_events(session.log_path)
+            session.events.extend(loaded)
+            session.next_seq = (loaded[-1]["seq"] + 1) if loaded else 0
+            session.flush_idx = len(session.events)  # loaded = on disk
             self._sessions[name] = session
             self._record(name, model)
             return session
@@ -358,7 +421,10 @@ class Registry:
     @staticmethod
     def _load_events(log_path: Path | None) -> list[dict]:
         """Reload a prior run's transcript tail (torn last lines from
-        a crash are skipped, not fatal)."""
+        a crash are skipped, not fatal). Legacy logs predate stored
+        seqs and compaction: seqs are assigned by line position (which
+        is what truncate events' `to` referenced back then), and the
+        granular delta runs collapse on the way in."""
         if log_path is None or not log_path.exists():
             return []
         events = []
@@ -367,7 +433,9 @@ class Registry:
                 events.append(json.loads(line))
             except ValueError:
                 continue
-        return events[-MAX_EVENTS:]
+        for i, e in enumerate(events):
+            e.setdefault("seq", i)
+        return _compact(events)[-MAX_EVENTS:]
 
     def _chat_db(self) -> Any:
         """agno's durable chat store: sqlite when sqlalchemy is
@@ -597,12 +665,13 @@ class Registry:
         tell a no-file-change turn from its predecessor (same head),
         the transcript can. The caller emits the `truncate` event and
         starts the new turn."""
-        event = session.events[seq]
-        head = event.get("head")
-        if event.get("type") != "user" or not head:
+        event = next((e for e in session.events if e.get("seq") == seq), None)
+        head = event.get("head") if event else None
+        if event is None or event.get("type") != "user" or not head:
             raise ValueError(f"event {seq} is not an editable user message")
         last_kept_run_id = None
-        for _, ev in self._visible(session.events[:seq]):
+        prior = [e for e in session.events if e["seq"] < seq]
+        for _, ev in self._visible(prior):
             if ev.get("type") == "done":
                 last_kept_run_id = ev.get("run_id") or last_kept_run_id
         session.ws.restore(head)
@@ -618,13 +687,13 @@ class Registry:
         list: a done event after a cut refers to a run that no longer
         exists in agent memory."""
         visible: list[tuple[int, dict]] = []
-        for i, event in enumerate(events):
+        for event in events:
             if event.get("type") == "truncate":
                 to = event.get("to", 0)
                 while visible and visible[-1][0] >= to:
                     visible.pop()
             else:
-                visible.append((i, event))
+                visible.append((event.get("seq", 0), event))
         return visible
 
     @staticmethod

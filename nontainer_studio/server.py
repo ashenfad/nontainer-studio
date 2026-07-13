@@ -261,7 +261,7 @@ def build_app(registry: Registry) -> Starlette:
         # keep a strong reference: the loop holds tasks weakly, and a
         # GC'd task is a silently dead turn with a stuck lock
         session.turn_task = asyncio.create_task(_run_turn(session, message))
-        return JSONResponse({"ok": True, "since": len(session.events)})
+        return JSONResponse({"ok": True, "since": session.next_seq})
 
     @with_session
     async def edit(request: Any, session: Any) -> Any:
@@ -275,14 +275,14 @@ def build_app(registry: Registry) -> Starlette:
         seq = body.get("seq")
         if not message:
             return JSONResponse({"error": "empty message"}, status_code=400)
-        if (
-            not isinstance(seq, int)
-            or isinstance(seq, bool)
-            or not 0 <= seq < len(session.events)
-            or session.events[seq].get("type") != "user"
-        ):
+        target = (
+            next((e for e in session.events if e.get("seq") == seq), None)
+            if isinstance(seq, int) and not isinstance(seq, bool)
+            else None
+        )
+        if target is None or target.get("type") != "user":
             return JSONResponse(
-                {"error": "seq must index a user event"}, status_code=400
+                {"error": "seq must name a user event"}, status_code=400
             )
         if not session.turn_lock.acquire(blocking=False):
             return JSONResponse({"error": "a turn is already running"}, status_code=409)
@@ -293,7 +293,7 @@ def build_app(registry: Registry) -> Starlette:
             return JSONResponse({"error": str(e)}, status_code=400)
         await session.emit({"type": "truncate", "to": seq})
         session.turn_task = asyncio.create_task(_run_turn(session, message))
-        return JSONResponse({"ok": True, "since": len(session.events)})
+        return JSONResponse({"ok": True, "since": session.next_seq})
 
     @with_session
     async def cancel(request: Any, session: Any) -> Any:
@@ -332,7 +332,10 @@ def build_app(registry: Registry) -> Starlette:
 
         if request.query_params.get("wait") == "0":
             return JSONResponse(
-                {"events": session.events[since:], "next": len(session.events)}
+                {
+                    "events": [e for e in session.events if e["seq"] >= since],
+                    "next": session.next_seq,
+                }
             )
 
         async def stream() -> AsyncIterator[str]:
