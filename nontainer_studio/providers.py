@@ -141,29 +141,51 @@ def available() -> dict:
 
 
 def _sanitize_tool_calls(messages: list) -> list:
-    """Drop the id-only tool-call stubs agno records when a provider
-    streams undecodable arguments (gemma's token-level tool format is
-    parsed provider-side, and truncated parses arrive as ``{'id': ...}``
-    with no ``function``) — plus their paired error tool-results.
-    Replaying a stub 400s on EVERY provider ("function/type field
-    required"), killing the rest of the turn. Dropping it instead lets
-    the model see its valid calls' results and retry the failed one."""
+    """Two provider-corruption repairs, both replay poison:
+
+    - Id-only stubs (``{'id': ...}``, no ``function``) — recorded when
+      streamed arguments never decoded at all. Dropped, with their
+      paired error tool-results: replaying a stub 400s on EVERY
+      provider ("function/type field required").
+    - Calls whose ``arguments`` string isn't valid JSON — some
+      providers' tool-format parsers mangle args server-side (seen:
+      Parasail splitting a JS ``r =>`` arrow into a bogus key/value),
+      agno keeps the raw string plus an error result, and strict
+      providers then 400 on every subsequent request ("Expecting ','
+      delimiter"), wedging the session. Arguments are normalized to
+      ``{}`` so the pair replays validly and the model still sees
+      agno's decode-error feedback."""
     import copy
+    import json as _json
+
+    def _args_ok(tc: dict) -> bool:
+        args = (tc.get("function") or {}).get("arguments")
+        if not isinstance(args, str) or not args.strip():
+            return True
+        try:
+            _json.loads(args)
+            return True
+        except ValueError:
+            return False
 
     dropped: set[str] = set()
     out = []
     for m in messages:
         tool_calls = getattr(m, "tool_calls", None)
         if tool_calls:
-            good = [
-                tc
-                for tc in tool_calls
-                if not isinstance(tc, dict) or "function" in tc
-            ]
-            if len(good) != len(tool_calls):
-                for tc in tool_calls:
-                    if isinstance(tc, dict) and "function" not in tc and tc.get("id"):
+            good = []
+            fixed = False
+            for tc in tool_calls:
+                if isinstance(tc, dict) and "function" not in tc:
+                    if tc.get("id"):
                         dropped.add(tc["id"])
+                    fixed = True
+                    continue
+                if isinstance(tc, dict) and not _args_ok(tc):
+                    tc = {**tc, "function": {**tc["function"], "arguments": "{}"}}
+                    fixed = True
+                good.append(tc)
+            if fixed:
                 m = copy.copy(m)
                 m.tool_calls = good or None
         if getattr(m, "tool_call_id", None) in dropped:
