@@ -90,7 +90,9 @@ def test_turn_runs_in_background_and_transcript_replays(studio):
 
     events = _collect_until_done(client, "s1")
     kinds = [e["type"] for e in events]
-    assert kinds == ["user", "tool_start", "tool_end", "text", "text", "done"]
+    # the poll snapshot sees the COMPACTED transcript: contiguous
+    # delta runs merge at turn boundaries (live SSE streams granular)
+    assert kinds == ["user", "tool_start", "tool_end", "text", "done"]
     assert events[0]["text"] == "build me a thing"
     # args ride STRUCTURED (the client renders tool calls per-type)
     started = next(e for e in events if e["type"] == "tool_start")
@@ -102,7 +104,7 @@ def test_turn_runs_in_background_and_transcript_replays(studio):
     replay = _collect_until_done(client, "s1")
     assert [e["type"] for e in replay] == kinds
     # and cursors let a client resume where it left off
-    tail = _collect_until_done(client, "s1", since=len(events) - 1)
+    tail = _collect_until_done(client, "s1", since=events[-1]["seq"])
     assert [e["type"] for e in tail] == ["done"]
 
 
@@ -130,7 +132,7 @@ def test_native_thinking_streams_as_thinking_events(studio):
     client.post("/api/sessions/s1/chat", json={"message": "ponder"})
     events = _collect_until_done(client, "s1")
     kinds = [e["type"] for e in events]
-    assert kinds == ["user", "thinking", "thinking", "thinking", "text", "done"]
+    assert kinds == ["user", "thinking", "text", "done"]  # deltas compacted
     thought = "".join(e["delta"] for e in events if e["type"] == "thinking")
     assert thought == "hmm, let me see… ok"
     assert [e["delta"] for e in events if e["type"] == "text"] == ["the answer"]
@@ -584,12 +586,96 @@ def test_transcript_survives_restart(studio, tmp_path):
     reborn.close()
 
 
+def test_transcript_compacts_deltas_and_survives_reload(studio):
+    """Delta granularity is a wire concern: at each non-delta boundary
+    contiguous text/thinking runs merge into single events (seq of the
+    run's first chunk), the jsonl carries only the compacted form, and
+    a reload reconstructs the identical transcript. Reasoning turns
+    used to burn thousands of log entries; undone timelines then hit
+    the old lifetime cap ('event log full') — gone with the window."""
+    import asyncio
+    import json as _json
+
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    async def turn():
+        await session.emit({"type": "user", "text": "go", "head": "h1"})
+        for chunk in ("thi", "nk ", "hard"):
+            await session.emit({"type": "thinking", "delta": chunk})
+        for chunk in ("hello ", "world"):
+            await session.emit({"type": "text", "delta": chunk})
+        await session.emit({"type": "done", "run_id": "r1", "head": "h1"})
+
+    asyncio.run(turn())
+
+    kinds = [(e["type"], e["seq"]) for e in session.events]
+    # 7 emitted -> 4 stored; merged events keep their run's FIRST seq
+    assert kinds == [("user", 0), ("thinking", 1), ("text", 4), ("done", 6)]
+    assert session.events[1]["delta"] == "think hard"
+    assert session.events[2]["delta"] == "hello world"
+    assert session.next_seq == 7
+
+    # the jsonl holds exactly the compacted form
+    lines = [_json.loads(x) for x in session.log_path.read_text().splitlines()]
+    assert [e["seq"] for e in lines] == [0, 1, 4, 6]
+
+    # legacy (pre-seq, granular) logs collapse on load with positional seqs
+    legacy = session.log_path.with_name("legacy.jsonl")
+    legacy.write_text(
+        "\n".join(
+            _json.dumps(e)
+            for e in [
+                {"type": "user", "text": "hi"},
+                {"type": "text", "delta": "a"},
+                {"type": "text", "delta": "b"},
+                {"type": "done"},
+            ]
+        )
+        + "\n"
+    )
+    loaded = sessions_mod.Registry._load_events(legacy)
+    assert [(e["type"], e["seq"]) for e in loaded] == [
+        ("user", 0),
+        ("text", 1),
+        ("done", 3),
+    ]
+    assert loaded[1]["delta"] == "ab"
+
+
+def test_memory_window_drops_head_but_seqs_stay_monotonic(studio, monkeypatch):
+    """The in-memory list is a tail WINDOW, not a lifetime cap: old
+    (flushed) events fall off, seqs keep counting, and a poller asking
+    from an ancient seq just gets the surviving tail."""
+    import asyncio
+
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    monkeypatch.setattr(sessions_mod, "MAX_EVENTS", 4)
+
+    async def spam():
+        for i in range(10):
+            await session.emit({"type": "notice", "text": f"n{i}"})
+
+    asyncio.run(spam())
+    assert len(session.events) == 4
+    assert [e["seq"] for e in session.events] == [6, 7, 8, 9]
+    assert session.next_seq == 10
+    data = client.get("/api/sessions/s1/events?since=0&wait=0").json()
+    assert [e["seq"] for e in data["events"]] == [6, 7, 8, 9]
+    assert data["next"] == 10
+
+
 def test_event_log_tolerates_torn_lines(studio, tmp_path):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     log = registry.get("s1").log_path
     log.write_text('{"type": "user", "text": "ok"}\n{"type": "trunc')  # crash mid-write
-    assert sessions_mod.Registry._load_events(log) == [{"type": "user", "text": "ok"}]
+    assert sessions_mod.Registry._load_events(log) == [
+        {"type": "user", "text": "ok", "seq": 0}
+    ]
 
 
 # -- synchronized restore ---------------------------------------------------------
@@ -685,7 +771,7 @@ def test_restore_unknown_mapping_leaves_memory_alone(studio):
 
 
 def _user_seqs(session) -> list[int]:
-    return [i for i, e in enumerate(session.events) if e["type"] == "user"]
+    return [e["seq"] for e in session.events if e["type"] == "user"]
 
 
 def test_edit_rewinds_truncates_and_reruns(studio):
@@ -873,7 +959,9 @@ def test_cancel_stops_the_turn_and_repairs_memory(studio):
     assert r.status_code == 200 and agent.cancel_requests == ["run-9"]
 
     events = _collect_until_done(client, "s1")
-    assert {"type": "notice", "text": "turn stopped"} in events
+    assert any(
+        e["type"] == "notice" and e["text"] == "turn stopped" for e in events
+    )
     assert not session.busy and session.run_id is None
     # the cancelled run was repaired: memory keeps the partial work
     run = chat_db.record.runs[0]
