@@ -8,6 +8,7 @@
     import { viewer, closeViewer } from './viewer.svelte.js'
     import PlotlyChart from './PlotlyChart.svelte'
     import DataTable from './DataTable.svelte'
+    import { looksLikePlotly } from './sniff.js'
 
     let { session } = $props()
 
@@ -104,6 +105,9 @@
                 {:else if kind === 'markdown'}
                     <!-- eslint-disable-next-line svelte/no-at-html-tags — DOMPurify'd -->
                     <div class="markdown">{@html renderMarkdown(text)}</div>
+                {:else if ext === 'json' && looksLikePlotly(text)}
+                    <!-- plain .json holding a plotly spec (write_json) -->
+                    <PlotlyChart {url} />
                 {:else if kind === 'code'}
                     <!-- eslint-disable-next-line svelte/no-at-html-tags — hljs output over escaped text -->
                     <pre class="code"><code class="hljs"
