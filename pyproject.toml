@@ -32,6 +32,10 @@ dependencies = [
     # endpoints); google/ollama SDKs are opt-in installs
     "anthropic",
     "openai",
+    # agno's compression watermark counts tokens; without these it
+    # falls back to a chars/4 estimate and warns on every new model id
+    "tiktoken",
+    "tokenizers",
 ]
 
 [project.optional-dependencies]

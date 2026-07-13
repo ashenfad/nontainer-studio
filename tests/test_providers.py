@@ -71,6 +71,51 @@ def test_gemma_routes_around_broken_tool_call_parsers():
     assert _shape("openrouter:qwen/qwen3.6-35b-a3b").extra_body is None
 
 
+def test_openrouter_at_tag_pins_the_upstream_provider():
+    """`model@slug[/quant]` pins OpenRouter's provider routing: order
+    without fallbacks (an explicit pin means THAT provider), plus a
+    quantization filter when given. The tag outranks curated routing
+    and is stripped for identity (catalog lookups, model id)."""
+    model = _shape("openrouter:qwen/qwen3.6-35b-a3b@wandb/fp8")
+    assert model.id == "qwen/qwen3.6-35b-a3b"
+    assert model.extra_body == {
+        "provider": {
+            "order": ["wandb"],
+            "allow_fallbacks": False,
+            "quantizations": ["fp8"],
+        }
+    }
+    # slug-only: no quantization filter
+    model = _shape("openrouter:qwen/qwen3.6-35b-a3b@deepinfra")
+    assert model.extra_body == {
+        "provider": {"order": ["deepinfra"], "allow_fallbacks": False}
+    }
+    # explicit tag replaces gemma's curated routing, keeps nothing stale
+    model = _shape("openrouter:google/gemma-4-26b-a4b-it@venice")
+    assert model.extra_body["provider"] == {
+        "order": ["venice"],
+        "allow_fallbacks": False,
+    }
+    # composes with anthropic's reasoning extra_body
+    model = _shape("openrouter:anthropic/claude-sonnet-5@anthropic")
+    assert model.extra_body["reasoning"] == {"max_tokens": 4096}
+    assert model.extra_body["provider"]["order"] == ["anthropic"]
+
+
+def test_openrouter_tag_is_ignored_for_catalog_metadata(monkeypatch):
+    from nontainer_studio import providers
+
+    monkeypatch.setattr(
+        providers,
+        "_openrouter_meta",
+        {"anthropic/claude-sonnet-5": (True, 1_000_000)},
+    )
+    assert providers.supports_vision("openrouter:anthropic/claude-sonnet-5@anthropic")
+    assert providers.context_window(
+        "openrouter:anthropic/claude-sonnet-5@anthropic"
+    ) == 1_000_000
+
+
 def test_gpt56_rides_the_responses_endpoint():
     """chat-completions rejects tools + reasoning for gpt-5.6 — both
     the openrouter AND direct-openai paths take the Responses API."""
