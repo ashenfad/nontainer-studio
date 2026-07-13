@@ -149,7 +149,8 @@
                     {/snippet}
                 </SplitPane>
             {:else}
-                <div class="chat">
+                <!-- full-width mode: cap the column so lines stay readable -->
+                <div class="chat solo">
                     <MessageList {rt} />
                     <ChatInput {rt} />
                 </div>
@@ -207,6 +208,11 @@
         flex-direction: column;
         flex: 1;
         min-height: 0;
+    }
+    .chat.solo {
+        max-width: 900px;
+        width: 100%;
+        margin: 0 auto;
     }
     .side {
         display: flex;
