@@ -27,6 +27,23 @@
     let tab = $state('preview')
     let ready = $state(false)
 
+    // layout prefs: per-browser, survive reloads, no server involvement
+    let showRail = $state(localStorage.getItem('nts.rail') !== '0')
+    let showSide = $state(localStorage.getItem('nts.side') !== '0')
+    $effect(() => localStorage.setItem('nts.rail', showRail ? '1' : '0'))
+    $effect(() => localStorage.setItem('nts.side', showSide ? '1' : '0'))
+
+    function onKeydown(e) {
+        if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return
+        if (e.key === 'b') {
+            e.preventDefault()
+            showRail = !showRail
+        } else if (e.key === 'j') {
+            e.preventDefault()
+            showSide = !showSide
+        }
+    }
+
     // open (create-or-resume) the active session; only the foreground
     // session streams (cleanup backgrounds the previous one)
     $effect(() => {
@@ -68,49 +85,77 @@
     }
 </script>
 
+<svelte:window onkeydown={onKeydown} />
+
 <div class="shell">
-    <SessionRail
-        {active}
-        onSwitch={switchTo}
-        onCreate={switchTo}
-        onDelete={deleteSession}
-    />
-    {#if ready}
-        <SplitPane>
-            {#snippet left()}
+    <header class="topbar">
+        <button
+            class="chrome-btn"
+            class:on={showRail}
+            title="toggle session drawer (⌘B)"
+            aria-label="toggle session drawer"
+            onclick={() => (showRail = !showRail)}>☰</button
+        >
+        <span class="session-name">{active}</span>
+        <span class="grow"></span>
+        {#if !rt.connected}
+            <span class="offline" title="event feed reconnecting…">⟳</span>
+        {/if}
+        <button
+            class="chrome-btn"
+            class:on={showSide}
+            title="toggle preview panel (⌘J)"
+            aria-label="toggle preview panel"
+            onclick={() => (showSide = !showSide)}>◨</button
+        >
+    </header>
+    <div class="body">
+        {#if showRail}
+            <SessionRail
+                {active}
+                onSwitch={switchTo}
+                onCreate={switchTo}
+                onDelete={deleteSession}
+            />
+        {/if}
+        {#if ready}
+            {#if showSide}
+                <SplitPane>
+                    {#snippet left()}
+                        <div class="chat">
+                            <MessageList {rt} />
+                            <ChatInput {rt} />
+                        </div>
+                    {/snippet}
+                    {#snippet right()}
+                        <div class="side">
+                            <div class="tabs">
+                                {#each ['preview', 'files', 'history'] as t (t)}
+                                    <button
+                                        class="tab"
+                                        class:active={tab === t}
+                                        onclick={() => (tab = t)}>{t}</button
+                                    >
+                                {/each}
+                            </div>
+                            {#if tab === 'preview'}
+                                <Preview {rt} />
+                            {:else if tab === 'files'}
+                                <FilesTab {rt} />
+                            {:else}
+                                <HistoryTab {rt} onFork={switchTo} />
+                            {/if}
+                        </div>
+                    {/snippet}
+                </SplitPane>
+            {:else}
                 <div class="chat">
                     <MessageList {rt} />
                     <ChatInput {rt} />
                 </div>
-            {/snippet}
-            {#snippet right()}
-                <div class="side">
-                    <div class="tabs">
-                        {#each ['preview', 'files', 'history'] as t (t)}
-                            <button
-                                class="tab"
-                                class:active={tab === t}
-                                onclick={() => (tab = t)}>{t}</button
-                            >
-                        {/each}
-                        <span class="grow"></span>
-                        {#if !rt.connected}
-                            <span class="offline" title="event feed reconnecting…"
-                                >⟳</span
-                            >
-                        {/if}
-                    </div>
-                    {#if tab === 'preview'}
-                        <Preview {rt} />
-                    {:else if tab === 'files'}
-                        <FilesTab {rt} />
-                    {:else}
-                        <HistoryTab {rt} onFork={switchTo} />
-                    {/if}
-                </div>
-            {/snippet}
-        </SplitPane>
-    {/if}
+            {/if}
+        {/if}
+    </div>
     <!-- one viewer for every surface that mentions a workspace path -->
     <FileModal session={active} />
 </div>
@@ -118,7 +163,44 @@
 <style>
     .shell {
         display: flex;
+        flex-direction: column;
         height: 100%;
+    }
+    .topbar {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        padding: 0.3rem 0.6rem;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        flex: none;
+    }
+    .chrome-btn {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        font-size: 0.95rem;
+        line-height: 1;
+        padding: 0.3rem 0.45rem;
+        border-radius: 6px;
+        cursor: pointer;
+    }
+    .chrome-btn:hover {
+        color: var(--text);
+        background: var(--surface-hover);
+    }
+    .chrome-btn.on {
+        color: var(--text);
+    }
+    .session-name {
+        font-family: var(--font-display);
+        font-size: 0.9rem;
+        color: var(--text);
+    }
+    .body {
+        display: flex;
+        flex: 1;
+        min-height: 0;
     }
     .chat {
         display: flex;
