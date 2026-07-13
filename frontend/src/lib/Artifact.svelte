@@ -5,6 +5,7 @@
     import { fileUrl } from './api.js'
     import PlotlyChart from './PlotlyChart.svelte'
     import DataTable from './DataTable.svelte'
+    import { looksLikePlotly } from './sniff.js'
 
     let { session, path, name = '' } = $props()
 
@@ -14,13 +15,14 @@
         if (/\.table\.json$/.test(path)) return 'table'
         if (/\.(png|jpe?g|gif|webp)$/i.test(path)) return 'image'
         if (/\.html$/.test(path)) return 'html'
-        if (/\.(json|txt)$/.test(path)) return 'text'
+        if (/\.json$/.test(path)) return 'json' // sniffed after fetch
+        if (/\.txt$/.test(path)) return 'text'
         return 'link'
     })
 
     let text = $state(null)
     $effect(() => {
-        if (kind !== 'html' && kind !== 'text') return
+        if (kind !== 'html' && kind !== 'text' && kind !== 'json') return
         let dead = false
         text = null
         fetch(url)
@@ -50,6 +52,19 @@
             sandbox="allow-scripts"
             srcdoc={prelude + text}
         ></iframe>
+    {/if}
+{:else if kind === 'json'}
+    <!-- agents write fig.write_json('/ui/x.json'): plain .json, plotly
+         inside — render the chart when the content says so -->
+    {#if text === null}
+        <div class="loading">…</div>
+    {:else if looksLikePlotly(text)}
+        <PlotlyChart {url} />
+    {:else}
+        <details class="artifact-text" open>
+            <summary>{name || path.split('/').pop()}</summary>
+            <pre>{text}</pre>
+        </details>
     {/if}
 {:else if kind === 'text'}
     <details class="artifact-text" open>
