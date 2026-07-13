@@ -54,6 +54,11 @@ provider (`openrouter` — its default model), or `dummy` (the scripted
 test model). Unset, it's the first available of anthropic → openai →
 openrouter → google → ollama.
 
+OpenRouter specs take an optional `@slug[/quant]` tag to pin the
+upstream provider: `openrouter:qwen/qwen3.6-35b-a3b@wandb/fp8` routes
+to Weights & Biases at fp8, no fallbacks. Works anywhere a spec does —
+the env default or the picker's custom field.
+
 A `.env` file next to where you launch is loaded at startup (real env
 wins) — see `.env.example`.
 

@@ -258,6 +258,7 @@ def _openrouter_model_meta(model: str) -> tuple[bool, int | None]:
     lifetime — but a genuinely offline machine mustn't stall 10s on
     every call either (PR #1 review)."""
     global _openrouter_meta, _openrouter_meta_failed_at
+    model = model.partition("@")[0]  # tag pins routing, not identity
     if _openrouter_meta is None:
         import time
 
@@ -339,6 +340,21 @@ def compress_token_limit(spec: str | None) -> int | None:
     return min(max(int(ctx * 0.6), 32_000), 250_000)
 
 
+def _split_openrouter_tag(model: str) -> tuple[str, dict | None]:
+    """``qwen/qwen3.6-35b-a3b@wandb/fp8`` -> the base model id plus an
+    OpenRouter provider-routing pin. ``@slug`` pins the upstream
+    provider (no fallbacks — an explicit pin means THAT provider);
+    ``@slug/quant`` also pins the quantization."""
+    base, sep, tag = model.partition("@")
+    if not sep or not tag:
+        return model, None
+    slug, _, quant = tag.partition("/")
+    routing: dict = {"order": [slug], "allow_fallbacks": False}
+    if quant:
+        routing["quantizations"] = [quant]
+    return base, routing
+
+
 def build_model(spec: str | None = None) -> Any:
     """spec -> a constructed agno Model (None = server default)."""
     provider, model = parse_spec(spec or default_spec())
@@ -370,6 +386,8 @@ def build_model(spec: str | None = None) -> Any:
 
         return OpenAIChat(id=model)
     if provider == "openrouter":
+        # optional `@slug[/quant]` tag: pin the upstream provider
+        model, pin = _split_openrouter_tag(model)
         # gpt-5.6 rejects tools + reasoning on chat-completions (and
         # OpenRouter injects a default reasoning effort) — those models
         # ride OpenRouter's Responses endpoint instead.
@@ -378,7 +396,10 @@ def build_model(spec: str | None = None) -> Any:
 
             # reasoning summaries are all OpenAI exposes of its CoT
             return OpenRouterResponses(
-                id=model, max_output_tokens=16384, reasoning_summary="auto"
+                id=model,
+                max_output_tokens=16384,
+                reasoning_summary="auto",
+                extra_body={"provider": pin} if pin else None,
             )
         extra_body = None
         if model.startswith("anthropic/"):
@@ -401,6 +422,9 @@ def build_model(spec: str | None = None) -> Any:
                     "ignore": ["novita", "google-vertex"],
                 }
             }
+        if pin:
+            # an explicit @tag outranks curated routing (gemma defaults)
+            extra_body = {**(extra_body or {}), "provider": pin}
         # the agno default (1024) truncates real coding turns
         return _safe_openrouter()(id=model, max_tokens=16384, extra_body=extra_body)
     if provider == "google":
