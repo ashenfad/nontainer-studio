@@ -50,6 +50,42 @@ def test_openrouter_drops_malformed_stub_and_its_result():
     assert len(messages[1].tool_calls) == 2
 
 
+def test_openrouter_neutralizes_unparseable_arguments():
+    """Provider-mangled args (Parasail split a JS `r =>` arrow into a
+    bogus key/value) replay as a 400 on every subsequent request —
+    wedging the session. The call survives with arguments={} so agno's
+    paired decode-error result still reaches the model."""
+    model = _shape("openrouter:qwen/qwen3.6-35b-a3b")
+    broken = '{"actions": [{"eval": "fetch(x).then(r =": " r.json())"}]"}'
+    messages = [
+        Message(role="user", content="check the app"),
+        Message(
+            role="assistant",
+            content=None,
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "test_app", "arguments": broken},
+                }
+            ],
+        ),
+        Message(
+            role="tool",
+            tool_call_id="c1",
+            content="Error while decoding function arguments...",
+        ),
+    ]
+    formatted = model._format_all_messages(messages)
+    assert [m["role"] for m in formatted] == ["user", "assistant", "tool"]
+    (assistant,) = [m for m in formatted if m["role"] == "assistant"]
+    assert assistant["tool_calls"][0]["function"]["arguments"] == "{}"
+    # the error tool-result survives — that's the model's retry signal
+    assert formatted[2]["role"] == "tool"
+    # stored conversation untouched (sanitation is per-request only)
+    assert messages[1].tool_calls[0]["function"]["arguments"] == broken
+
+
 def test_openrouter_clean_messages_pass_through():
     model = _shape("openrouter:qwen/qwen3.6-35b-a3b")
     messages = [
