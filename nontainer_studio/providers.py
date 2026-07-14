@@ -159,7 +159,10 @@ def _sanitize_tool_calls(messages: list) -> list:
     import json as _json
 
     def _args_ok(tc: dict) -> bool:
-        args = (tc.get("function") or {}).get("arguments")
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            return True
+        args = fn.get("arguments")
         if not isinstance(args, str) or not args.strip():
             return True
         try:
