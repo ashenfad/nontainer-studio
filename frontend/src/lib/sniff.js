@@ -6,9 +6,11 @@
  * the body is intact; a structural prefix heuristic when a viewer
  * truncated it (PlotlyChart refetches the full URL itself anyway). */
 export function looksLikePlotly(text) {
-    if (!text || text[0] !== '{') return false
+    if (!text) return false
+    const trimmed = text.trimStart()
+    if (trimmed[0] !== '{') return false
     try {
-        const o = JSON.parse(text)
+        const o = JSON.parse(trimmed)
         return Array.isArray(o.data) && !!o.layout && typeof o.layout === 'object'
     } catch {
         // write_json emits {"data": [...huge...], "layout": ...} — the
