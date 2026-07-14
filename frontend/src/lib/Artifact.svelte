@@ -5,6 +5,7 @@
     import { fileUrl } from './api.js'
     import PlotlyChart from './PlotlyChart.svelte'
     import DataTable from './DataTable.svelte'
+    import Cards from './Cards.svelte'
     import { looksLikePlotly } from './sniff.js'
 
     let { session, path, name = '' } = $props()
@@ -13,6 +14,7 @@
     const kind = $derived.by(() => {
         if (/\.plotly\.json$/.test(path)) return 'plotly'
         if (/\.table\.json$/.test(path)) return 'table'
+        if (/\.cards\.json$/.test(path)) return 'cards'
         if (/\.(png|jpe?g|gif|webp)$/i.test(path)) return 'image'
         if (/\.html$/.test(path)) return 'html'
         if (/\.json$/.test(path)) return 'json' // sniffed after fetch
@@ -40,6 +42,8 @@
     <PlotlyChart {url} />
 {:else if kind === 'table'}
     <DataTable {url} />
+{:else if kind === 'cards'}
+    <Cards {url} />
 {:else if kind === 'image'}
     <img class="artifact-img" src={url} alt={name || path} title={path} />
 {:else if kind === 'html'}

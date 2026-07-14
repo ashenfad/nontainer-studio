@@ -143,6 +143,37 @@ def test_ui_artifact_renders_from_server_event(page, server):
     expect(artifact).to_contain_text("hello")
 
 
+def test_cards_artifact_renders_stat_tiles(page, server):
+    """A `ui` value that is a list of label/value dicts materializes into
+    /ui/*.cards.json, and the shell renders it as a KPI stat-tile row —
+    the label, the prominent value, and a signed/colored delta — not raw
+    JSON. Prose doesn't name the path, so the done-time rule appends it."""
+    page.goto(f"{server}/?session=e2e-cards")
+    _send(
+        page,
+        "!tool run_python {\"code\": \"ui = {'kpis': ["
+        "{'label': 'Revenue', 'value': 1284, 'delta': 3.2, 'unit': 'k'}, "
+        "{'label': 'Churn', 'value': 4, 'delta': -1.5, 'unit': '%'}"
+        "]}\"}\n"
+        "!text Here are the numbers.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Here are the numbers.", timeout=15000
+    )
+    cards = page.locator(".agent-msg .cards")
+    expect(cards).to_be_visible(timeout=10000)
+    tiles = cards.locator(".tile")
+    expect(tiles).to_have_count(2)
+    # first tile: label + comma-formatted value + unit
+    first = tiles.first
+    expect(first.locator(".label")).to_have_text("Revenue")
+    expect(first.locator(".value")).to_contain_text("1,284")
+    expect(first.locator(".value")).to_contain_text("k")
+    # delta sign drives the accent class: up on the gain, down on the loss
+    expect(first.locator(".delta.up")).to_contain_text("+3.2")
+    expect(tiles.nth(1).locator(".delta.down")).to_contain_text("-1.5")
+
+
 def test_stop_button_cancels_the_turn(page, server):
     """The send button morphs to stop while busy; clicking it cancels
     via agno (real cancel machinery — only the model is scripted), the

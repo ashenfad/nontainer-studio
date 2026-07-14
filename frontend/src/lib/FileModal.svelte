@@ -8,6 +8,7 @@
     import { viewer, closeViewer } from './viewer.svelte.js'
     import PlotlyChart from './PlotlyChart.svelte'
     import DataTable from './DataTable.svelte'
+    import Cards from './Cards.svelte'
     import { looksLikePlotly } from './sniff.js'
 
     let { session } = $props()
@@ -35,6 +36,7 @@
         if (!path) return null
         if (/\.plotly\.json$/.test(path)) return 'plotly'
         if (/\.table\.json$/.test(path)) return 'table'
+        if (/\.cards\.json$/.test(path)) return 'cards'
         if (/\.(png|jpe?g|gif|webp|svg)$/i.test(path)) return 'image'
         if (ext === 'md' || ext === 'markdown') return 'markdown'
         if (ext in CODE_LANGS) return 'code'
@@ -45,7 +47,13 @@
     let failed = $state(null)
 
     $effect(() => {
-        if (!url || kind === 'plotly' || kind === 'table' || kind === 'image')
+        if (
+            !url ||
+            kind === 'plotly' ||
+            kind === 'table' ||
+            kind === 'cards' ||
+            kind === 'image'
+        )
             return
         let dead = false
         text = null
@@ -100,6 +108,8 @@
                     <PlotlyChart {url} />
                 {:else if kind === 'table'}
                     <DataTable {url} />
+                {:else if kind === 'cards'}
+                    <Cards {url} />
                 {:else if text === null}
                     <div class="loading">…</div>
                 {:else if kind === 'markdown'}
