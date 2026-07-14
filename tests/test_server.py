@@ -965,6 +965,136 @@ def test_edit_validations(studio):
     assert not session.busy
 
 
+# -- a2ui egress: turn-level A2UI v0.9 projection ---------------------------------
+
+
+class PlotlyArtifactAgent(FakeAgent):
+    """A turn with prose plus a tool result naming a plotly artifact."""
+
+    async def arun(self, message, stream=True, stream_events=True):
+        self.seen.append(message)
+        result = "plotted it\n[ui artifacts: fig -> /ui/fig.plotly.json]"
+        yield SimpleNamespace(
+            event="ToolCallCompleted",
+            tool=SimpleNamespace(tool_name="run_python", result=result),
+        )
+        yield SimpleNamespace(event="RunContent", content="here you go")
+
+
+class SilentAgent(FakeAgent):
+    """A turn that produces no prose and no artifacts — just a tool call."""
+
+    async def arun(self, message, stream=True, stream_events=True):
+        self.seen.append(message)
+        yield SimpleNamespace(
+            event="ToolCallCompleted",
+            tool=SimpleNamespace(tool_name="terminal", result="ok"),
+        )
+
+
+def test_a2ui_projects_a_turn_into_a_v0_9_surface(studio):
+    """One turn (prose + a plotly artifact) → createSurface,
+    updateComponents, updateDataModel — surface id from the done seq, prose
+    a Text component, the chart bound into the data model, cursor on every
+    message."""
+    import json as _json
+
+    client, registry = studio
+    registry._build_agent = lambda *a, **k: PlotlyArtifactAgent()
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    # real bytes in the workspace so read_bytes finds the spec (the
+    # projection reads the file to build the Chart + data model)
+    spec = {"data": [{"x": [1], "y": [2]}], "layout": {"title": "hi"}}
+    session.ws.fs.write("/ui/fig.plotly.json", _json.dumps(spec).encode())
+
+    client.post("/api/sessions/s1/chat", json={"message": "plot it"})
+    events = _collect_until_done(client, "s1")
+    done_seq = next(e["seq"] for e in events if e["type"] == "done")
+
+    data = client.get("/api/sessions/s1/a2ui?wait=0").json()
+    messages = data["messages"]
+    verbs = [next(k for k in m if k not in ("version", "cursor")) for m in messages]
+    assert verbs == ["createSurface", "updateComponents", "updateDataModel"]
+
+    surface_id = f"s1-turn-{done_seq}"
+    assert messages[0]["createSurface"]["surfaceId"] == surface_id
+    # the driving event's cursor rides every message (snapshot too)
+    assert all(m["cursor"] == done_seq for m in messages)
+    assert all(m["version"] == "v0.9" for m in messages)
+
+    comps = messages[1]["updateComponents"]["components"]
+    text = next(c for c in comps if c.get("component") == "Text")
+    assert text["text"] == "here you go"
+    chart = next(c for c in comps if c.get("component") == "Chart")
+    assert chart["spec"] == {"path": "/artifacts/fig/spec"}
+
+    dm = messages[2]["updateDataModel"]
+    assert dm["surfaceId"] == surface_id and dm["value"] == spec
+    assert data["next"] == session.next_seq
+
+
+def test_a2ui_empty_turn_emits_nothing(studio):
+    """A turn with no prose and no artifacts renders no surface."""
+    client, registry = studio
+    registry._build_agent = lambda *a, **k: SilentAgent()
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/chat", json={"message": "quiet"})
+    _collect_until_done(client, "s1")
+    data = client.get("/api/sessions/s1/a2ui?wait=0").json()
+    assert data["messages"] == []
+
+
+def test_a2ui_edit_voids_the_rewound_surface(studio):
+    """An edit's `truncate` deletes every surface at-or-after the cut via
+    the v0.9-native deleteSurface (cursor = the truncate seq), while the
+    replacement turn gets a fresh surface."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    _turn(client, "s1", "one")  # default FakeAgent: prose-only surface
+    before = client.get("/api/sessions/s1/a2ui?wait=0").json()["messages"]
+    created = [m for m in before if "createSurface" in m]
+    assert len(created) == 1
+    first_surface = created[0]["createSurface"]["surfaceId"]
+
+    seq = _user_seqs(session)[0]
+    r = client.post("/api/sessions/s1/edit", json={"seq": seq, "message": "one v2"})
+    assert r.status_code == 200
+    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
+
+    after = client.get("/api/sessions/s1/a2ui?wait=0").json()["messages"]
+    # the rewound surface is deleted, cursor = the truncate event's seq
+    trunc_seq = next(e["seq"] for e in session.events if e["type"] == "truncate")
+    deletes = [m for m in after if "deleteSurface" in m]
+    assert any(
+        d["deleteSurface"]["surfaceId"] == first_surface and d["cursor"] == trunc_seq
+        for d in deletes
+    )
+    # both the original and the replacement surface show in the projection
+    surfaces = [m["createSurface"]["surfaceId"] for m in after if "createSurface" in m]
+    assert first_surface in surfaces and len(surfaces) == 2
+
+
+def test_a2ui_since_resumes_like_the_native_feed(studio):
+    """?since= filters the snapshot to messages at-or-after the cursor, so a
+    consumer resumes without re-receiving turns it already has."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _turn(client, "s1", "one")
+    first = client.get("/api/sessions/s1/a2ui?wait=0").json()
+    first_cursor = first["messages"][0]["cursor"]
+    _turn(client, "s1", "two")
+
+    # resume just past the first turn: only the second turn's messages
+    resumed = client.get(
+        f"/api/sessions/s1/a2ui?wait=0&since={first_cursor + 1}"
+    ).json()["messages"]
+    assert resumed and all(m["cursor"] > first_cursor for m in resumed)
+    assert client.get("/api/sessions/s1/a2ui?since=banana&wait=0").status_code == 400
+
+
 def test_unmatched_api_gets_cors_teaching_404(studio):
     """An app in the preview iframe using absolute urls escapes its
     /preview/{name}/ prefix and lands on the studio origin — without

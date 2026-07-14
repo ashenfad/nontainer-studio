@@ -14,7 +14,8 @@ import mimetypes
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
+from urllib.parse import quote
 
 import anyio
 
@@ -23,6 +24,7 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from nontainer.adapters.a2ui import turn_to_a2ui
 from nontainer.adapters.render import artifact_kind, parse_artifacts_note
 from nontainer.apps import build_router, request as make_request
 from nontainer.apps.contract import filter_headers
@@ -175,6 +177,104 @@ def _client_events(ev: Any) -> list[dict]:
 
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload)}\n\n"
+
+
+# ---------------------------------------------------------------------------
+# a2ui egress: project the event feed into an A2UI v0.9 message stream
+# ---------------------------------------------------------------------------
+
+
+class _A2uiTurns:
+    """Turn-level projection of the transcript into A2UI v0.9 messages —
+    one surface per turn. The event log is the internal model; a2ui is an
+    EDGE format, so this stays a thin projection, never a second source of
+    truth.
+
+    Accumulate per turn: text deltas concatenate into prose, `artifact`
+    events collect as (name, path) pairs. Everything else — thinking, tool
+    calls, usage, notices, the `user` echo — is ignored: a2ui renders the
+    agent's reply surface, not the whole conversation. On `done` the turn
+    becomes one createSurface + updateComponents + updateDataModel-per-entry
+    via ``turn_to_a2ui``; the surface id is derived from the done event's
+    seq, so it is unique per turn AND deterministic across replays (the log
+    is the only input). Empty turns (no prose, no artifacts) emit nothing.
+
+    A `truncate` (an edit's rewind) deletes every surface this stream
+    already emitted whose driving turn is at-or-after the cut — the
+    v0.9-native ``deleteSurface`` is how rewound turns are voided — and
+    drops any in-progress accumulation.
+
+    Every emitted message rides the DRIVING event's cursor (the done seq, or
+    the truncate seq) so a consumer resumes with ?since= exactly like the
+    native feed. One instance PER CONNECTION: the emitted-surface list is
+    per-stream state the delete path reads back.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        read_bytes: Callable[[str], bytes | None],
+        file_url: Callable[[str], str],
+    ) -> None:
+        self._name = name
+        self._read_bytes = read_bytes
+        self._file_url = file_url
+        self._prose: list[str] = []
+        self._arts: list[tuple[str, str]] = []
+        self._emitted: list[tuple[int, str]] = []  # (done_seq, surface_id)
+
+    def feed(self, seq: int, event: dict) -> list[dict]:
+        """Drive one event through the accumulator; return the a2ui messages
+        it produces (each already carrying its cursor). Blocking — reads
+        artifact bytes on `done` — so callers offload it to a thread."""
+        kind = event.get("type")
+        if kind == "text":
+            delta = event.get("delta")
+            if isinstance(delta, str):
+                self._prose.append(delta)
+        elif kind == "artifact":
+            name, path = event.get("name"), event.get("path")
+            if name and path:
+                self._arts.append((name, path))
+        elif kind == "done":
+            return self._flush_turn(seq)
+        elif kind == "truncate":
+            return self._delete_rewound(seq, event.get("to", 0))
+        return []
+
+    def _flush_turn(self, done_seq: int) -> list[dict]:
+        prose = "".join(self._prose)
+        arts = self._arts
+        self._prose, self._arts = [], []
+        if not prose and not arts:
+            return []  # empty turn: nothing to render
+        surface_id = f"{self._name}-turn-{done_seq}"
+        messages = turn_to_a2ui(
+            prose, arts, self._read_bytes, self._file_url, surface_id=surface_id
+        )
+        self._emitted.append((done_seq, surface_id))
+        return [{"cursor": done_seq, **m} for m in messages]
+
+    def _delete_rewound(self, trunc_seq: int, to: int) -> list[dict]:
+        # An edit rewinds to a user event (seq `to`); every turn from there
+        # on is void. A turn's done seq is > its user seq, so `done_seq >= to`
+        # selects exactly the turns at-or-after the cut.
+        self._prose, self._arts = [], []
+        out: list[dict] = []
+        kept: list[tuple[int, str]] = []
+        for done_seq, surface_id in self._emitted:
+            if done_seq >= to:
+                out.append(
+                    {
+                        "cursor": trunc_seq,
+                        "version": "v0.9",
+                        "deleteSurface": {"surfaceId": surface_id},
+                    }
+                )
+            else:
+                kept.append((done_seq, surface_id))
+        self._emitted = kept
+        return out
 
 
 async def _run_turn(session: Any, message: str) -> None:
@@ -360,6 +460,58 @@ def build_app(registry: Registry) -> Starlette:
         async def stream() -> AsyncIterator[str]:
             async for cursor, event in session.follow(since):
                 yield _sse({"cursor": cursor, **event})
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    @with_session
+    async def a2ui(request: Any, session: Any) -> Any:
+        """A2UI v0.9 projection of the transcript, TURN-LEVEL: each turn is
+        one surface (prose + its artifacts), edits delete rewound surfaces.
+        Same shape as /events — SSE that replays from ?since=N then follows
+        live, or a ?wait=0 JSON snapshot for pollers and tests. Each message
+        rides the driving event's cursor so ?since= resumes identically.
+
+        The projection reads artifact bytes from the workspace, so it runs
+        in a thread (mirroring file_raw); an unreadable artifact degrades to
+        a Text+link inside the converter, never a failure."""
+        name = request.path_params["name"]
+        try:
+            since = int(request.query_params.get("since", 0))
+        except ValueError:
+            return JSONResponse({"error": "since must be an integer"}, status_code=400)
+
+        def read_bytes(path: str) -> bytes | None:
+            try:
+                with session.ws.lock:
+                    return session.ws.fs.read(path)
+            except Exception:
+                return None
+
+        def file_url(path: str) -> str:
+            return f"/api/sessions/{name}/file?path={quote(path)}"
+
+        if request.query_params.get("wait") == "0":
+
+            def project() -> list[dict]:
+                # Project the WHOLE buffer (so surface tracking for
+                # deleteSurface is complete), then keep only messages at-or-
+                # after the cursor — the resume filter, like the events route.
+                projector = _A2uiTurns(name, read_bytes, file_url)
+                out: list[dict] = []
+                for event in session.events:
+                    out.extend(projector.feed(event["seq"], event))
+                return [m for m in out if m["cursor"] >= since]
+
+            messages = await anyio.to_thread.run_sync(project)
+            return JSONResponse({"messages": messages, "next": session.next_seq})
+
+        async def stream() -> AsyncIterator[str]:
+            projector = _A2uiTurns(name, read_bytes, file_url)
+            async for cursor, event in session.follow(since):
+                for msg in await anyio.to_thread.run_sync(
+                    projector.feed, cursor, event
+                ):
+                    yield _sse(msg)
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
@@ -628,6 +780,7 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions/{name}/edit", edit, methods=["POST"]),
             Route("/api/sessions/{name}/cancel", cancel, methods=["POST"]),
             Route("/api/sessions/{name}/events", events, methods=["GET"]),
+            Route("/api/sessions/{name}/a2ui", a2ui, methods=["GET"]),
             Route("/api/sessions/{name}/upload", upload, methods=["POST"]),
             Route("/api/sessions/{name}/files", files, methods=["GET"]),
             Route("/api/sessions/{name}/app", app_exists, methods=["GET"]),

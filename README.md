@@ -83,6 +83,20 @@ Three kinds of state, on purpose:
 | **app `db`** (live SQLite host object) | file per session | untouched — external state has no history | copied | **shared** — frozen code, live state |
 | **conversation** | agno db + jsonl transcript | agent memory rewinds in sync; an `edit` trims the visible transcript too, a history-tab restore keeps its record | fresh chat | — |
 
+### a2ui egress
+
+`GET /api/sessions/{name}/a2ui` projects the transcript into an
+[A2UI](https://a2ui.org) v0.9 message stream — an edge format for
+declarative agent UIs, never the internal model (the event log stays
+that). The projection is **turn-level**: each turn becomes one surface
+(its prose interleaved with its artifacts), an `edit`'s rewind emits
+`deleteSurface` to void the turns it cut. Same shape as `/events` — SSE
+that replays from `?since=N` then follows live, or a `?wait=0` JSON
+snapshot — and every message rides the driving event's cursor so
+consumers resume identically. Plotly specs ride an extension `Chart`
+component (the consumer brings the renderer); the rest map to basic-
+catalog `Text`/`Image`/`Card`/`Row`/`Column`.
+
 ## Hacking on the frontend
 
 Svelte 5 + Vite in `frontend/`, built into `nontainer_studio/static/`
