@@ -119,6 +119,30 @@ def test_turn_streams_into_transcript(page, server):
     expect(page.locator(".modal")).to_have_count(0)
 
 
+def test_ui_artifact_renders_from_server_event(page, server):
+    """The full artifact path: run_python assigns `ui`, WorkspaceTools
+    materializes it into /ui and appends the `[ui artifacts: ...]` note,
+    the server harvests that into a first-class `artifact` event, and
+    the shell renders it (here the json floor as a details block). Prose
+    doesn't reference the path, so the done-time Jupyter rule appends it
+    after the reply."""
+    page.goto(f"{server}/?session=e2e-artifact")
+    _send(
+        page,
+        "!tool run_python {\"code\": \"ui = {'stats': {'hello': 'world'}}\"}\n"
+        "!text Made an artifact.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Made an artifact.", timeout=15000
+    )
+    # the artifact rendered inline (json floor -> a details block named
+    # for the binding), NOT merely the raw note in the tool timeline
+    artifact = page.locator(".agent-msg .artifact-text")
+    expect(artifact).to_be_visible(timeout=10000)
+    expect(artifact.locator("summary")).to_contain_text("stats")
+    expect(artifact).to_contain_text("hello")
+
+
 def test_stop_button_cancels_the_turn(page, server):
     """The send button morphs to stop while busy; clicking it cancels
     via agno (real cancel machinery — only the model is scripted), the
