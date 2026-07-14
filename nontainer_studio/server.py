@@ -23,6 +23,7 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from nontainer.adapters.render import artifact_kind, parse_artifacts_note
 from nontainer.apps import build_router, request as make_request
 from nontainer.apps.contract import filter_headers
 from nontainer.errors import SessionIdError
@@ -107,13 +108,31 @@ def _client_events(ev: Any) -> list[dict]:
         ]
     if kind == "ToolCallCompleted":
         tool = getattr(ev, "tool", None)
-        return [
+        result = getattr(tool, "result", "")
+        events: list[dict] = [
             {
                 "type": "tool_end",
                 "name": getattr(tool, "tool_name", "?"),
-                "result": _short(getattr(tool, "result", "")),
+                "result": _short(result),
             }
         ]
+        # First-class artifact events: parse the RAW (uncapped) result —
+        # the `[ui artifacts: ...]` note rides at the string's tail, so a
+        # long tool result would truncate it away if we parsed _short().
+        # The note stays inside tool_end.result (the model-facing
+        # affordance); these events are additive, and the client dedupes
+        # by path against its legacy note-regex fallback.
+        if isinstance(result, str):
+            for name, path in parse_artifacts_note(result):
+                events.append(
+                    {
+                        "type": "artifact",
+                        "name": name,
+                        "path": path,
+                        "kind": artifact_kind(path),
+                    }
+                )
+        return events
     if kind == "RunCancelled":
         return [{"type": "notice", "text": "turn stopped"}]
     if kind == "CompressionStarted":

@@ -138,6 +138,84 @@ def test_native_thinking_streams_as_thinking_events(studio):
     assert [e["delta"] for e in events if e["type"] == "text"] == ["the answer"]
 
 
+def test_artifact_events_harvest_from_tool_result_note(studio):
+    """A tool result carrying a `[ui artifacts: ...]` note yields
+    first-class `artifact` events, one per pair, positioned right after
+    the `tool_end` — the note stays in the result text (model-facing),
+    the events are additive and carry the render kind."""
+    client, registry = studio
+
+    class ArtifactAgent(FakeAgent):
+        async def arun(self, message, stream=True, stream_events=True):
+            self.seen.append(message)
+            result = (
+                "plotted 2 series\n"
+                "[ui artifacts: trend -> /ui/trend.plotly.json, "
+                "raw -> /ui/raw.table.json]"
+            )
+            yield SimpleNamespace(
+                event="ToolCallCompleted",
+                tool=SimpleNamespace(tool_name="run_python", result=result),
+            )
+            yield SimpleNamespace(event="RunContent", content="here you go")
+
+    registry._build_agent = lambda *a, **k: ArtifactAgent()
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/chat", json={"message": "plot it"})
+    events = _collect_until_done(client, "s1")
+
+    kinds = [e["type"] for e in events]
+    assert kinds == ["user", "tool_end", "artifact", "artifact", "text", "done"]
+    arts = [e for e in events if e["type"] == "artifact"]
+    assert arts[0] == {
+        **arts[0],
+        "name": "trend",
+        "path": "/ui/trend.plotly.json",
+        "kind": "plotly",
+    }
+    assert arts[1]["path"] == "/ui/raw.table.json" and arts[1]["kind"] == "table"
+    # the note survives in the model-facing result text
+    tool_end = next(e for e in events if e["type"] == "tool_end")
+    assert "[ui artifacts:" in tool_end["result"]
+
+
+def test_artifact_event_survives_a_long_tool_result(studio):
+    """The note rides at the tail of the result; parsing must use the
+    RAW result, not the 2000-char-capped tool_end text, or a long
+    result truncates the note (and the artifact) away."""
+    client, registry = studio
+
+    class LongResultAgent(FakeAgent):
+        async def arun(self, message, stream=True, stream_events=True):
+            self.seen.append(message)
+            result = "x" * 5_000 + "\n[ui artifacts: big -> /ui/big.plotly.json]"
+            yield SimpleNamespace(
+                event="ToolCallCompleted",
+                tool=SimpleNamespace(tool_name="run_python", result=result),
+            )
+
+    registry._build_agent = lambda *a, **k: LongResultAgent()
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/chat", json={"message": "go"})
+    events = _collect_until_done(client, "s1")
+
+    # the capped tool_end lost the note...
+    tool_end = next(e for e in events if e["type"] == "tool_end")
+    assert "[ui artifacts:" not in tool_end["result"]
+    # ...but the artifact event survived (parsed from the raw result)
+    art = next(e for e in events if e["type"] == "artifact")
+    assert art["path"] == "/ui/big.plotly.json" and art["kind"] == "plotly"
+
+
+def test_tool_result_without_note_emits_no_artifact_events(studio):
+    """The common case: an ordinary tool result yields only tool_end."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/chat", json={"message": "list files"})
+    events = _collect_until_done(client, "s1")
+    assert not any(e["type"] == "artifact" for e in events)
+
+
 def test_new_sessions_seed_skills(studio):
     """Session creation installs the repo's starter skills into
     /skills as ordinary versioned files; existing sessions keep their

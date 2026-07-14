@@ -11,6 +11,9 @@
 //                                      model/provider exposes it)
 //   {type:'tool_start', name, args}
 //   {type:'tool_end',   name, result}
+//   {type:'artifact', name, path, kind} — a ui = {...} artifact the turn
+//                                      produced; server-harvested from the
+//                                      tool result's [ui artifacts: ...] note
 //   {type:'notice', text}            — uploads, restores, ...
 //   {type:'error',  message}
 //   {type:'done',   run_id, head}    — turn boundary
@@ -244,6 +247,12 @@ export class SessionRuntime {
             tool.result = ev.result
             tool.running = false
             this.#harvest(ev.result, tool)
+        } else if (ev.type === 'artifact') {
+            // first-class artifact event (server-harvested). The done-time
+            // Jupyter rule consumes #turnArts; #addArt dedupes by path so a
+            // post-change log — which carries BOTH this event and the note
+            // in the tool result — never double-appends the artifact.
+            this.#addArt(ev.name, ev.path)
         } else if (ev.type === 'truncate') {
             // an edit rewound the session: only user messages carry a
             // seq, and everything after the cut derives from events
@@ -296,14 +305,27 @@ export class SessionRuntime {
         return msg.items
     }
 
+    /** record a turn artifact, idempotent by path — the server now emits
+     * an `artifact` event AND leaves the note in the tool result, so both
+     * paths can fire for the same artifact; keep only the first. */
+    #addArt(name, path) {
+        if (path && !this.#turnArts.some((a) => a.path === path))
+            this.#turnArts.push({ name, path })
+    }
+
     /** pull ui artifacts + workspace images out of a tool result */
     #harvest(result, tool) {
         if (typeof result !== 'string') return
+        // LEGACY replay-only fallback: pre-change jsonl transcripts have no
+        // `artifact` events, so recover them from the [ui artifacts: ...]
+        // note here. Post-change logs also carry the note, but #addArt's
+        // path-dedupe prevents doubles. Removable once old transcripts stop
+        // mattering.
         const note = result.match(ARTIFACT_NOTE)
         if (note)
             for (const pair of note[1].split(', ')) {
                 const [name, path] = pair.split(' -> ')
-                if (path) this.#turnArts.push({ name, path })
+                this.#addArt(name, path)
             }
         // workspace images in the result (test_app screenshots, saved
         // plots) ride WITH the tool call — they render inside its
