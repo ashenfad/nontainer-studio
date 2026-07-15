@@ -143,17 +143,20 @@ def test_ui_artifact_renders_from_server_event(page, server):
     expect(artifact).to_contain_text("hello")
 
 
-def test_cards_artifact_renders_stat_tiles(page, server):
-    """A `ui` value that is a list of label/value dicts materializes into
-    /ui/*.cards.json, and the shell renders it as a KPI stat-tile row —
-    the label, the prominent value, and a signed/colored delta — not raw
-    JSON. Prose doesn't name the path, so the done-time rule appends it."""
+def test_cards_artifact_renders_stat_and_callout(page, server):
+    """A `ui` value that is a list of card dicts materializes into
+    /ui/*.cards.json, and the shell renders a mixed row: a stat tile
+    (muted label, prominent value, muted sublabel) and a callout card
+    (tone-tinted icon + title + markdown body) — not raw JSON. Prose
+    doesn't name the path, so the done-time rule appends it. Sentiment is
+    never inferred from a value's sign — hence no delta accent classes."""
     page.goto(f"{server}/?session=e2e-cards")
     _send(
         page,
         "!tool run_python {\"code\": \"ui = {'kpis': ["
-        "{'label': 'Revenue', 'value': 1284, 'delta': 3.2, 'unit': 'k'}, "
-        "{'label': 'Churn', 'value': 4, 'delta': -1.5, 'unit': '%'}"
+        "{'label': 'Revenue', 'value': 1284, 'sublabel': 'up 3.2% MoM'}, "
+        "{'type': 'callout', 'title': 'Churn rising', "
+        "'body': 'Cancellations up **12%** this week.', 'tone': 'warning'}"
         "]}\"}\n"
         "!text Here are the numbers.",
     )
@@ -162,16 +165,25 @@ def test_cards_artifact_renders_stat_tiles(page, server):
     )
     cards = page.locator(".agent-msg .cards")
     expect(cards).to_be_visible(timeout=10000)
-    tiles = cards.locator(".tile")
-    expect(tiles).to_have_count(2)
-    # first tile: label + comma-formatted value + unit
-    first = tiles.first
-    expect(first.locator(".label")).to_have_text("Revenue")
-    expect(first.locator(".value")).to_contain_text("1,284")
-    expect(first.locator(".value")).to_contain_text("k")
-    # delta sign drives the accent class: up on the gain, down on the loss
-    expect(first.locator(".delta.up")).to_contain_text("+3.2")
-    expect(tiles.nth(1).locator(".delta.down")).to_contain_text("-1.5")
+
+    # stat tile: label + comma-formatted value + muted sublabel
+    tile = cards.locator(".tile")
+    expect(tile).to_have_count(1)
+    expect(tile.locator(".label")).to_have_text("Revenue")
+    expect(tile.locator(".value")).to_contain_text("1,284")
+    expect(tile.locator(".sublabel")).to_contain_text("up 3.2% MoM")
+
+    # callout card: warning tone tints the icon; title + markdown body render
+    callout = cards.locator(".callout.tone-warning")
+    expect(callout).to_have_count(1)
+    expect(callout.locator(".callout-title")).to_have_text("Churn rising")
+    expect(callout.locator(".callout-body")).to_contain_text(
+        "Cancellations up 12% this week."
+    )
+    expect(callout.locator(".callout-body strong")).to_contain_text("12%")
+
+    # sign inference is gone: no delta accent classes exist anymore
+    expect(cards.locator(".delta")).to_have_count(0)
 
 
 def test_stop_button_cancels_the_turn(page, server):
