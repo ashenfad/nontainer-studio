@@ -18,7 +18,13 @@
     $effect(() => {
         let dead = false
         fetch(url)
-            .then((r) => r.json())
+            .then((r) => {
+                // file_raw 404s ride a JSON error body — without this
+                // check they'd parse fine and silently render nothing
+                // (the rewound-artifact case) instead of the error line
+                if (!r.ok) throw new Error(`HTTP ${r.status}`)
+                return r.json()
+            })
             .then((c) => !dead && (cards = c))
             .catch((e) => !dead && (failed = e.message))
         return () => (dead = true)

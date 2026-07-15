@@ -22,7 +22,13 @@
         if (!node) return
         let dead = false
         const target = node
-        Promise.all([plotly(), fetch(url).then((r) => r.json())])
+        // r.ok check: file_raw 404s ride a JSON error body that would
+        // otherwise parse and hand Plotly a spec-shaped nothing
+        const spec_ = fetch(url).then((r) => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`)
+            return r.json()
+        })
+        Promise.all([plotly(), spec_])
             .then(([Plotly, spec]) => {
                 if (dead) return
                 // spec tier: WE render, so WE theme — transparent

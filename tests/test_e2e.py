@@ -186,6 +186,19 @@ def test_cards_artifact_renders_stat_and_callout(page, server):
     expect(cards.locator(".delta")).to_have_count(0)
 
 
+def test_missing_artifact_shows_error_not_silence(page, server):
+    """A prose ref to an artifact file that doesn't exist (the
+    rewound-artifact case): file_raw 404s with a JSON error body, which
+    r.json() would happily parse — the r.ok check must surface the muted
+    error line instead of silently rendering nothing (PR #3 review)."""
+    page.goto(f"{server}/?session=e2e-gone")
+    _send(page, "!text See ![gone](/ui/gone.cards.json) for the numbers.")
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "for the numbers.", timeout=15000
+    )
+    expect(page.locator(".cards-error")).to_contain_text("HTTP 404")
+
+
 def test_stop_button_cancels_the_turn(page, server):
     """The send button morphs to stop while busy; clicking it cancels
     via agno (real cancel machinery — only the model is scripted), the

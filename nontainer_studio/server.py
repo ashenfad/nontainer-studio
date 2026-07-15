@@ -491,6 +491,15 @@ def build_app(registry: Registry) -> Starlette:
             return f"/api/sessions/{name}/file?path={quote(path)}"
 
         if request.query_params.get("wait") == "0":
+            # Snapshot ON THE LOOP THREAD before offloading: emit() also
+            # runs on the loop, but its compaction slice-replaces the tail
+            # and trims the front past MAX_EVENTS — under a worker-thread
+            # iteration those shifts skip/double events (a skipped `done`
+            # silently folds one turn into the next). A shallow copy is
+            # enough: compaction replaces event dicts, never mutates them.
+            # (The native /events?wait=0 reads on the loop, so only this
+            # thread-offloaded projection needs the copy.)
+            events_snapshot = list(session.events)
 
             def project() -> list[dict]:
                 # Project the WHOLE buffer (so surface tracking for
@@ -498,7 +507,7 @@ def build_app(registry: Registry) -> Starlette:
                 # after the cursor — the resume filter, like the events route.
                 projector = _A2uiTurns(name, read_bytes, file_url)
                 out: list[dict] = []
-                for event in session.events:
+                for event in events_snapshot:
                     out.extend(projector.feed(event["seq"], event))
                 return [m for m in out if m["cursor"] >= since]
 
