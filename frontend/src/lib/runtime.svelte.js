@@ -110,6 +110,14 @@ export async function ensureSession(name) {
     return rt
 }
 
+/** The human's rename. Outranks the agent's title from here on; an
+ * empty title clears the override, falling back to whatever the agent
+ * last suggested. Identity (the slug) is untouched — nothing moves. */
+export async function renameSession(name, title) {
+    await api(`/api/sessions/${name}/title`, { title })
+    await refreshSessions()
+}
+
 /** Mint a new session. The SERVER names it (a slug like sleepy-meerkat):
  * identity is never typed, so the agent is free to title it later.
  * Returns the minted name — the caller switches to it. */

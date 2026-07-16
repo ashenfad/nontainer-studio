@@ -512,6 +512,52 @@ def test_agent_titles_the_session_from_the_rail_default(page, server):
     assert page.url.endswith("?session=e2e-title")
 
 
+def test_rename_from_the_rail_outranks_the_agent(page, server):
+    """Double-click the label to rename. The human's title wins from
+    there on, and clearing it falls back to the agent's latest."""
+    page.goto(f"{server}/?session=e2e-rename")
+    _send(page, '!tool recommend_title {"title": "Agent idea"}\n!text ok.')
+    expect(page.locator(".row.active .name")).to_have_text("Agent idea", timeout=15000)
+
+    row = page.locator(".row.active")
+    row.locator(".name").dblclick()
+    page.fill(".rename", "My name for it")
+    page.press(".rename", "Enter")
+    expect(page.locator(".row.active .name")).to_have_text(
+        "My name for it", timeout=10000
+    )
+
+    # the agent keeps suggesting; the human's title still wins
+    _send(page, '!tool recommend_title {"title": "Agent again"}\n!text ok.')
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "ok.", timeout=15000
+    )
+    expect(page.locator(".row.active .name")).to_have_text("My name for it")
+
+    # clearing reveals the agent's LATEST, not the default
+    row.locator(".name").dblclick()
+    page.fill(".rename", "")
+    page.press(".rename", "Enter")
+    expect(page.locator(".row.active .name")).to_have_text("Agent again", timeout=10000)
+
+
+def test_rename_escape_discards(page, server):
+    """Escape must not save. The input unmounts on cancel and blur still
+    fires — the commit path has to know the difference."""
+    page.goto(f"{server}/?session=e2e-esc")
+    _title(server, "e2e-esc", "Keep me")
+    expect(page.locator(".row.active .name")).to_have_text("Keep me", timeout=10000)
+
+    page.locator(".row.active .name").dblclick()
+    page.fill(".rename", "typed but abandoned")
+    page.press(".rename", "Escape")
+    expect(page.locator(".rename")).to_have_count(0)
+    expect(page.locator(".row.active .name")).to_have_text("Keep me")
+    # and it really didn't reach the server
+    page.reload()
+    expect(page.locator(".row.active .name")).to_have_text("Keep me", timeout=10000)
+
+
 def test_new_session_button_mints_an_untitled_slug(page, server):
     """ "+ New" asks the SERVER for a session: identity is a minted slug
     nobody typed (so the agent may title it freely), and the rail shows
