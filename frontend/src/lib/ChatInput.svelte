@@ -200,8 +200,6 @@
         position: relative;
         padding: 0.6rem 1rem 0.85rem;
         flex-shrink: 0;
-        border-top: 1px solid var(--border);
-        background: var(--surface);
     }
     .input-card {
         background: var(--input-bg);
