@@ -18,17 +18,16 @@ from typing import Any, AsyncIterator, Callable
 from urllib.parse import quote
 
 import anyio
-
+from nontainer.adapters.a2ui import turn_to_a2ui
+from nontainer.adapters.render import artifact_kind, parse_artifacts_note
+from nontainer.apps import build_router
+from nontainer.apps import request as make_request
+from nontainer.apps.contract import filter_headers
+from nontainer.errors import SessionIdError
 from starlette.applications import Starlette
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
-
-from nontainer.adapters.a2ui import turn_to_a2ui
-from nontainer.adapters.render import artifact_kind, parse_artifacts_note
-from nontainer.apps import build_router, request as make_request
-from nontainer.apps.contract import filter_headers
-from nontainer.errors import SessionIdError
 
 from .sessions import Registry, repair_aborted_run
 
@@ -66,8 +65,7 @@ def _tool_args(tool: Any) -> Any:
     args = getattr(tool, "tool_args", None)
     if isinstance(args, dict):
         shaped = {
-            k: _short(v, 16_000) if isinstance(v, str) else v
-            for k, v in args.items()
+            k: _short(v, 16_000) if isinstance(v, str) else v for k, v in args.items()
         }
         try:
             json.dumps(shaped)
@@ -287,9 +285,7 @@ async def _run_turn(session: Any, message: str) -> None:
     try:
         # head here = the workspace BEFORE this turn: the user event's
         # stamp is the undo anchor (restore to it = unwind this turn)
-        await session.emit(
-            {"type": "user", "text": message, "head": session.ws.head}
-        )
+        await session.emit({"type": "user", "text": message, "head": session.ws.head})
         async for ev in session.agent.arun(message, stream=True, stream_events=True):
             run_id = getattr(ev, "run_id", None) or run_id
             session.run_id = run_id  # the stop button's cancel handle
@@ -562,7 +558,6 @@ def build_app(registry: Registry) -> Starlette:
 
     @with_session
     async def files(request: Any, session: Any) -> JSONResponse:
-
         def walk_all() -> list[str]:
             with session.ws.lock:
                 paths: list[str] = []

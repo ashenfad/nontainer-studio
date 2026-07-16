@@ -52,10 +52,14 @@ def _compact(events: list[dict]) -> list[dict]:
     for e in events:
         t = e.get("type")
         if out and t in _DELTA_TYPES and out[-1].get("type") == t:
-            out[-1] = {**out[-1], "delta": out[-1].get("delta", "") + e.get("delta", "")}
+            out[-1] = {
+                **out[-1],
+                "delta": out[-1].get("delta", "") + e.get("delta", ""),
+            }
         else:
             out.append(e)
     return out
+
 
 STUDIO_PRIMER = (
     "You work inside nontainer-studio; the human sees your workspace "
@@ -215,9 +219,7 @@ class Session:
                 while not self.events or self.events[-1]["seq"] < cursor:
                     await self.new_event.wait()
             while True:
-                idx = bisect.bisect_left(
-                    self.events, cursor, key=lambda e: e["seq"]
-                )
+                idx = bisect.bisect_left(self.events, cursor, key=lambda e: e["seq"])
                 if idx >= len(self.events):
                     break
                 event = self.events[idx]
@@ -256,9 +258,7 @@ class Registry:
             {
                 "name": name,
                 "busy": (s := self._sessions.get(name)) is not None and s.busy,
-                "model": (
-                    s.model if s is not None else manifest["models"].get(name)
-                ),
+                "model": (s.model if s is not None else manifest["models"].get(name)),
             }
             for name in sorted(names)
         ]
