@@ -282,7 +282,7 @@ def test_chat_missing_session_and_empty_message(studio):
     )
 
 
-def test_busy_session_409s_chat_and_restore(studio):
+def test_busy_session_409s_chat(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
@@ -290,12 +290,6 @@ def test_busy_session_409s_chat_and_restore(studio):
     try:
         assert (
             client.post("/api/sessions/s1/chat", json={"message": "x"}).status_code
-            == 409
-        )
-        assert (
-            client.post(
-                "/api/sessions/s1/restore", json={"checkpoint": "x"}
-            ).status_code
             == 409
         )
         assert client.get("/api/sessions").json()["sessions"] == [
@@ -374,67 +368,6 @@ def test_published_app_shares_live_db(studio):
     assert client.get(f"{pub['url']}api/names").json() == {"names": ["amy"]}
 
 
-# -- time travel ---------------------------------------------------------------
-
-
-def test_history_restore(studio):
-    client, registry = studio
-    client.post("/api/sessions", json={"name": "s1"})
-    ws = registry.get("s1").ws
-    ws.write_file("v1.txt", "one")
-    first = ws.head
-    ws.write_file("v2.txt", "two")
-
-    entries = client.get("/api/sessions/s1/history").json()["history"]
-    assert len(entries) >= 2
-
-    # restore rewinds files...
-    assert client.post(
-        "/api/sessions/s1/restore", json={"checkpoint": first}
-    ).json() == {"ok": True}
-    assert ws.fs.exists("v1.txt") and not ws.fs.exists("v2.txt")
-    # ...and shows up in the transcript as a notice
-    assert any(e["type"] == "notice" for e in registry.get("s1").events)
-
-    assert (
-        client.post(
-            "/api/sessions/s1/restore", json={"checkpoint": "bogus"}
-        ).status_code
-        == 400
-    )
-
-
-def test_fork_copies_db_and_rewinds_workspace(studio):
-    """Fork = a new universe: workspace branches (optionally rewound to
-    a checkpoint), db is COPIED as-of-now (no history to rewind), and
-    the two dbs are independent afterward."""
-    client, registry = studio
-    client.post("/api/sessions", json={"name": "s1"})
-    parent = registry.get("s1")
-    parent.ws.write_file("v1.txt", "one")
-    at = parent.ws.head
-    parent.ws.write_file("v2.txt", "two")
-    parent.db.execute("CREATE TABLE t (v TEXT)")
-    parent.db.execute("INSERT INTO t VALUES ('shared')")
-
-    r = client.post("/api/sessions/s1/fork", json={"name": "s2", "checkpoint": at})
-    assert r.status_code == 200
-    child = registry.get("s2")
-
-    # workspace rewound to the checkpoint (fork-from-here)
-    assert child.ws.fs.exists("v1.txt") and not child.ws.fs.exists("v2.txt")
-    # db copied as-of-now...
-    assert child.db.query("SELECT v FROM t") == [("shared",)]
-    # ...and independent from here on
-    child.db.execute("INSERT INTO t VALUES ('child-only')")
-    assert parent.db.query("SELECT v FROM t") == [("shared",)]
-
-    # name collisions and bad parents fail loudly
-    assert client.post("/api/sessions/s1/fork", json={"name": "s2"}).status_code == 400
-    assert (
-        client.post("/api/sessions/nope/fork", json={"name": "s3"}).status_code == 404
-    )
-
 
 # -- files ----------------------------------------------------------------------
 
@@ -481,7 +414,7 @@ def test_upload_lands_checkpointed_with_notice(studio):
     assert r.status_code == 200
     assert r.json() == {"ok": True, "path": "/uploads/data.csv", "size": 8}
     assert session.ws.fs.read("/uploads/data.csv") == b"a,b\n1,2\n"
-    # checkpointed: restore/fork semantics extend to uploads
+    # checkpointed: an edit's rewind extends to uploads
     assert any(c.info.get("tool") == "file_write" for c in session.ws.history(limit=3))
     # transcript notice
     assert any(
@@ -777,74 +710,6 @@ def _turn(client, session: str, message: str) -> None:
     _collect_until_done(client, session)
 
 
-def test_restore_rewinds_agent_memory_with_the_files(studio):
-    """The synchronized undo: restore rewinds workspace AND agno runs
-    together (mapping: done events carry head + run_id), while the
-    visible transcript keeps its full record."""
-    client, registry = studio
-    client.post("/api/sessions", json={"name": "s1"})
-    session = registry.get("s1")
-    chat_db = FakeChatDb()
-    session.agent.db = chat_db
-
-    _turn(client, "s1", "one")
-    session.ws.write_file("a.txt", "A")
-    at = session.ws.head
-    _turn(client, "s1", "two")  # done head == `at`
-    session.ws.write_file("b.txt", "B")
-    _turn(client, "s1", "three")  # done head is after `at`
-
-    # agno would have stored one run per turn
-    chat_db.record = SimpleNamespace(
-        runs=[SimpleNamespace(run_id=f"run-{i}") for i in (1, 2, 3)]
-    )
-
-    r = client.post("/api/sessions/s1/restore", json={"checkpoint": at})
-    assert r.json() == {"ok": True}
-
-    # files rewound...
-    assert session.ws.fs.exists("a.txt") and not session.ws.fs.exists("b.txt")
-    # ...agent memory rewound in sync (turn three forgotten)...
-    assert [run.run_id for run in chat_db.record.runs] == ["run-1", "run-2"]
-    # ...and the transcript kept everything, plus the notice
-    kinds = [e["type"] for e in session.events]
-    assert kinds.count("user") == 3
-    assert kinds[-1] == "notice"
-
-
-def test_restore_to_before_all_turns_clears_memory(studio):
-    client, registry = studio
-    client.post("/api/sessions", json={"name": "s1"})
-    session = registry.get("s1")
-    chat_db = FakeChatDb()
-    session.agent.db = chat_db
-    genesis = session.ws.head
-
-    session.ws.write_file("a.txt", "A")
-    _turn(client, "s1", "one")
-    chat_db.record = SimpleNamespace(runs=[SimpleNamespace(run_id="run-1")])
-
-    client.post("/api/sessions/s1/restore", json={"checkpoint": genesis})
-    assert chat_db.record.runs == []  # no turn is at-or-before genesis
-
-
-def test_restore_unknown_mapping_leaves_memory_alone(studio):
-    """A kept turn whose run_id isn't in the agno record (drift) must
-    never corrupt memory — leave it rather than guess."""
-    client, registry = studio
-    client.post("/api/sessions", json={"name": "s1"})
-    session = registry.get("s1")
-    chat_db = FakeChatDb()
-    session.agent.db = chat_db
-    _turn(client, "s1", "one")
-    at = session.ws.head
-    session.ws.write_file("a.txt", "A")
-    chat_db.record = SimpleNamespace(runs=[SimpleNamespace(run_id="mystery")])
-
-    client.post("/api/sessions/s1/restore", json={"checkpoint": at})
-    assert [r.run_id for r in chat_db.record.runs] == ["mystery"]
-
-
 # -- edit: rewind + retry as one verb ---------------------------------------------
 
 
@@ -889,6 +754,25 @@ def test_edit_rewinds_truncates_and_reruns(studio):
     assert kinds[cut + 1] == "user"
     assert session.events[cut + 1]["text"] == "two, but better"
     assert session.agent.seen[-1] == "two, but better"
+
+
+def test_edit_unknown_mapping_leaves_memory_alone(studio):
+    """A kept turn whose run_id isn't in the agno record (drift) must
+    never corrupt memory — leave it rather than guess."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    chat_db = FakeChatDb()
+    session.agent.db = chat_db
+    _turn(client, "s1", "one")
+    _turn(client, "s1", "two")
+    chat_db.record = SimpleNamespace(runs=[SimpleNamespace(run_id="mystery")])
+
+    seq = _user_seqs(session)[1]  # keeps turn one, whose run_id is unknown
+    r = client.post("/api/sessions/s1/edit", json={"seq": seq, "message": "redo"})
+    assert r.status_code == 200
+    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
+    assert [r.run_id for r in chat_db.record.runs] == ["mystery"]
 
 
 def test_edit_first_message_clears_memory(studio):
@@ -1473,14 +1357,6 @@ def test_model_switch_persists_and_notices(studio, tmp_path):
     finally:
         session.turn_lock.release()
     assert client.post("/api/sessions/s1/model", json={}).status_code == 400
-
-
-def test_fork_inherits_model(studio):
-    client, registry = studio
-    client.post("/api/sessions", json={"name": "s1"})
-    client.post("/api/sessions/s1/model", json={"model": "dummy"})
-    client.post("/api/sessions/s1/fork", json={"name": "s2"})
-    assert registry.get("s2").model == "dummy"
 
 
 # -- dummy model: the real agent loop, scripted -----------------------------------

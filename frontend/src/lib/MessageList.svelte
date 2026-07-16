@@ -75,8 +75,8 @@
             <h2>nontainer-studio</h2>
             <p>
                 Ask the agent to build something. It works in a versioned
-                workspace — every turn is a checkpoint you can rewind, fork,
-                or publish.
+                workspace — edit any earlier prompt to rewind and retry, or
+                publish what it builds.
             </p>
         </div>
     {/if}

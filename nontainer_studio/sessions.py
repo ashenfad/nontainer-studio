@@ -4,19 +4,18 @@ store + event log per session.
 Ownership model, on display:
 
 - WORKSPACE (files, cache, cwd): durable and versioned — a kvgit
-  branch per session; restores and forks apply here.
+  branch per session; an edit's rewind applies here.
 - APP DB (``db`` host object): durable but HISTORYLESS — live app
   state that survives publish and never time-travels. Fresh per
-  session, copied on fork (a new universe), shared with published
-  snapshots (a view of the same universe), untouched by restore.
+  session, shared with published snapshots (a view of the same
+  universe), untouched by rewinds.
 - CONVERSATION + event log: durable but session-scoped — agno persists
   chat (SqliteDb when sqlalchemy is installed, JsonDb otherwise) keyed
   by session_id, and the transcript event log appends to a jsonl per
   session. Rewinds are SYNCHRONIZED: the agent's memory (agno runs)
   rewinds with the workspace. An EDIT (rewind_to_event) trims the
   visible transcript too — via an appended `truncate` event, never by
-  mutating the log — while a history-tab restore keeps the record.
-  Fork = fresh chat over branched files (conversation never forks).
+  mutating the log.
 """
 
 from __future__ import annotations
@@ -77,8 +76,8 @@ STUDIO_PRIMER = (
     "prefer raw plotly figures in `ui` — they render interactively "
     "right in the reply. Need a static image file instead? Use "
     "matplotlib savefig; plotly's write_image cannot run here. Every "
-    "turn is a checkpoint "
-    "the human can rewind, edit, or fork — prefer small complete "
+    "turn is a checkpoint the human can rewind by editing an earlier "
+    "prompt — prefer small complete "
     "steps over big-bang changes. They may also PUBLISH the app: a "
     "frozen copy of the code serving live, behind a share URL, over "
     "the same live `db`."
@@ -117,16 +116,6 @@ class Db:
         """A read (SELECT); returns a list of row tuples."""
         with self._lock:
             return self._c.execute(sql, params).fetchall()
-
-    def copy_to(self, path: str | Path) -> "Db":
-        """Consistent point-in-time copy (sqlite backup API) — fork
-        gives the new universe its own store."""
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        dst = sqlite3.connect(str(path))
-        with self._lock:
-            self._c.backup(dst)
-        dst.close()
-        return Db(path)
 
     def close(self) -> None:
         with self._lock:
@@ -502,39 +491,6 @@ class Registry:
             markdown=True,
         )
 
-    # -- fork: a NEW universe --------------------------------------------
-
-    def fork(self, name: str, new_name: str, checkpoint: str | None = None) -> Session:
-        """Fork a session: the workspace branches (O(1)); the app db is
-        COPIED so the child's experiments can't contaminate the parent.
-        With ``checkpoint``, the child is then rewound to that commit —
-        fork-from-here. The db copy is as-of-now either way: external
-        state has no history to rewind to (that's the lesson).
-
-        The child gets a fresh agent (empty chat) — conversation
-        belongs to the harness, not the workspace."""
-        parent = self._sessions.get(name)
-        if parent is None:
-            raise KeyError(name)
-        with self._lock:
-            if new_name in self._sessions:
-                raise ValueError(f"session {new_name!r} already exists")
-            # Branch the workspace, then REOPEN it with its own config:
-            # ws.fork() inherits host_objects (the parent's live db),
-            # which is right for publish but wrong for a new universe.
-            parent.ws.fork(new_name).close()
-            db = parent.db.copy_to(self._store / "dbs" / f"{new_name}.sqlite")
-            ws = workspace(new_name, store=self._store, python=self._python_config(db))
-            if checkpoint is not None:
-                ws.restore(checkpoint)
-            # deliberately NOT copied: chat + transcript (conversation
-            # belongs to the harness; a fork is a fresh conversation
-            # over the branched files)
-            session = self._assemble(new_name, ws, db, parent.model)
-            self._sessions[new_name] = session
-            self._record(new_name, parent.model)
-            return session
-
     # -- delete: remove a session's whole universe ---------------------------
 
     def delete(self, session: Session) -> None:
@@ -626,38 +582,6 @@ class Registry:
             manifest = self._manifest()
             manifest["models"][session.name] = spec
             self._save_manifest(manifest)
-
-    # -- restore: synchronized time travel ---------------------------------
-
-    def restore(self, session: Session, checkpoint: str) -> None:
-        """Rewind the workspace AND the agent's memory to a checkpoint,
-        together — no post-restore contradiction between what the agent
-        remembers and what the files say, so nothing to "inform" it of.
-
-        The mapping: each turn's `done` event records the workspace
-        head at turn end plus the turn's agno run_id. Turns whose head
-        is at-or-before the target commit are kept; the agno session's
-        runs are truncated after the last kept turn. The visible
-        transcript is NOT touched — memory follows the workspace, the
-        record belongs to the human. (The app db doesn't rewind either;
-        external state has no history.)"""
-        history = [c.id for c in session.ws.history()]  # newest -> oldest
-        if checkpoint not in history:
-            raise ValueError(f"unknown checkpoint {checkpoint!r}")
-        position = {commit: i for i, commit in enumerate(history)}
-        target = position[checkpoint]
-
-        last_kept_run_id = None
-        for _, event in self._visible(session.events):
-            if event.get("type") != "done":
-                continue
-            head = event.get("head")
-            if head in position and position[head] >= target:
-                # at-or-before the target: this turn survives the rewind
-                last_kept_run_id = event.get("run_id") or last_kept_run_id
-
-        session.ws.restore(checkpoint)
-        self._truncate_chat(session, last_kept_run_id)
 
     # -- edit: rewind + retry as one verb -----------------------------------
 
