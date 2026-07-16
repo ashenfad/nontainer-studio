@@ -2,6 +2,7 @@
 lifecycle, preview/publish, time travel — exercised with a fake agent
 (no LLM, no key)."""
 
+import re
 import time
 from types import SimpleNamespace
 
@@ -292,7 +293,7 @@ def test_busy_session_409s_chat(studio):
             == 409
         )
         assert client.get("/api/sessions").json()["sessions"] == [
-            {"name": "s1", "busy": True, "model": None}
+            {"name": "s1", "title": "New session", "busy": True, "model": None}
         ]
     finally:
         session.turn_lock.release()
@@ -561,7 +562,9 @@ def test_session_manifest_survives_restart(studio, tmp_path):
 
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
-    assert reborn.list() == [{"name": "s1", "busy": False, "model": None}]
+    assert reborn.list() == [
+        {"name": "s1", "title": "New session", "busy": False, "model": None}
+    ]
     # and it opens lazily with its files intact
     registry.get("s1").ws.write_file("keep.txt", "here")
     session = reborn.open("s1")
@@ -1277,7 +1280,7 @@ def test_delete_leaves_other_sessions_alone(studio):
     registry.get("s2").ws.write_file("mine.txt", "s2 data")
     client.delete("/api/sessions/s1")
     assert client.get("/api/sessions").json()["sessions"] == [
-        {"name": "s2", "busy": False, "model": None}
+        {"name": "s2", "title": "New session", "busy": False, "model": None}
     ]
     assert registry.get("s2").ws.fs.read("mine.txt") == b"s2 data"
 
@@ -1334,7 +1337,9 @@ def test_model_switch_persists_and_notices(studio, tmp_path):
     )
     # the rail shows it, and a restart remembers it
     listed = client.get("/api/sessions").json()["sessions"]
-    assert listed == [{"name": "s1", "busy": False, "model": "dummy"}]
+    assert listed == [
+        {"name": "s1", "title": "New session", "busy": False, "model": "dummy"}
+    ]
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
     assert reborn.open("s1").model == "dummy"
@@ -1389,11 +1394,107 @@ def test_dummy_model_drives_real_agent(tmp_path):
     registry.close()
 
 
+# -- identity is a minted slug; the label is a title -----------------------------
+
+
+def test_create_mints_a_slug_and_starts_untitled(studio):
+    """No name in the body = the UI's "+ New": the server mints identity
+    so nobody types it, and the session starts with no title."""
+    client, registry = studio
+    r = client.post("/api/sessions", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["title"] == "New session"
+    # a pettable slug, and a legal session id (it names a branch, a db
+    # file, a jsonl and every route)
+    assert re.fullmatch(r"[a-z]+(-[a-z]+)+", body["name"]), body["name"]
+    assert registry.get(body["name"]) is not None
+
+
+def test_minted_names_are_unique(studio):
+    client, _ = studio
+    names = {client.post("/api/sessions", json={}).json()["name"] for _ in range(8)}
+    assert len(names) == 8
+
+
+def test_explicit_name_still_creates(studio):
+    """The typed-name form stays for tests/scripting — it just never
+    becomes the label."""
+    client, registry = studio
+    r = client.post("/api/sessions", json={"name": "s1"})
+    assert r.json() == {"ok": True, "name": "s1", "title": "New session"}
+    assert client.post("/api/sessions", json={"name": "s1"}).json()["name"] == "s1"
+    assert client.post("/api/sessions", json={"name": "bad/name"}).status_code == 400
+
+
+def test_title_resolution_user_outranks_agent(studio):
+    """user > agent > default, and clearing the user's REVEALS the
+    agent's latest rather than falling to the default."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    assert registry.title_of("s1") == "New session"
+
+    registry.set_agent_title("s1", "Revenue dashboard")
+    assert registry.title_of("s1") == "Revenue dashboard"
+
+    r = client.post("/api/sessions/s1/title", json={"title": "Q3 numbers"})
+    assert r.json()["title"] == "Q3 numbers"
+    # the agent keeps suggesting; the human's choice still wins
+    registry.set_agent_title("s1", "Something else")
+    assert registry.title_of("s1") == "Q3 numbers"
+
+    # clearing falls back to the agent's LATEST, not the default
+    assert client.post("/api/sessions/s1/title", json={"title": ""}).json()[
+        "title"
+    ] == ("Something else")
+
+
+def test_agent_titles_are_clamped(studio):
+    """The agent writes this free-text: a newline would break the rail
+    row and a novel would blow past it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    registry.set_agent_title("s1", "  line one\nline two   \t spaced  ")
+    assert registry.title_of("s1") == "line one line two spaced"
+    registry.set_agent_title("s1", "x" * 200)
+    assert registry.title_of("s1") == "x" * 60
+    # blank/junk reads as "no title", never as ""
+    registry.set_agent_title("s1", "   ")
+    assert registry.title_of("s1") == "New session"
+
+
+def test_rail_lists_newest_first(studio):
+    """Slugs carry no order, so alphabetical would scatter new sessions
+    into random rail slots — birthdays decide."""
+    client, _ = studio
+    first = client.post("/api/sessions", json={"name": "aaa"}).json()["name"]
+    time.sleep(0.01)
+    second = client.post("/api/sessions", json={"name": "zzz"}).json()["name"]
+    listed = [s["name"] for s in client.get("/api/sessions").json()["sessions"]]
+    assert listed == [second, first]  # newest first, NOT alphabetical
+
+
+def test_titles_and_birthday_survive_restart(studio, tmp_path):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    registry.set_agent_title("s1", "Persisted title")
+
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    reborn._build_agent = lambda *a, **k: FakeAgent()
+    assert reborn.title_of("s1") == "Persisted title"
+    reborn.close()
+
+
 def test_v1_manifest_format_tolerated(studio, tmp_path):
     (tmp_path / "sessions.json").write_text('["old-style"]')
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
-    assert {"name": "old-style", "busy": False, "model": None} in reborn.list()
+    assert {
+        "name": "old-style",
+        "title": "New session",
+        "busy": False,
+        "model": None,
+    } in reborn.list()
     assert reborn.resolve("nope") is None
     reborn.close()
 

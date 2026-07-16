@@ -6,7 +6,6 @@
 
     let { active, onSwitch, onCreate, onDelete } = $props()
 
-    let name = $state('')
     let armed = $state(null) // session name whose delete is one tap away
 
     function del(s, e) {
@@ -32,12 +31,6 @@
         return ''
     }
 
-    function create() {
-        const n = name.trim()
-        if (!n) return
-        name = ''
-        onCreate(n)
-    }
 </script>
 
 <nav class="rail">
@@ -54,15 +47,15 @@
                     }}
                 >
                     <span class="dot {status(s)}"></span>
-                    <span class="name">{s.name}</span>
+                    <span class="name" title={s.title}>{s.title}</span>
                 </button>
                 <button
                     class="delete"
                     class:armed={armed === s.name}
                     title={armed === s.name
                         ? 'click again to delete everything this session owns'
-                        : `delete ${s.name}`}
-                    aria-label="delete {s.name}"
+                        : `delete ${s.title}`}
+                    aria-label="delete {s.title}"
                     onclick={(e) => del(s, e)}
                 >
                     {armed === s.name ? 'sure?' : '×'}
@@ -70,15 +63,9 @@
             </div>
         {/each}
     </div>
-    <form
-        class="new"
-        onsubmit={(e) => {
-            e.preventDefault()
-            create()
-        }}
-    >
-        <input placeholder="new session…" bind:value={name} />
-    </form>
+    <div class="new">
+        <button class="new-btn" onclick={() => onCreate()}>+ New session</button>
+    </div>
 </nav>
 
 <style>
@@ -196,7 +183,7 @@
         padding: 0.6rem;
         border-top: 1px solid var(--border);
     }
-    .new input {
+    .new-btn {
         width: 100%;
         background: var(--input-bg);
         border: 1px solid var(--border);
@@ -204,10 +191,12 @@
         color: var(--text);
         font-family: inherit;
         font-size: 0.78rem;
-        padding: 0.35rem 0.55rem;
-        outline: none;
+        padding: 0.4rem 0.55rem;
+        cursor: pointer;
+        text-align: left;
     }
-    .new input:focus {
+    .new-btn:hover {
         border-color: var(--text-muted);
+        background: var(--surface-hover);
     }
 </style>

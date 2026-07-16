@@ -26,17 +26,38 @@ import os
 import secrets
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from nontainer import PythonConfig, Workspace, workspace
+import petname
+from nontainer import PythonConfig, Workspace, validate_session_id, workspace
 from nontainer.adapters.agno import WorkspaceTools
 from nontainer.apps import AppRuntime, enable_apps, mint_token
 
 DEFAULT_STORE = Path.home() / ".nontainer-studio"
 
 MAX_EVENTS = 10_000  # in-MEMORY tail window, not a lifetime cap
+
+DEFAULT_TITLE = "New session"
+
+TITLE_MAX = 60  # the rail is ~200px; anything longer is ellipsis anyway
+
+
+def _clean_title(title: object) -> str | None:
+    """Free text -> a rail label, or None for "no title".
+
+    The agent writes this via a tool, so it is untrusted shape: collapse
+    every run of whitespace (a newline would break the row), bound the
+    length, and treat blank as absent so a cleared user title reveals the
+    agent's instead of shadowing it with "".
+    """
+    if not isinstance(title, str):
+        return None
+    text = " ".join(title.split())
+    return text[:TITLE_MAX] or None
+
 
 # streamed chunk events — the only types that compact (a merged run is
 # indistinguishable from one big delta, so clients need no special case)
@@ -251,25 +272,66 @@ class Registry:
         """Open sessions plus manifest names from prior runs — the
         workspaces and dbs survive restarts, so the rail should too
         (opening stays lazy; a listed-but-unopened session constructs
-        on first use)."""
+        on first use).
+
+        NEWEST FIRST: `name` is a minted slug now, so alphabetical order
+        is arbitrary — a new session would land in a random rail slot.
+        Sessions with no birthday (pre-`created` manifests) sort last."""
         manifest = self._manifest()
         names = set(manifest["sessions"]) | set(self._sessions)
-        return [
+        created = manifest["created"]
+        rows = [
             {
                 "name": name,
+                "title": self.title_of(name, manifest),
                 "busy": (s := self._sessions.get(name)) is not None and s.busy,
                 "model": (s.model if s is not None else manifest["models"].get(name)),
             }
-            for name in sorted(names)
+            for name in names
         ]
+        rows.sort(key=lambda r: (-created.get(r["name"], 0), r["name"]))
+        return rows
+
+    # -- titles: display only, never identity ------------------------------
+
+    def title_of(self, name: str, manifest: dict | None = None) -> str:
+        """The rail label. The human's own title always wins; the agent's
+        fills the gap; neither means the session hasn't been named yet.
+        Pass ``manifest`` to resolve a batch without re-reading the file
+        (and to stay lock-free while a caller holds ``_lock``)."""
+        entry = (manifest or self._manifest())["titles"].get(name) or {}
+        return entry.get("user") or entry.get("agent") or DEFAULT_TITLE
+
+    def set_user_title(self, name: str, title: str | None) -> str:
+        """The human's override — outranks the agent forever. ``None``/
+        blank CLEARS it, falling back to whatever the agent last said."""
+        return self._set_title(name, "user", title)
+
+    def set_agent_title(self, name: str, title: str | None) -> str:
+        """The agent's suggestion. Always stored, even when a user title
+        is hiding it: clearing theirs should reveal the agent's latest,
+        not a stale one."""
+        return self._set_title(name, "agent", title)
+
+    def _set_title(self, name: str, tier: str, title: str | None) -> str:
+        # takes _lock: the agent's tool writes titles from a worker
+        # thread, and this is a read-modify-write of the whole manifest
+        with self._lock:
+            manifest = self._manifest()
+            entry = dict(manifest["titles"].get(name) or {})
+            entry[tier] = _clean_title(title)
+            manifest["titles"][name] = entry
+            self._save_manifest(manifest)
+            return self.title_of(name, manifest)  # manifest passed: no re-lock
 
     def _manifest_path(self) -> Path:
         return self._store / "sessions.json"
 
     def _manifest(self) -> dict:
         """{"sessions": [...], "published": {token: {branch, session,
-        checkpoint}}, "models": {name: spec}} — tolerant of the v1
-        bare-list format."""
+        checkpoint}}, "models": {name: spec}, "titles": {name: {user,
+        agent}}, "created": {name: epoch}} — tolerant of the v1
+        bare-list format, and of any key simply being absent."""
         try:
             data = json.loads(self._manifest_path().read_text())
         except Exception:
@@ -280,6 +342,8 @@ class Registry:
             "sessions": data.get("sessions", []),
             "published": data.get("published", {}),
             "models": data.get("models", {}),
+            "titles": data.get("titles", {}),
+            "created": data.get("created", {}),
         }
 
     def _load_manifest(self) -> set[str]:
@@ -301,7 +365,39 @@ class Registry:
         manifest["sessions"] = sorted(set(manifest["sessions"]) | {name})
         if model is not None:
             manifest["models"][name] = model
+        # birthday, stamped once: slugs carry no order, so this is the
+        # only thing that can sort the rail sensibly (see `list`)
+        manifest["created"].setdefault(name, time.time())
         self._save_manifest(manifest)
+
+    # -- create: mint an identity, then open it ----------------------------
+
+    def create(self) -> Session:
+        """A brand-new session under a minted slug.
+
+        The slug is IDENTITY (branch / db file / jsonl / routes) and never
+        changes; what the human reads is the title, which starts empty.
+
+        Minting reserves inside ``_lock`` — ``_record`` publishes the name
+        to the manifest so a concurrent mint can't hand out the same one —
+        and opens outside it, because ``open`` takes ``_lock`` too and it
+        is NOT reentrant."""
+        with self._lock:
+            name = self._mint_name()
+            self._record(name)  # reserve the name against a racing mint
+        return self.open(name)
+
+    def _mint_name(self) -> str:
+        """A pettable slug: `sleepy-meerkat`, not `session-3` (caller
+        holds _lock). petname's vocabulary makes collisions rare, and
+        `known()` makes them impossible — retry, then widen to three
+        words rather than ever return a taken name."""
+        known = self.known()
+        for attempt in range(50):
+            name = petname.Generate(3 if attempt > 25 else 2, "-")
+            if name not in known:
+                return validate_session_id(name)
+        raise RuntimeError("could not mint a free session name")
 
     def get(self, name: str) -> Session | None:
         return self._sessions.get(name)

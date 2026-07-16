@@ -9,11 +9,14 @@ Needs the committed frontend build and playwright's chromium
 (`playwright install chromium`); both skip cleanly when absent.
 """
 
+import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -88,6 +91,24 @@ def page(browser, server):
 def _send(page, message: str) -> None:
     page.fill("textarea", message)
     page.get_by_role("button", name="send").click()
+
+
+def _title(server: str, name: str, title: str) -> None:
+    """Name a session so its rail row is findable. Rows are labelled by
+    TITLE now — identity is a slug that never displays — so two untitled
+    sessions both read "New session" and can't be told apart by text.
+
+    Deliberately NOT page.request: that rides the browser's network
+    stack, where the SSE followers pin connections against Chromium's
+    per-origin cap and this POST can starve. It only arranges server
+    state, so it talks to the server directly."""
+    req = urllib.request.Request(
+        f"{server}/api/sessions/{name}/title",
+        data=json.dumps({"title": title}).encode(),
+        headers={"content-type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        assert r.status == 200
 
 
 # ---------------------------------------------------------------------------
@@ -439,14 +460,17 @@ def test_delete_session_from_rail(page, server):
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "del1 alive", timeout=15000
     )
-    page.fill(".new input", "e2e-del2")
-    page.press(".new input", "Enter")
-    expect(page.locator(".row.active", has_text="e2e-del2")).to_be_visible(
-        timeout=10000
-    )
+    _title(server, "e2e-del1", "del1")
+
+    # "+ New" mints the session and switches to it; the slug rides the
+    # URL — wait for it, or we'd read the PREVIOUS session's name
+    page.click(".new-btn")
+    expect(page).to_have_url(re.compile(r"\?session=[a-z]+(-[a-z]+)+$"), timeout=10000)
+    _title(server, page.url.split("session=")[-1], "del2")
+    expect(page.locator(".row.active", has_text="del2")).to_be_visible(timeout=10000)
 
     # two-tap delete on the ACTIVE session: × arms, 'sure?' confirms
-    row = page.locator(".row", has_text="e2e-del2")
+    row = page.locator(".row", has_text="del2")
     row.hover()
     row.locator(".delete").click()
     expect(row.locator(".delete")).to_have_text("sure?")
@@ -455,14 +479,28 @@ def test_delete_session_from_rail(page, server):
     # the row disappears and the shell falls back to SOME surviving
     # session (the rail is shared across this module's tests, so which
     # one isn't ours to assume)
-    expect(page.locator(".row", has_text="e2e-del2")).to_have_count(0, timeout=10000)
+    expect(page.locator(".row", has_text="del2")).to_have_count(0, timeout=10000)
     expect(page.locator(".row.active")).to_be_visible(timeout=10000)
 
     # the sibling session was untouched: its transcript replays intact
-    page.locator(".row", has_text="e2e-del1").locator(".item").click()
+    page.locator(".row", has_text="del1").locator(".item").click()
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "del1 alive", timeout=10000
     )
+
+
+def test_new_session_button_mints_an_untitled_slug(page, server):
+    """ "+ New" asks the SERVER for a session: identity is a minted slug
+    nobody typed (so the agent may title it freely), and the rail shows
+    the untitled default until something names it."""
+    page.goto(f"{server}/?session=e2e-mint")
+    expect(page.locator(".row.active")).to_be_visible(timeout=10000)
+
+    page.click(".new-btn")
+    # switchTo uses replaceState, so poll the URL rather than wait for a
+    # navigation that never fires. e2e-mint can't match: it has a digit.
+    expect(page).to_have_url(re.compile(r"\?session=[a-z]+(-[a-z]+)+$"), timeout=10000)
+    expect(page.locator(".row.active .name")).to_have_text("New session", timeout=10000)
 
 
 def test_background_turn_survives_session_switch(page, server):
@@ -471,11 +509,11 @@ def test_background_turn_survives_session_switch(page, server):
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "first session reply", timeout=15000
     )
-    # switch away via the rail's new-session box, then back
-    page.fill(".new input", "e2e-bg2")
-    page.press(".new input", "Enter")
-    expect(page.locator(".row.active", has_text="e2e-bg2")).to_be_visible(timeout=10000)
-    page.locator(".item", has_text="e2e-bg1").click()
+    # switch away via the rail's "+ New" button, then back
+    _title(server, "e2e-bg1", "bg1")
+    page.click(".new-btn")
+    expect(page.locator(".row.active")).to_be_visible(timeout=10000)
+    page.locator(".item", has_text="bg1").click()
     # the transcript replays from the server-side event log
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "first session reply", timeout=10000

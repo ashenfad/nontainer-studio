@@ -110,6 +110,16 @@ export async function ensureSession(name) {
     return rt
 }
 
+/** Mint a new session. The SERVER names it (a slug like sleepy-meerkat):
+ * identity is never typed, so the agent is free to title it later.
+ * Returns the minted name — the caller switches to it. */
+export async function createSession() {
+    const { name } = await api('/api/sessions', {})
+    await refreshSessions()
+    getRuntime(name).markOpen()
+    return name
+}
+
 // ---------------------------------------------------------------------------
 
 const ARTIFACT_NOTE = /\[ui artifacts: ([^\]]+)\]/

@@ -357,13 +357,34 @@ def build_app(registry: Registry) -> Starlette:
         return JSONResponse({"sessions": registry.list()})
 
     async def open_session(request: Any) -> JSONResponse:
+        """Create-or-return. With no `name`, MINT one — that's what the
+        UI does ("+ New"), so identity is always a slug nobody typed.
+        An explicit `name` still works (tests, scripting); it never
+        becomes the session's label either way — titles do that."""
         body = await request.json()
         name = (body.get("name") or "").strip()
         try:
-            registry.open(name)
+            if name:
+                session = await anyio.to_thread.run_sync(registry.open, name)
+            else:
+                session = await anyio.to_thread.run_sync(registry.create)
         except SessionIdError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
-        return JSONResponse({"ok": True, "name": name})
+        return JSONResponse(
+            {
+                "ok": True,
+                "name": session.name,
+                "title": registry.title_of(session.name),
+            }
+        )
+
+    @with_session
+    async def set_title(request: Any, session: Any) -> JSONResponse:
+        """The human's rename. A blank title CLEARS the override, so the
+        rail falls back to whatever the agent last suggested."""
+        body = await request.json()
+        title = registry.set_user_title(session.name, body.get("title"))
+        return JSONResponse({"ok": True, "name": session.name, "title": title})
 
     @with_session
     async def chat(request: Any, session: Any) -> Any:
@@ -737,6 +758,7 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions", list_sessions, methods=["GET"]),
             Route("/api/sessions", open_session, methods=["POST"]),
             Route("/api/sessions/{name}/model", set_model, methods=["POST"]),
+            Route("/api/sessions/{name}/title", set_title, methods=["POST"]),
             Route("/api/sessions/{name}", delete_session, methods=["DELETE"]),
             Route("/api/sessions/{name}/chat", chat, methods=["POST"]),
             Route("/api/sessions/{name}/edit", edit, methods=["POST"]),
