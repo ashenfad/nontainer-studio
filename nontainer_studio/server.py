@@ -29,7 +29,7 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from .sessions import Registry, repair_aborted_run
+from .sessions import Registry, _clean_title, repair_aborted_run
 
 STATIC = Path(__file__).parent / "static"
 MAX_UPLOAD = 50_000_000  # upload bodies buffer in memory; cap them
@@ -132,6 +132,22 @@ def _client_events(ev: Any) -> list[dict]:
                         "kind": artifact_kind(path),
                     }
                 )
+        # The title the agent just gave, as a first-class event. The TOOL
+        # already wrote it to the manifest (it can't emit — it's sync code
+        # inside agno's run, and emit is loop-bound), so this is not the
+        # write path: it is the temporal record, which buys two things the
+        # manifest can't. It marks WHEN the session got that name, so an
+        # edit's rewind can put the title back the way the conversation
+        # was; and it lets the shell relabel now instead of on the next
+        # rail poll. Carries the agent's SUGGESTION (clamped as stored) —
+        # a human title may outrank it, so the client re-reads the
+        # resolved label rather than trusting this text.
+        if getattr(tool, "tool_name", None) == "recommend_title":
+            args = _tool_args(tool)
+            asked = args.get("title") if isinstance(args, dict) else None
+            titled = _clean_title(asked)
+            if titled:
+                events.append({"type": "title", "title": titled})
         return events
     if kind == "RunCancelled":
         return [{"type": "notice", "text": "turn stopped"}]

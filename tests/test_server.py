@@ -1544,6 +1544,140 @@ def test_primer_teaches_when_to_title(studio):
     assert "New session" in sessions_mod.STUDIO_PRIMER
 
 
+class TitlingAgent(FakeAgent):
+    """Calls recommend_title mid-turn, like the real thing.
+
+    The real loop EXECUTES the tool and THEN emits ToolCallCompleted —
+    two separate effects (the manifest write and the transcript event).
+    A fake that only yielded the event would leave the manifest unwritten
+    and quietly test half the feature."""
+
+    def __init__(self, registry, name: str, title: str = "Revenue dashboard") -> None:
+        super().__init__()
+        self._tool = registry._title_tool(name)
+        self.title = title
+
+    async def arun(self, message, stream=True, stream_events=True):
+        self.seen.append(message)
+        run_id = f"run-{len(self.seen)}"
+        result = self._tool(self.title)  # the tool really runs
+        yield SimpleNamespace(
+            event="ToolCallCompleted",
+            tool=SimpleNamespace(
+                tool_name="recommend_title",
+                tool_args={"title": self.title},
+                result=result,
+                run_id=run_id,
+            ),
+        )
+        yield SimpleNamespace(event="RunContent", content="named it", run_id=run_id)
+
+
+def test_title_event_rides_the_transcript(studio):
+    """The tool writes the manifest; the EVENT is the temporal record —
+    it marks when the session got its name."""
+    client, registry = studio
+    registry._build_agent = lambda n, *a, **k: TitlingAgent(registry, n)
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/chat", json={"message": "hi"})
+    events = _collect_until_done(client, "s1")
+
+    titled = [e for e in events if e["type"] == "title"]
+    assert len(titled) == 1 and titled[0]["title"] == "Revenue dashboard"
+    # the tool_end stays too — the human sees the agent named the session
+    assert any(e["type"] == "tool_end" for e in events)
+
+
+def test_title_event_carries_the_stored_form(studio):
+    """Clamped like the manifest stores it, and junk emits nothing at
+    all rather than an empty label."""
+    client, registry = studio
+    registry._build_agent = lambda n, *a, **k: TitlingAgent(
+        registry, n, "  ragged\ntitle  "
+    )
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/chat", json={"message": "hi"})
+    events = _collect_until_done(client, "s1")
+    assert [e["title"] for e in events if e["type"] == "title"] == ["ragged title"]
+
+    registry._build_agent = lambda n, *a, **k: TitlingAgent(registry, n, "   ")
+    client.post("/api/sessions", json={"name": "s2"})
+    client.post("/api/sessions/s2/chat", json={"message": "hi"})
+    events = _collect_until_done(client, "s2")
+    assert not [e for e in events if e["type"] == "title"]
+
+
+def test_edit_rewinds_the_agents_title(studio):
+    """Rollback-follow: the agent named the session out of a conversation
+    the edit is unsaying, so the title goes back to the one that was in
+    force before the cut."""
+    client, registry = studio
+    registry._build_agent = lambda n, *a, **k: TitlingAgent(registry, n, "First topic")
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _turn(client, "s1", "one")
+    assert registry.title_of("s1") == "First topic"
+
+    session.agent.title = "Second topic"
+    _turn(client, "s1", "two")
+    assert registry.title_of("s1") == "Second topic"
+
+    # Unsay turn two: the title it gave goes with it. This drives the
+    # registry half directly — the /edit route then runs a FRESH turn,
+    # which re-titles and would mask the rewind we're asserting.
+    seq = _user_seqs(session)[1]
+    registry.rewind_to_event(session, seq)
+    assert registry.title_of("s1") == "First topic"
+
+
+def test_edit_keeps_a_title_it_cannot_prove_was_undone(studio):
+    """No title event survives the cut. That is ambiguous — never
+    titled, or titled before the event window — so the manifest's value
+    stands rather than being wiped."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _turn(client, "s1", "one")  # plain FakeAgent: no title event
+    registry.set_agent_title("s1", "Titled long ago")
+
+    seq = _user_seqs(session)[0]
+    r = client.post("/api/sessions/s1/edit", json={"seq": seq, "message": "redo"})
+    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
+    assert registry.title_of("s1") == "Titled long ago"
+
+
+def test_edit_never_rewinds_the_humans_title(studio):
+    """The human's title isn't a conversational fact — an edit must not
+    touch it."""
+    client, registry = studio
+    registry._build_agent = lambda n, *a, **k: TitlingAgent(registry, n, "Agent's idea")
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _turn(client, "s1", "one")
+    client.post("/api/sessions/s1/title", json={"title": "Mine"})
+
+    seq = _user_seqs(session)[0]
+    r = client.post("/api/sessions/s1/edit", json={"seq": seq, "message": "redo"})
+    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
+    assert registry.title_of("s1") == "Mine"
+
+
+def test_delete_forgets_the_title_and_birthday(studio):
+    """A slug is free to be minted again once `sessions` forgets it —
+    it must not come back wearing a dead session's name."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    registry.set_agent_title("s1", "Doomed")
+    client.delete("/api/sessions/s1")
+
+    manifest = registry._manifest()
+    assert "s1" not in manifest["titles"]
+    assert "s1" not in manifest["created"]
+    # a session reborn under the same slug starts untitled
+    client.post("/api/sessions", json={"name": "s1"})
+    assert registry.title_of("s1") == "New session"
+
+
 def test_v1_manifest_format_tolerated(studio, tmp_path):
     (tmp_path / "sessions.json").write_text('["old-style"]')
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)

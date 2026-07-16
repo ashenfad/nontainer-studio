@@ -638,6 +638,11 @@ class Registry:
                     del manifest["published"][token]
             manifest["sessions"] = [s for s in manifest["sessions"] if s != name]
             manifest["models"].pop(name, None)
+            # titles/created go too, or a later mint that happens to draw
+            # this slug (it's free again once `sessions` forgets it) would
+            # inherit a dead session's name and birthday
+            manifest["titles"].pop(name, None)
+            manifest["created"].pop(name, None)
             self._save_manifest(manifest)
         self._wipe_chat(session)
         close_runtime = getattr(session.runtime, "close", None)
@@ -718,18 +723,31 @@ class Registry:
         (not commit order) decides what survives — commit order can't
         tell a no-file-change turn from its predecessor (same head),
         the transcript can. The caller emits the `truncate` event and
-        starts the new turn."""
+        starts the new turn.
+
+        The agent's title rewinds too — it named the session from a
+        conversation that is being unsaid."""
         event = next((e for e in session.events if e.get("seq") == seq), None)
         head = event.get("head") if event else None
         if event is None or event.get("type") != "user" or not head:
             raise ValueError(f"event {seq} is not an editable user message")
         last_kept_run_id = None
+        surviving_title = None
         prior = [e for e in session.events if e["seq"] < seq]
         for _, ev in self._visible(prior):
             if ev.get("type") == "done":
                 last_kept_run_id = ev.get("run_id") or last_kept_run_id
+            elif ev.get("type") == "title":
+                surviving_title = ev.get("title") or surviving_title
         session.ws.restore(head)
         self._truncate_chat(session, last_kept_run_id)
+        # Best-effort within the event window: revert to the last title
+        # the agent gave BEFORE the cut. None surviving is ambiguous —
+        # never titled, or titled so long ago the event front-trimmed out
+        # (MAX_EVENTS) — so keep what the manifest says rather than wipe a
+        # name we can't prove was undone.
+        if surviving_title is not None:
+            self.set_agent_title(session.name, surviving_title)
 
     @staticmethod
     def _visible(events: list[dict]) -> list[tuple[int, dict]]:
