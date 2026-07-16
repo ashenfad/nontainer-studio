@@ -489,6 +489,29 @@ def test_delete_session_from_rail(page, server):
     )
 
 
+def test_agent_titles_the_session_from_the_rail_default(page, server):
+    """The whole stage-3 path for real: the model calls recommend_title,
+    the studio tool writes the title, and the rail row stops reading
+    "New session" — while the URL keeps the slug that is identity."""
+    page.goto(f"{server}/?session=e2e-title")
+    expect(page.locator(".row.active .name")).to_have_text("New session", timeout=10000)
+    _send(
+        page,
+        '!tool recommend_title {"title": "Revenue dashboard"}\n'
+        "!text Named this session.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Named this session.", timeout=15000
+    )
+    # the rail relabels (it polls, so give it a beat), header agrees...
+    expect(page.locator(".row.active .name")).to_have_text(
+        "Revenue dashboard", timeout=10000
+    )
+    expect(page.locator(".session-name")).to_have_text("Revenue dashboard")
+    # ...and identity never moved
+    assert page.url.endswith("?session=e2e-title")
+
+
 def test_new_session_button_mints_an_untitled_slug(page, server):
     """ "+ New" asks the SERVER for a session: identity is a minted slug
     nobody typed (so the agent may title it freely), and the rail shows

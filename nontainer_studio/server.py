@@ -383,7 +383,12 @@ def build_app(registry: Registry) -> Starlette:
         """The human's rename. A blank title CLEARS the override, so the
         rail falls back to whatever the agent last suggested."""
         body = await request.json()
-        title = registry.set_user_title(session.name, body.get("title"))
+        # off-loop: set_user_title takes the registry lock, which a
+        # session open can hold for the length of a workspace build —
+        # blocking here would stall every SSE follower with it
+        title = await anyio.to_thread.run_sync(
+            registry.set_user_title, session.name, body.get("title")
+        )
         return JSONResponse({"ok": True, "name": session.name, "title": title})
 
     @with_session

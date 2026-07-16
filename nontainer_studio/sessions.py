@@ -100,7 +100,11 @@ STUDIO_PRIMER = (
     "be buried in prose; when the SHAPE of the data is the story, "
     "prefer raw plotly figures in `ui` — they render interactively "
     "right in the reply. Need a static image file instead? Use "
-    "matplotlib savefig; plotly's write_image cannot run here. Every "
+    "matplotlib savefig; plotly's write_image cannot run here. A new "
+    "session is listed as 'New session' until it has a name: once you "
+    "know what this one is about — usually after the first substantial "
+    "exchange — call recommend_title so the human can find it again. "
+    "Every "
     "turn is a checkpoint the human can rewind by editing an earlier "
     "prompt — prefer small complete "
     "steps over big-bang changes. They may also PUBLISH the app: a "
@@ -539,6 +543,32 @@ class Registry:
 
             return JsonDb(db_path=str(self._store / "chat"))
 
+    def _title_tool(self, name: str) -> Callable:
+        """The agent's handle on the session list.
+
+        A studio tool, not a WorkspaceTools one: titles live in the
+        registry, not the workspace. The closure captures only ``self``
+        and ``name`` — both stable across the model-switch rebuild, and
+        nothing turn-scoped, so a rebuilt agent's tool still works.
+        """
+
+        def recommend_title(title: str) -> str:
+            """Give this session a short title for the human's session list.
+
+            Call this once you know what the session is about — usually
+            right after the first substantial exchange — and again only if
+            the topic changes materially, not every turn. Prefer 3-6 words
+            naming the work ("Revenue dashboard", "Debugging the CSV
+            import"). The human can rename a session themselves, and their
+            name always wins over yours.
+            """
+            # returns the RESOLVED label: when a human title is in force
+            # this reports theirs, so the agent can see its suggestion is
+            # stored but not shown
+            return f"the session list now shows {self.set_agent_title(name, title)!r}"
+
+        return recommend_title
+
     def _build_agent(
         self, name: str, ws: Workspace, runtime: AppRuntime, model: str | None = None
     ) -> Any:
@@ -570,7 +600,7 @@ class Registry:
 
         return Agent(
             model=self._model_factory(model),
-            tools=[toolkit],
+            tools=[toolkit, self._title_tool(name)],
             compress_tool_results=compression is not None,
             compression_manager=compression,
             # studio-owned context: nontainer's tool descriptions cover

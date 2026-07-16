@@ -1485,6 +1485,65 @@ def test_titles_and_birthday_survive_restart(studio, tmp_path):
     reborn.close()
 
 
+def test_recommend_title_tool_names_the_session(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    tool = registry._title_tool("s1")
+
+    assert "Revenue dashboard" in tool("Revenue dashboard")
+    assert registry.title_of("s1") == "Revenue dashboard"
+    # it can rename on a topic shift
+    tool("Debugging the CSV import")
+    assert registry.title_of("s1") == "Debugging the CSV import"
+
+
+def test_recommend_title_cannot_override_the_human(studio):
+    """The agent's suggestion is stored but not shown — and the tool
+    result says so, rather than claiming a title it didn't get."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/title", json={"title": "Mine"})
+
+    said = registry._title_tool("s1")("Something the agent picked")
+    assert "Mine" in said  # reports what's SHOWN, not what it asked for
+    assert registry.title_of("s1") == "Mine"
+    # ...but it was remembered: clearing the human's reveals it
+    assert client.post("/api/sessions/s1/title", json={"title": ""}).json()[
+        "title"
+    ] == ("Something the agent picked")
+
+
+def test_title_tool_survives_a_model_switch(studio):
+    """The closure captures only (registry, name) — nothing turn-scoped
+    — so the agent rebuilt by a model switch still titles the right
+    session."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    tool_before = registry._title_tool("s1")
+    client.post("/api/sessions/s1/model", json={"model": "dummy"})
+    tool_before("Still works")
+    assert registry.title_of("s1") == "Still works"
+
+
+def test_agent_is_given_the_title_tool(studio):
+    """The wiring the rest of stage 3 rests on: a studio tool riding
+    alongside the nontainer toolkit in the same agno Agent."""
+    pytest.importorskip("agno")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    # the fixture fakes _build_agent; call the real one
+    agent = sessions_mod.Registry._build_agent(
+        registry, "s1", registry.get("s1").ws, registry.get("s1").runtime
+    )
+    names = {getattr(t, "name", getattr(t, "__name__", "")) for t in agent.tools}
+    assert "recommend_title" in names
+
+
+def test_primer_teaches_when_to_title(studio):
+    assert "recommend_title" in sessions_mod.STUDIO_PRIMER
+    assert "New session" in sessions_mod.STUDIO_PRIMER
+
+
 def test_v1_manifest_format_tolerated(studio, tmp_path):
     (tmp_path / "sessions.json").write_text('["old-style"]')
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
