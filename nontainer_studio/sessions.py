@@ -41,6 +41,46 @@ DEFAULT_STORE = Path.home() / ".nontainer-studio"
 
 MAX_EVENTS = 10_000  # in-MEMORY tail window, not a lifetime cap
 
+
+def _executor_factory() -> Callable[[], Any] | None:
+    """Select the execution backend from the environment.
+
+    ``NONTAINER_STUDIO_EXECUTOR=dud`` runs agent code on a real
+    disposable machine (dud's rung-1 subprocess backend: real bash,
+    real python, real files) instead of the in-process
+    sandtrap+termish LocalExecutor. Unset (the default) returns None —
+    nontainer builds its LocalExecutor and studio behaves exactly as
+    before. The dud import is lazy so the default install needs
+    neither dud nor a nontainer new enough to accept
+    ``executor_factory`` (see ``_ws_kwargs``).
+
+    Caveat: dud's rung 1 has NO isolation (own-machine posture), and
+    the apps loop (curl/test_app/publish) is LocalExecutor-only until
+    stage 3c — ``_apps_on()`` disables it under dud. The analyst loop
+    (terminal + run_python over the real data stack) is the point.
+    """
+    if os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower() != "dud":
+        return None
+    from nontainer.executor_dud import DudExecutor
+
+    return lambda: DudExecutor()
+
+
+def _apps_on() -> bool:
+    """Apps (curl, test_app, live preview, publish) need the
+    LocalExecutor's sandbox surface (``build_sandbox``), which dud
+    doesn't provide yet — off under dud, on otherwise."""
+    return _executor_factory() is None
+
+
+def _ws_kwargs() -> dict[str, Any]:
+    """Executor kwarg for ``workspace()``, added ONLY when a custom
+    backend is selected — so the default path calls ``workspace()``
+    with its historical signature (a nontainer without
+    ``executor_factory`` still works)."""
+    factory = _executor_factory()
+    return {"executor_factory": factory} if factory is not None else {}
+
 DEFAULT_TITLE = "New session"
 
 TITLE_MAX = 60  # the rail is ~200px; anything longer is ellipsis anyway
@@ -429,7 +469,12 @@ class Registry:
                 return existing
             model = self._manifest()["models"].get(name) or self._default_model
             db = Db(self._store / "dbs" / f"{name}.sqlite")
-            ws = workspace(name, store=self._store, python=self._python_config(db))
+            ws = workspace(
+                name,
+                store=self._store,
+                python=self._python_config(db),
+                **_ws_kwargs(),
+            )
             # /ui exists from the start: agents predictably savefig
             # into it directly (instead of assigning objects to `ui`),
             # and VFS open honors real-fs semantics — no parent, no
@@ -507,7 +552,10 @@ class Registry:
     def _assemble(
         self, name: str, ws: Workspace, db: Db, model: str | None = None
     ) -> Session:
-        runtime = enable_apps(ws)
+        # Apps ride the LocalExecutor sandbox surface — disabled under
+        # dud (stage 3c). WorkspaceTools(apps=None) simply omits the
+        # curl/test_app tools; the analyst loop is unaffected.
+        runtime = enable_apps(ws) if _apps_on() else None
         log_dir = self._store / "events"
         log_dir.mkdir(parents=True, exist_ok=True)
         return Session(
@@ -867,7 +915,10 @@ class Registry:
                 else Db(self._store / "dbs" / f"{entry['session']}.sqlite")
             )
             snapshot = workspace(
-                entry["branch"], store=self._store, python=self._python_config(db)
+                entry["branch"],
+                store=self._store,
+                python=self._python_config(db),
+                **_ws_kwargs(),
             )
             self._published[token] = snapshot
             return snapshot

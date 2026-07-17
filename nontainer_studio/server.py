@@ -693,6 +693,10 @@ def build_app(registry: Registry) -> Starlette:
                     "access-control-max-age": "600",
                 },
             )
+        if session.runtime is None:
+            # No app runtime (e.g. the dud executor, where the apps
+            # sandbox surface is stage-3c). No preview to serve.
+            return Response(status_code=404)
         path = "/" + request.path_params.get("path", "")
         url = path + (f"?{request.url.query}" if request.url.query else "")
         body = await request.body()
