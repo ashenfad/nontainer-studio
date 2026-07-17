@@ -1148,6 +1148,32 @@ def test_provider_error_event_is_repaired_into_memory(studio):
     assert "Provider returned error" in run.messages[-1].content
 
 
+def test_arrow_pool_is_fork_safe_from_first_import():
+    """Sandbox workers fork from the server process, and arrow's
+    default mimalloc pool segfaults in forked children (observed:
+    SIGSEGV in libarrow's mi_thread_init, 'multi-threaded process
+    forked'). pyarrow reads ARROW_DEFAULT_MEMORY_POOL at import — and
+    importing pandas imports pyarrow — so the package __init__ must
+    win the race. A subprocess proves the end state, immune to
+    whatever this test process already imported."""
+    import subprocess
+    import sys
+
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import nontainer_studio, pyarrow;"
+            "print(pyarrow.default_memory_pool().backend_name)",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "system"
+
+
 def test_repair_leaves_healthy_runs_alone(studio):
     from agno.run.base import RunStatus
 
