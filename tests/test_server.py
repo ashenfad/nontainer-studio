@@ -1778,3 +1778,22 @@ def test_db_host_object_bridges_through_isolation(studio):
     assert r.namespace["rows"] == [("from worker",)]
     # the PARENT's db saw the writes (it IS the store)
     assert session.db.query("SELECT v FROM t") == [("from worker",)]
+
+
+def test_db_executemany_bulk_loads_through_isolation(studio):
+    """Bulk insert is the first thing an agent does when building an
+    app on uploaded data, and executemany is the sqlite3 API every
+    model assumes. Without it (equal-grouse) they fall back to
+    hand-escaped literal INSERT strings."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    r = session.ws.run_python(
+        "db.execute('CREATE TABLE ev (make TEXT, n INTEGER)')\n"
+        "rows = [('TESLA', 1), ('KIA', 2), ('FORD', 3)]\n"
+        "db.executemany('INSERT INTO ev VALUES (?, ?)', rows)\n"
+        "count = db.query('SELECT COUNT(*) FROM ev')[0][0]"
+    )
+    assert r.error is None, r.error
+    assert r.namespace["count"] == 3
+    assert session.db.query("SELECT n FROM ev ORDER BY n") == [(1,), (2,), (3,)]

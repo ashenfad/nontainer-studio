@@ -27,6 +27,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -119,7 +120,8 @@ DB_PRIMER = (
     "state the app's users mutate. `cache` is versioned workspace "
     "data: it rewinds with restores and freezes at publish. API: "
     "`db.execute(sql, params=())` for writes (INSERT / UPDATE / "
-    "`CREATE TABLE IF NOT EXISTS`), `db.query(sql, params=()) -> list "
+    "`CREATE TABLE IF NOT EXISTS`), `db.executemany(sql, rows)` for "
+    "bulk inserts (one commit), `db.query(sql, params=()) -> list "
     "of row tuples` for reads. Thread-safe; just call it."
 )
 
@@ -139,6 +141,14 @@ class Db:
         """A write (INSERT/UPDATE/CREATE TABLE); commits."""
         with self._lock:
             self._c.execute(sql, params)
+            self._c.commit()
+
+    def executemany(self, sql: str, rows: Iterable[tuple]) -> None:
+        """A bulk write — one commit for the whole batch. The obvious
+        sqlite3 API agents reach for when loading a dataset; without
+        it they fall back to hand-escaped literal INSERT strings."""
+        with self._lock:
+            self._c.executemany(sql, rows)
             self._c.commit()
 
     def query(self, sql: str, params: tuple = ()) -> list:
