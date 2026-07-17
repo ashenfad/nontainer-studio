@@ -1105,6 +1105,49 @@ def test_aborted_run_is_repaired_into_memory(studio):
     assert "credit balance" in run.messages[-1].content
 
 
+class RunErrorAgent(FakeAgent):
+    """Streams some real work, then reports a provider failure as a
+    RunError EVENT and ends cleanly — agno's post-retry behavior. No
+    exception ever raises, so only the event flags the death."""
+
+    async def arun(self, message, stream=True, stream_events=True):
+        self.seen.append(message)
+        run_id = f"run-{len(self.seen)}"
+        yield SimpleNamespace(event="RunContent", content="working…", run_id=run_id)
+        yield SimpleNamespace(
+            event="RunError", content="Provider returned error", run_id=run_id
+        )
+
+
+def test_provider_error_event_is_repaired_into_memory(studio):
+    """The equal-grouse amnesia: a provider error arrives as a RunError
+    STREAM EVENT (agno's retries exhausted), the stream ends cleanly,
+    and without repair the stored status=error run vanishes from the
+    agent's memory — 'please continue' then replans from scratch while
+    the workspace holds all the work."""
+    from agno.run.base import RunStatus
+
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    erroring = RunErrorAgent()
+    chat_db = FakeChatDb()
+    erroring.db = chat_db
+    session.agent = erroring
+    chat_db.record = SimpleNamespace(
+        runs=[SimpleNamespace(run_id="run-1", status=RunStatus.error, messages=[])]
+    )
+
+    client.post("/api/sessions/s1/chat", json={"message": "build it"})
+    events = _collect_until_done(client, "s1")
+    assert any(e["type"] == "error" for e in events)  # failure surfaced
+
+    run = chat_db.record.runs[0]
+    assert run.status == RunStatus.completed  # memory retained
+    assert "turn aborted early" in run.messages[-1].content
+    assert "Provider returned error" in run.messages[-1].content
+
+
 def test_repair_leaves_healthy_runs_alone(studio):
     from agno.run.base import RunStatus
 

@@ -615,6 +615,16 @@ class Registry:
             session_id=name,
             add_history_to_context=True,
             markdown=True,
+            # Transient provider errors (5xx, dropped streams) shouldn't
+            # cost the turn: agno restarts the whole attempt (2s then 4s
+            # delay). A failed attempt's tool side effects persist in the
+            # workspace — the retried model pass redoes the turn's work,
+            # which is why turns are checkpoints. If all attempts fail,
+            # the run lands status=error and repair_aborted_run keeps it
+            # in the agent's memory.
+            retries=2,
+            delay_between_retries=2,
+            exponential_backoff=True,
         )
 
     # -- delete: remove a session's whole universe ---------------------------
