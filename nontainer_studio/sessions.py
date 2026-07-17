@@ -54,23 +54,23 @@ def _executor_factory() -> Callable[[], Any] | None:
     neither dud nor a nontainer new enough to accept
     ``executor_factory`` (see ``_ws_kwargs``).
 
-    Caveat: dud's rung 1 has NO isolation (own-machine posture), and
-    the apps loop (curl/test_app/publish) is LocalExecutor-only until
-    stage 3c — ``_apps_on()`` disables it under dud. The analyst loop
-    (terminal + run_python over the real data stack) is the point.
+    Caveat: dud's rung 1 has NO isolation (own-machine posture). Apps
+    dispatch works under dud as of stage 3c — the live preview and
+    ``test_app`` (both drive ``dispatch`` host-side) run, and the
+    apps.md-recommended handler pattern (state in cache/an external
+    store) crosses the boundary cleanly. Two rung-1 gaps remain, both
+    closed by the VM rungs: the agent's in-terminal ``curl`` builtin is
+    a termish command and doesn't exist in dud's real bash (use the
+    preview / test_app instead), and a handler writing an ABSOLUTE VFS
+    path (``open('/app/x')``) hits the real root rather than the
+    workspace. The analyst loop (terminal + run_python over the real
+    data stack) is unaffected.
     """
     if os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower() != "dud":
         return None
     from nontainer.executor_dud import DudExecutor
 
     return lambda: DudExecutor()
-
-
-def _apps_on() -> bool:
-    """Apps (curl, test_app, live preview, publish) need the
-    LocalExecutor's sandbox surface (``build_sandbox``), which dud
-    doesn't provide yet — off under dud, on otherwise."""
-    return _executor_factory() is None
 
 
 def _ws_kwargs() -> dict[str, Any]:
@@ -552,10 +552,9 @@ class Registry:
     def _assemble(
         self, name: str, ws: Workspace, db: Db, model: str | None = None
     ) -> Session:
-        # Apps ride the LocalExecutor sandbox surface — disabled under
-        # dud (stage 3c). WorkspaceTools(apps=None) simply omits the
-        # curl/test_app tools; the analyst loop is unaffected.
-        runtime = enable_apps(ws) if _apps_on() else None
+        # Apps dispatch works on both executors (stage 3c dissolved the
+        # LocalExecutor-only sandbox surface into exec_python(view=)).
+        runtime = enable_apps(ws)
         log_dir = self._store / "events"
         log_dir.mkdir(parents=True, exist_ok=True)
         return Session(
