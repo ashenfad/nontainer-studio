@@ -1823,3 +1823,13 @@ def test_db_executemany_bulk_loads_through_isolation(studio):
     assert r.error is None, r.error
     assert r.namespace["count"] == 3
     assert session.db.query("SELECT n FROM ev ORDER BY n") == [(1,), (2,), (3,)]
+
+
+def test_executor_factory_guard(monkeypatch):
+    """Default and unrecognized values pick no custom executor (studio's
+    historical LocalExecutor path). The dud/dud-vm branches import
+    nontainer.executor_dud lazily, so they stay dormant until that lands."""
+    monkeypatch.delenv("NONTAINER_STUDIO_EXECUTOR", raising=False)
+    assert sessions_mod._executor_factory() is None
+    monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "bogus")
+    assert sessions_mod._executor_factory() is None

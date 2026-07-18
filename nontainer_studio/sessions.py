@@ -48,11 +48,15 @@ def _executor_factory() -> Callable[[], Any] | None:
     ``NONTAINER_STUDIO_EXECUTOR=dud`` runs agent code on a real
     disposable machine (dud's rung-1 subprocess backend: real bash,
     real python, real files) instead of the in-process
-    sandtrap+termish LocalExecutor. Unset (the default) returns None —
-    nontainer builds its LocalExecutor and studio behaves exactly as
-    before. The dud import is lazy so the default install needs
-    neither dud nor a nontainer new enough to accept
-    ``executor_factory`` (see ``_ws_kwargs``).
+    sandtrap+termish LocalExecutor. ``=dud-vm`` selects dud's rung-2
+    vfkit backend — the same guest inside a real disposable macOS
+    microVM (HVF), so isolation is real; boots ``python:3.12-slim`` with
+    the kernel from ``$DUD_KERNEL``/``~/.dud`` and fails closed off macOS
+    or without a kernel. Unset (the default) returns None — nontainer
+    builds its LocalExecutor and studio behaves exactly as before. The
+    dud import is lazy so the default install needs neither dud nor a
+    nontainer new enough to accept ``executor_factory`` (see
+    ``_ws_kwargs``).
 
     Caveat: dud's rung 1 has NO isolation (own-machine posture). Apps
     dispatch works under dud as of stage 3c — the live preview and
@@ -66,10 +70,13 @@ def _executor_factory() -> Callable[[], Any] | None:
     workspace. The analyst loop (terminal + run_python over the real
     data stack) is unaffected.
     """
-    if os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower() != "dud":
+    choice = os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower()
+    if choice not in ("dud", "dud-vm"):
         return None
     from nontainer.executor_dud import DudExecutor
 
+    if choice == "dud-vm":
+        return lambda: DudExecutor(backend="vfkit")
     return lambda: DudExecutor()
 
 
