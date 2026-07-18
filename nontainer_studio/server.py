@@ -848,6 +848,11 @@ def main() -> None:
         # no provider key is present
         default_model=providers.default_spec(),
     )
+    # dud-vm: park warm VM(s) in the background so the first session
+    # switch after startup doesn't pay a boot (no-op on other executors).
+    from .sessions import start_vm_prewarm
+
+    start_vm_prewarm()
     port = int(os.getenv("NONTAINER_STUDIO_PORT", "8321"))
     print(f"nontainer-studio → http://127.0.0.1:{port}")
     uvicorn.run(

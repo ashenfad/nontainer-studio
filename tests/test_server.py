@@ -1833,3 +1833,23 @@ def test_executor_factory_guard(monkeypatch):
     assert sessions_mod._executor_factory() is None
     monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "bogus")
     assert sessions_mod._executor_factory() is None
+
+
+def test_vm_prewarm_noop_paths(monkeypatch):
+    """Prewarm must never fire (or import dud) outside dud-vm mode, and
+    a zero warm level disables it."""
+    calls = []
+    monkeypatch.delenv("NONTAINER_STUDIO_EXECUTOR", raising=False)
+    sessions_mod.start_vm_prewarm()  # would raise if it touched dud here
+    monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "dud-vm")
+    monkeypatch.setenv("NONTAINER_STUDIO_VM_WARM", "0")
+    sessions_mod.start_vm_prewarm()
+    assert calls == []  # nothing reached a pool
+
+
+def test_vm_config_pins_host_versions():
+    import importlib.metadata as md
+
+    cfg = sessions_mod._vm_config()
+    assert f"pandas=={md.version('pandas')}" in cfg["packages"]
+    assert all("==" in p for p in cfg["packages"])

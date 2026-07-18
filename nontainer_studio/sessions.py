@@ -76,27 +76,53 @@ def _executor_factory() -> Callable[[], Any] | None:
     from nontainer.executor_dud import DudExecutor
 
     if choice == "dud-vm":
-        # The VM boots bare python:slim, so studio's data stack has to be
-        # layered into the guest image (dud fetches guest-arch wheels).
-        # Versions are PINNED to this venv's: cache values are pickles,
-        # and sessions authored on one executor get read on the other —
-        # an unpinned guest resolved pandas 2.x against a 3.x host and
-        # cached DataFrames failed to unpickle (Categorical __setstate__).
-        # Same-version guest+host makes cache bytes portable both ways.
-        # The DS initramfs is ~400 MB in RAM, hence the memory bump. The
-        # first session builds+caches the rootfs (~40 s); later sessions
-        # reuse it.
-        import importlib.metadata as _md
-
-        packages = []
-        for name in ("numpy", "pandas", "pyarrow", "matplotlib", "plotly"):
-            try:
-                packages.append(f"{name}=={_md.version(name)}")
-            except _md.PackageNotFoundError:
-                pass  # not installed host-side -> not granted guest-side
-        vm = {"packages": packages, "memory_mib": 4096}
+        vm = _vm_config()
         return lambda: DudExecutor(backend="vfkit", vm=vm)
     return lambda: DudExecutor()
+
+
+def _vm_config() -> dict[str, Any]:
+    """The dud-vm boot config sessions run on (also the prewarm target).
+
+    The VM boots bare python:slim, so studio's data stack has to be
+    layered into the guest image (dud fetches guest-arch wheels).
+    Versions are PINNED to this venv's: cache values are pickles, and
+    sessions authored on one executor get read on the other — an
+    unpinned guest resolved pandas 2.x against a 3.x host and cached
+    DataFrames failed to unpickle (Categorical __setstate__).
+    Same-version guest+host makes cache bytes portable both ways. The
+    DS initramfs is ~400 MB in RAM, hence the memory bump. The first
+    session builds+caches the rootfs (~40 s); later sessions reuse it.
+    """
+    import importlib.metadata as _md
+
+    packages = []
+    for name in ("numpy", "pandas", "pyarrow", "matplotlib", "plotly"):
+        try:
+            packages.append(f"{name}=={_md.version(name)}")
+        except _md.PackageNotFoundError:
+            pass  # not installed host-side -> not granted guest-side
+    return {"packages": packages, "memory_mib": 4096}
+
+
+def start_vm_prewarm() -> None:
+    """Boot-and-park warm VM(s) at server start (dud-vm only, no-op
+    otherwise), so first-touch session opens skip the boot entirely.
+
+    Studio never closes sessions during a run, so dud's pool would
+    otherwise sit empty until shutdown — every first switch to a
+    session after a restart paid a full boot. The warm level refills
+    in the background as sessions claim VMs. ``NONTAINER_STUDIO_VM_WARM``
+    sets the level (default 1; 0 disables — each warm VM holds real
+    RAM while idle)."""
+    if os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower() != "dud-vm":
+        return
+    n = int(os.getenv("NONTAINER_STUDIO_VM_WARM", "1"))
+    if n <= 0:
+        return
+    from dud.backends.pool import shared_pool
+
+    shared_pool().prewarm(n, **_vm_config())  # background by default
 
 
 def _ws_kwargs() -> dict[str, Any]:
