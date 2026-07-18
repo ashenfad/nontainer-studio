@@ -76,7 +76,16 @@ def _executor_factory() -> Callable[[], Any] | None:
     from nontainer.executor_dud import DudExecutor
 
     if choice == "dud-vm":
-        return lambda: DudExecutor(backend="vfkit")
+        # The VM boots bare python:slim, so studio's data stack has to be
+        # layered into the guest image (dud fetches guest-arch wheels).
+        # The DS initramfs is ~400 MB in RAM, hence the memory bump. The
+        # first session builds+caches the rootfs (~40 s); later sessions
+        # reuse it. Mirrors the DS deps in this project's pyproject.
+        vm = {
+            "packages": ["numpy", "pandas", "pyarrow", "matplotlib", "plotly"],
+            "memory_mib": 4096,
+        }
+        return lambda: DudExecutor(backend="vfkit", vm=vm)
     return lambda: DudExecutor()
 
 
