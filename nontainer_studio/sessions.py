@@ -90,9 +90,16 @@ def _vm_config() -> dict[str, Any]:
     sessions authored on one executor get read on the other — an
     unpinned guest resolved pandas 2.x against a 3.x host and cached
     DataFrames failed to unpickle (Categorical __setstate__).
-    Same-version guest+host makes cache bytes portable both ways. The
-    DS initramfs is ~400 MB in RAM, hence the memory bump. The first
-    session builds+caches the rootfs (~40 s); later sessions reuse it.
+    Same-version guest+host makes cache bytes portable both ways.
+
+    ``medium`` defaults to ``auto``: with packages layered in, dud
+    resolves that to an erofs root — demand-paged, so guest RAM is
+    pages touched (~80 MB at boot) instead of a ~400 MB RAM-resident
+    initramfs, and boots skip the unpack. ``memory_mib`` stays high as
+    a CEILING (VZ allocates lazily; an erofs guest won't use it).
+    ``NONTAINER_STUDIO_VM_MEDIUM`` overrides (e.g. ``initramfs`` to
+    fall back). The first session builds+caches the image; later
+    sessions and restarts reuse it (see ``start_vm_prewarm``).
     """
     import importlib.metadata as _md
 
@@ -102,27 +109,62 @@ def _vm_config() -> dict[str, Any]:
             packages.append(f"{name}=={_md.version(name)}")
         except _md.PackageNotFoundError:
             pass  # not installed host-side -> not granted guest-side
-    return {"packages": packages, "memory_mib": 4096}
+    return {
+        "image": "python:3.12-slim",
+        "packages": packages,
+        "memory_mib": 4096,
+        "medium": os.getenv("NONTAINER_STUDIO_VM_MEDIUM", "auto"),
+    }
 
 
-def start_vm_prewarm() -> None:
-    """Boot-and-park warm VM(s) at server start (dud-vm only, no-op
-    otherwise), so first-touch session opens skip the boot entirely.
+def _bake_image(cfg: dict[str, Any]) -> None:
+    """Eagerly build (only) the guest image for ``cfg`` — no VM booted.
+
+    Best-effort, same posture as prewarm: a failure here surfaces
+    later, on the first real session open, with its usual error."""
+    try:
+        from dud.images import build as build_rootfs
+
+        build_rootfs(
+            cfg["image"], packages=cfg["packages"], medium=cfg["medium"]
+        )
+    except Exception:
+        pass
+
+
+def start_vm_prewarm() -> "threading.Thread | None":
+    """Eagerly prep VMs at server start (dud-vm only, no-op otherwise).
+
+    Every studio session shares one boot config, so the image is fully
+    determined at startup — there is never a reason to make the first
+    user pay the cold build. ``NONTAINER_STUDIO_VM_WARM`` picks how
+    eager:
+
+    - ``>= 1`` (default 1): boot-and-park that many warm VMs; the
+      first thing a boot does is build the image, so a cold cache gets
+      built at startup too. First-touch session opens skip the boot.
+    - ``0``: no idle VM RAM — but still bake the image in a background
+      thread, so a first open pays boot-only, never build+boot.
 
     Studio never closes sessions during a run, so dud's pool would
     otherwise sit empty until shutdown — every first switch to a
-    session after a restart paid a full boot. The warm level refills
-    in the background as sessions claim VMs. ``NONTAINER_STUDIO_VM_WARM``
-    sets the level (default 1; 0 disables — each warm VM holds real
-    RAM while idle)."""
+    session after a restart paid a full boot."""
     if os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower() != "dud-vm":
-        return
+        return None
+    cfg = _vm_config()
     n = int(os.getenv("NONTAINER_STUDIO_VM_WARM", "1"))
-    if n <= 0:
-        return
-    from dud.backends.pool import shared_pool
+    if n > 0:
+        from dud.backends.pool import shared_pool
 
-    shared_pool().prewarm(n, **_vm_config())  # background by default
+        shared_pool().prewarm(n, **cfg)  # background by default
+        return None
+    import threading
+
+    t = threading.Thread(
+        target=lambda: _bake_image(cfg), name="dud-image-bake", daemon=True
+    )
+    t.start()
+    return t
 
 
 def _ws_kwargs() -> dict[str, Any]:

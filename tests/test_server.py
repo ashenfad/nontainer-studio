@@ -1835,16 +1835,23 @@ def test_executor_factory_guard(monkeypatch):
     assert sessions_mod._executor_factory() is None
 
 
-def test_vm_prewarm_noop_paths(monkeypatch):
-    """Prewarm must never fire (or import dud) outside dud-vm mode, and
-    a zero warm level disables it."""
-    calls = []
+def test_vm_prewarm_noop_outside_dud_vm(monkeypatch):
+    """Prewarm must never fire (or import dud) outside dud-vm mode."""
     monkeypatch.delenv("NONTAINER_STUDIO_EXECUTOR", raising=False)
-    sessions_mod.start_vm_prewarm()  # would raise if it touched dud here
+    assert sessions_mod.start_vm_prewarm() is None  # would raise on dud
+
+
+def test_vm_warm_zero_bakes_image_without_booting(monkeypatch):
+    """VM_WARM=0 skips warm VMs but still eagerly builds the image, so
+    the first session open pays boot-only, never build+boot."""
+    baked = []
+    monkeypatch.setattr(sessions_mod, "_bake_image", baked.append)
     monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "dud-vm")
     monkeypatch.setenv("NONTAINER_STUDIO_VM_WARM", "0")
-    sessions_mod.start_vm_prewarm()
-    assert calls == []  # nothing reached a pool
+    t = sessions_mod.start_vm_prewarm()
+    assert t is not None
+    t.join(timeout=5)
+    assert len(baked) == 1 and baked[0] == sessions_mod._vm_config()
 
 
 def test_vm_config_pins_host_versions():
@@ -1853,3 +1860,10 @@ def test_vm_config_pins_host_versions():
     cfg = sessions_mod._vm_config()
     assert f"pandas=={md.version('pandas')}" in cfg["packages"]
     assert all("==" in p for p in cfg["packages"])
+
+
+def test_vm_config_medium_defaults_auto(monkeypatch):
+    monkeypatch.delenv("NONTAINER_STUDIO_VM_MEDIUM", raising=False)
+    assert sessions_mod._vm_config()["medium"] == "auto"
+    monkeypatch.setenv("NONTAINER_STUDIO_VM_MEDIUM", "initramfs")
+    assert sessions_mod._vm_config()["medium"] == "initramfs"
