@@ -78,13 +78,23 @@ def _executor_factory() -> Callable[[], Any] | None:
     if choice == "dud-vm":
         # The VM boots bare python:slim, so studio's data stack has to be
         # layered into the guest image (dud fetches guest-arch wheels).
+        # Versions are PINNED to this venv's: cache values are pickles,
+        # and sessions authored on one executor get read on the other —
+        # an unpinned guest resolved pandas 2.x against a 3.x host and
+        # cached DataFrames failed to unpickle (Categorical __setstate__).
+        # Same-version guest+host makes cache bytes portable both ways.
         # The DS initramfs is ~400 MB in RAM, hence the memory bump. The
         # first session builds+caches the rootfs (~40 s); later sessions
-        # reuse it. Mirrors the DS deps in this project's pyproject.
-        vm = {
-            "packages": ["numpy", "pandas", "pyarrow", "matplotlib", "plotly"],
-            "memory_mib": 4096,
-        }
+        # reuse it.
+        import importlib.metadata as _md
+
+        packages = []
+        for name in ("numpy", "pandas", "pyarrow", "matplotlib", "plotly"):
+            try:
+                packages.append(f"{name}=={_md.version(name)}")
+            except _md.PackageNotFoundError:
+                pass  # not installed host-side -> not granted guest-side
+        vm = {"packages": packages, "memory_mib": 4096}
         return lambda: DudExecutor(backend="vfkit", vm=vm)
     return lambda: DudExecutor()
 
