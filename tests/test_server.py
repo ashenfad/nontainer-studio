@@ -1867,3 +1867,78 @@ def test_vm_config_medium_defaults_auto(monkeypatch):
     assert sessions_mod._vm_config()["medium"] == "auto"
     monkeypatch.setenv("NONTAINER_STUDIO_VM_MEDIUM", "initramfs")
     assert sessions_mod._vm_config()["medium"] == "initramfs"
+
+
+def test_vm_config_guest_python_matches_host_minor():
+    """Pickle portability spans the interpreter, not just package
+    versions — and pinned versions must have wheels for the guest's
+    python (a 3.13 host against a hardcoded 3.12 guest bricks the
+    image build when a pin lacks a cp312 wheel)."""
+    import sys
+
+    cfg = sessions_mod._vm_config()
+    assert cfg["image"] == f"python:3.{sys.version_info.minor}-slim"
+
+
+def test_dud_vm_defaults_the_pool_cap(monkeypatch):
+    """Studio never closes sessions, so unbounded bound-VM growth is
+    the long-running failure mode; dud's pool bounds it only when
+    DUD_VM_MAX_TOTAL is set. Studio defaults it; the operator wins."""
+    import os
+
+    monkeypatch.delenv("DUD_VM_MAX_TOTAL", raising=False)
+    try:
+        sessions_mod._ensure_vm_cap()
+        assert os.environ["DUD_VM_MAX_TOTAL"] == "4"
+    finally:
+        os.environ.pop("DUD_VM_MAX_TOTAL", None)
+    monkeypatch.setenv("DUD_VM_MAX_TOTAL", "9")
+    sessions_mod._ensure_vm_cap()
+    assert os.environ["DUD_VM_MAX_TOTAL"] == "9"
+
+
+def test_executor_factory_plumbed_on_open_and_resolve(tmp_path, monkeypatch):
+    """The regression this branch exists to prevent: BOTH workspace
+    creation paths — session open and publish-snapshot resolve (the
+    restart path) — must hand workspace() the selected factory. A
+    dropped **_ws_kwargs() would silently fall back to LocalExecutor
+    and every other test would stay green."""
+    from nontainer.executor import LocalExecutor
+
+    class MarkedExecutor(LocalExecutor):
+        pass
+
+    monkeypatch.setattr(
+        sessions_mod, "_executor_factory", lambda: lambda: MarkedExecutor()
+    )
+    registry = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    try:
+        session = registry.create()
+        assert isinstance(session.ws._executor, MarkedExecutor)
+        token, _ = registry.publish(session.name)
+        # publish's fork inherits via Workspace.fork; force the OTHER
+        # path — the lazy manifest reopen a restart would take
+        registry._published.pop(token).close()
+        snapshot = registry.resolve(token)
+        assert snapshot is not None
+        assert isinstance(snapshot._executor, MarkedExecutor)
+    finally:
+        registry.close()
+
+
+def test_failed_create_rolls_back_the_reservation(tmp_path, monkeypatch):
+    """create() reserves the minted slug before open(); an open that
+    fails (dud not installed, an unbuildable guest image) must not
+    leave a dead rail entry that 500s on every click."""
+    registry = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    try:
+
+        def doomed_open(name):
+            raise RuntimeError("image build failed")
+
+        monkeypatch.setattr(registry, "open", doomed_open)
+        with pytest.raises(RuntimeError, match="image build failed"):
+            registry.create()
+        assert registry.known() == set()  # reservation rolled back
+    finally:
+        registry.close()

@@ -25,6 +25,7 @@ import json
 import os
 import secrets
 import sqlite3
+import sys
 import threading
 import time
 from collections.abc import Iterable
@@ -50,9 +51,11 @@ def _executor_factory() -> Callable[[], Any] | None:
     real python, real files) instead of the in-process
     sandtrap+termish LocalExecutor. ``=dud-vm`` selects dud's rung-2
     vfkit backend — the same guest inside a real disposable macOS
-    microVM (HVF), so isolation is real; boots ``python:3.12-slim`` with
-    the kernel from ``$DUD_KERNEL``/``~/.dud`` and fails closed off macOS
-    or without a kernel. Unset (the default) returns None — nontainer
+    microVM (HVF), so isolation is real; boots a ``python:slim``
+    matched to the host interpreter (see ``_vm_config``) with the
+    kernel from ``$DUD_KERNEL``/``~/.dud``, fails closed off macOS or
+    without a kernel, and defaults the pool's VM budget (see
+    ``_ensure_vm_cap``). Unset (the default) returns None — nontainer
     builds its LocalExecutor and studio behaves exactly as before. The
     dud import is lazy so the default install needs neither dud nor a
     nontainer new enough to accept ``executor_factory`` (see
@@ -76,9 +79,28 @@ def _executor_factory() -> Callable[[], Any] | None:
     from nontainer.executor_dud import DudExecutor
 
     if choice == "dud-vm":
+        _ensure_vm_cap()
         vm = _vm_config()
         return lambda: DudExecutor(backend="vfkit", vm=vm)
     return lambda: DudExecutor()
+
+
+def _ensure_vm_cap() -> None:
+    """Default dud's VM budget for the studio's long-running posture.
+
+    Studio never closes sessions during a run, so under dud-vm every
+    session ever touched holds one bound VM for the process lifetime
+    (and each publish resolve holds another) — unbounded RAM growth
+    over a day of session switching. dud's pool bounds exactly this
+    when ``DUD_VM_MAX_TOTAL`` is set: past the cap it reclaims the
+    longest-quiet VM (idle first, then LRU bound), and the reclaimed
+    session's owner transparently recovers on its next call
+    (``SessionLost`` → re-acquire from the warm pool + re-push, ~a
+    second) — the disposable thesis as an eviction policy. The pool
+    reads the env once, at construction, so both entry points that can
+    build it (prewarm at server start, the session factory) default it
+    here first; an operator's own value always wins."""
+    os.environ.setdefault("DUD_VM_MAX_TOTAL", "4")
 
 
 def _vm_config() -> dict[str, Any]:
@@ -89,8 +111,12 @@ def _vm_config() -> dict[str, Any]:
     Versions are PINNED to this venv's: cache values are pickles, and
     sessions authored on one executor get read on the other — an
     unpinned guest resolved pandas 2.x against a 3.x host and cached
-    DataFrames failed to unpickle (Categorical __setstate__).
-    Same-version guest+host makes cache bytes portable both ways.
+    DataFrames failed to unpickle (Categorical __setstate__). The
+    guest IMAGE tracks the host interpreter's minor for the same
+    reason (pickle portability spans package versions AND the
+    interpreter) — and so the pinned versions always have wheels for
+    the guest's python: a 3.13 host pinning a version with no cp312
+    wheel would brick the image build against a hardcoded 3.12 guest.
 
     ``medium`` defaults to ``auto``: with packages layered in, dud
     resolves that to an erofs root — demand-paged, so guest RAM is
@@ -110,7 +136,7 @@ def _vm_config() -> dict[str, Any]:
         except _md.PackageNotFoundError:
             pass  # not installed host-side -> not granted guest-side
     return {
-        "image": "python:3.12-slim",
+        "image": f"python:3.{sys.version_info.minor}-slim",
         "packages": packages,
         "memory_mib": 4096,
         "medium": os.getenv("NONTAINER_STUDIO_VM_MEDIUM", "auto"),
@@ -149,6 +175,7 @@ def start_vm_prewarm() -> "threading.Thread | None":
     session after a restart paid a full boot."""
     if os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower() != "dud-vm":
         return None
+    _ensure_vm_cap()  # before the pool exists — it reads the env once
     cfg = _vm_config()
     n = int(os.getenv("NONTAINER_STUDIO_VM_WARM", "1"))
     if n > 0:
@@ -517,6 +544,19 @@ class Registry:
         manifest["created"].setdefault(name, time.time())
         self._save_manifest(manifest)
 
+    def _unrecord(self, name: str) -> None:
+        """Remove a reservation from the manifest (caller holds _lock)
+        — ``_record``'s mirror, for a minted name whose open never
+        succeeded. Clears titles/created too, same as ``delete``: a
+        later mint drawing this slug must not inherit a ghost's
+        birthday."""
+        manifest = self._manifest()
+        manifest["sessions"] = [s for s in manifest["sessions"] if s != name]
+        manifest["models"].pop(name, None)
+        manifest["titles"].pop(name, None)
+        manifest["created"].pop(name, None)
+        self._save_manifest(manifest)
+
     # -- create: mint an identity, then open it ----------------------------
 
     def create(self) -> Session:
@@ -532,7 +572,17 @@ class Registry:
         with self._lock:
             name = self._mint_name()
             self._record(name)  # reserve the name against a racing mint
-        return self.open(name)
+        try:
+            return self.open(name)
+        except BaseException:
+            # A reservation whose open failed (dud not installed, a
+            # guest image that can't build) would otherwise sit in the
+            # rail forever, 500ing on every click — roll it back; a
+            # retried "+ New" mints fresh. (The explicit-name path
+            # needs no mirror: `open` records only after success.)
+            with self._lock:
+                self._unrecord(name)
+            raise
 
     def _mint_name(self) -> str:
         """A pettable slug: `sleepy-meerkat`, not `session-3` (caller

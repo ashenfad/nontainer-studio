@@ -854,6 +854,19 @@ def main() -> None:
 
     start_vm_prewarm()
     port = int(os.getenv("NONTAINER_STUDIO_PORT", "8321"))
+    # A non-default executor changes the server's security posture —
+    # say so where the operator is already looking (the URL line).
+    executor = os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower()
+    if executor == "dud":
+        print(
+            "⚠ executor=dud: agent code runs UNSANDBOXED as your user "
+            "(real bash/python, open egress) — own-machine posture only"
+        )
+    elif executor == "dud-vm":
+        print(
+            "executor=dud-vm: vfkit microVMs, budget "
+            f"DUD_VM_MAX_TOTAL={os.environ.get('DUD_VM_MAX_TOTAL', '4')}"
+        )
     print(f"nontainer-studio → http://127.0.0.1:{port}")
     uvicorn.run(
         build_app(registry),
