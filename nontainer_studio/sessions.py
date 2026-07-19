@@ -125,9 +125,7 @@ def _bake_image(cfg: dict[str, Any]) -> None:
     try:
         from dud.images import build as build_rootfs
 
-        build_rootfs(
-            cfg["image"], packages=cfg["packages"], medium=cfg["medium"]
-        )
+        build_rootfs(cfg["image"], packages=cfg["packages"], medium=cfg["medium"])
     except Exception:
         pass
 
@@ -174,6 +172,7 @@ def _ws_kwargs() -> dict[str, Any]:
     ``executor_factory`` still works)."""
     factory = _executor_factory()
     return {"executor_factory": factory} if factory is not None else {}
+
 
 DEFAULT_TITLE = "New session"
 

@@ -9,9 +9,9 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    # 0.1.1: the a2ui basic-catalog Card takes a singular `child` — the
-    # /a2ui egress emits empty cards against 0.1.0
-    "nontainer[agno,apps]>=0.1.1",
+    # 0.1.2: the Executor seam (DudExecutor, ViewSpec, exec_python
+    # view= dispatch) that the dud / dud-vm executor toggles ride on
+    "nontainer[agno,apps]>=0.1.2",
     # sessions.py drives kvgit directly (branch deletion); 0.3.1 fixed
     # delete_branch leaving deleted branches recoverable
     "kvgit[disk]>=0.3.1",
@@ -51,10 +51,10 @@ dev = [
     "httpx2",  # starlette TestClient
 ]
 # Powers NONTAINER_STUDIO_EXECUTOR=dud / dud-vm (real-machine / microVM
-# execution via nontainer's DudExecutor). dud isn't on PyPI yet, so the
-# sibling source below resolves it; dud itself requires >=3.11.
+# execution via nontainer's DudExecutor). dud requires >=3.11; the
+# marker keeps the studio's 3.10 floor for everyone not opting in.
 dud = [
-    "dud; python_version >= '3.11'",
+    "dud>=0.1.1; python_version >= '3.11'",
 ]
 
 [project.scripts]
@@ -69,10 +69,6 @@ nontainer-studio = "nontainer_studio.server:main"
 # sees core changes before they're released. pip ignores this table.
 [tool.uv.sources]
 nontainer = { path = "../nontainer", editable = true }
-# Same co-development convenience as nontainer's own dud source: the
-# `dud` extra resolves against the local checkout until dud ships to
-# PyPI. pip ignores this table.
-dud = { path = "../dud", editable = true }
 
 [build-system]
 requires = ["hatchling"]
