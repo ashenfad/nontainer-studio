@@ -25,6 +25,7 @@ import json
 import os
 import secrets
 import sqlite3
+import sys
 import threading
 import time
 from collections.abc import Iterable
@@ -48,11 +49,17 @@ def _executor_factory() -> Callable[[], Any] | None:
     ``NONTAINER_STUDIO_EXECUTOR=dud`` runs agent code on a real
     disposable machine (dud's rung-1 subprocess backend: real bash,
     real python, real files) instead of the in-process
-    sandtrap+termish LocalExecutor. Unset (the default) returns None —
-    nontainer builds its LocalExecutor and studio behaves exactly as
-    before. The dud import is lazy so the default install needs
-    neither dud nor a nontainer new enough to accept
-    ``executor_factory`` (see ``_ws_kwargs``).
+    sandtrap+termish LocalExecutor. ``=dud-vm`` selects dud's rung-2
+    vfkit backend — the same guest inside a real disposable macOS
+    microVM (HVF), so isolation is real; boots a ``python:slim``
+    matched to the host interpreter (see ``_vm_config``) with the
+    kernel from ``$DUD_KERNEL``/``~/.dud``, fails closed off macOS or
+    without a kernel, and defaults the pool's VM budget (see
+    ``_ensure_vm_cap``). Unset (the default) returns None — nontainer
+    builds its LocalExecutor and studio behaves exactly as before. The
+    dud import is lazy so the default install needs neither dud nor a
+    nontainer new enough to accept ``executor_factory`` (see
+    ``_ws_kwargs``).
 
     Caveat: dud's rung 1 has NO isolation (own-machine posture). Apps
     dispatch works under dud as of stage 3c — the live preview and
@@ -66,11 +73,123 @@ def _executor_factory() -> Callable[[], Any] | None:
     workspace. The analyst loop (terminal + run_python over the real
     data stack) is unaffected.
     """
-    if os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower() != "dud":
+    choice = os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower()
+    if choice not in ("dud", "dud-vm"):
         return None
     from nontainer.executor_dud import DudExecutor
 
+    if choice == "dud-vm":
+        _ensure_vm_cap()
+        vm = _vm_config()
+        return lambda: DudExecutor(backend="vfkit", vm=vm)
     return lambda: DudExecutor()
+
+
+def _ensure_vm_cap() -> None:
+    """Default dud's VM budget for the studio's long-running posture.
+
+    Studio never closes sessions during a run, so under dud-vm every
+    session ever touched holds one bound VM for the process lifetime
+    (and each publish resolve holds another) — unbounded RAM growth
+    over a day of session switching. dud's pool bounds exactly this
+    when ``DUD_VM_MAX_TOTAL`` is set: past the cap it reclaims the
+    longest-quiet VM (idle first, then LRU bound), and the reclaimed
+    session's owner transparently recovers on its next call
+    (``SessionLost`` → re-acquire from the warm pool + re-push, ~a
+    second) — the disposable thesis as an eviction policy. The pool
+    reads the env once, at construction, so both entry points that can
+    build it (prewarm at server start, the session factory) default it
+    here first; an operator's own value always wins."""
+    os.environ.setdefault("DUD_VM_MAX_TOTAL", "4")
+
+
+def _vm_config() -> dict[str, Any]:
+    """The dud-vm boot config sessions run on (also the prewarm target).
+
+    The VM boots bare python:slim, so studio's data stack has to be
+    layered into the guest image (dud fetches guest-arch wheels).
+    Versions are PINNED to this venv's: cache values are pickles, and
+    sessions authored on one executor get read on the other — an
+    unpinned guest resolved pandas 2.x against a 3.x host and cached
+    DataFrames failed to unpickle (Categorical __setstate__). The
+    guest IMAGE tracks the host interpreter's minor for the same
+    reason (pickle portability spans package versions AND the
+    interpreter) — and so the pinned versions always have wheels for
+    the guest's python: a 3.13 host pinning a version with no cp312
+    wheel would brick the image build against a hardcoded 3.12 guest.
+
+    ``medium`` defaults to ``auto``: with packages layered in, dud
+    resolves that to an erofs root — demand-paged, so guest RAM is
+    pages touched (~80 MB at boot) instead of a ~400 MB RAM-resident
+    initramfs, and boots skip the unpack. ``memory_mib`` stays high as
+    a CEILING (VZ allocates lazily; an erofs guest won't use it).
+    ``NONTAINER_STUDIO_VM_MEDIUM`` overrides (e.g. ``initramfs`` to
+    fall back). The first session builds+caches the image; later
+    sessions and restarts reuse it (see ``start_vm_prewarm``).
+    """
+    import importlib.metadata as _md
+
+    packages = []
+    for name in ("numpy", "pandas", "pyarrow", "matplotlib", "plotly"):
+        try:
+            packages.append(f"{name}=={_md.version(name)}")
+        except _md.PackageNotFoundError:
+            pass  # not installed host-side -> not granted guest-side
+    return {
+        "image": f"python:3.{sys.version_info.minor}-slim",
+        "packages": packages,
+        "memory_mib": 4096,
+        "medium": os.getenv("NONTAINER_STUDIO_VM_MEDIUM", "auto"),
+    }
+
+
+def _bake_image(cfg: dict[str, Any]) -> None:
+    """Eagerly build (only) the guest image for ``cfg`` — no VM booted.
+
+    Best-effort, same posture as prewarm: a failure here surfaces
+    later, on the first real session open, with its usual error."""
+    try:
+        from dud.images import build as build_rootfs
+
+        build_rootfs(cfg["image"], packages=cfg["packages"], medium=cfg["medium"])
+    except Exception:
+        pass
+
+
+def start_vm_prewarm() -> "threading.Thread | None":
+    """Eagerly prep VMs at server start (dud-vm only, no-op otherwise).
+
+    Every studio session shares one boot config, so the image is fully
+    determined at startup — there is never a reason to make the first
+    user pay the cold build. ``NONTAINER_STUDIO_VM_WARM`` picks how
+    eager:
+
+    - ``>= 1`` (default 1): boot-and-park that many warm VMs; the
+      first thing a boot does is build the image, so a cold cache gets
+      built at startup too. First-touch session opens skip the boot.
+    - ``0``: no idle VM RAM — but still bake the image in a background
+      thread, so a first open pays boot-only, never build+boot.
+
+    Studio never closes sessions during a run, so dud's pool would
+    otherwise sit empty until shutdown — every first switch to a
+    session after a restart paid a full boot."""
+    if os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower() != "dud-vm":
+        return None
+    _ensure_vm_cap()  # before the pool exists — it reads the env once
+    cfg = _vm_config()
+    n = int(os.getenv("NONTAINER_STUDIO_VM_WARM", "1"))
+    if n > 0:
+        from dud.backends.pool import shared_pool
+
+        shared_pool().prewarm(n, **cfg)  # background by default
+        return None
+    import threading
+
+    t = threading.Thread(
+        target=lambda: _bake_image(cfg), name="dud-image-bake", daemon=True
+    )
+    t.start()
+    return t
 
 
 def _ws_kwargs() -> dict[str, Any]:
@@ -80,6 +199,7 @@ def _ws_kwargs() -> dict[str, Any]:
     ``executor_factory`` still works)."""
     factory = _executor_factory()
     return {"executor_factory": factory} if factory is not None else {}
+
 
 DEFAULT_TITLE = "New session"
 
@@ -424,6 +544,19 @@ class Registry:
         manifest["created"].setdefault(name, time.time())
         self._save_manifest(manifest)
 
+    def _unrecord(self, name: str) -> None:
+        """Remove a reservation from the manifest (caller holds _lock)
+        — ``_record``'s mirror, for a minted name whose open never
+        succeeded. Clears titles/created too, same as ``delete``: a
+        later mint drawing this slug must not inherit a ghost's
+        birthday."""
+        manifest = self._manifest()
+        manifest["sessions"] = [s for s in manifest["sessions"] if s != name]
+        manifest["models"].pop(name, None)
+        manifest["titles"].pop(name, None)
+        manifest["created"].pop(name, None)
+        self._save_manifest(manifest)
+
     # -- create: mint an identity, then open it ----------------------------
 
     def create(self) -> Session:
@@ -439,7 +572,17 @@ class Registry:
         with self._lock:
             name = self._mint_name()
             self._record(name)  # reserve the name against a racing mint
-        return self.open(name)
+        try:
+            return self.open(name)
+        except BaseException:
+            # A reservation whose open failed (dud not installed, a
+            # guest image that can't build) would otherwise sit in the
+            # rail forever, 500ing on every click — roll it back; a
+            # retried "+ New" mints fresh. (The explicit-name path
+            # needs no mirror: `open` records only after success.)
+            with self._lock:
+                self._unrecord(name)
+            raise
 
     def _mint_name(self) -> str:
         """A pettable slug: `sleepy-meerkat`, not `session-3` (caller
