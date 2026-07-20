@@ -78,12 +78,6 @@ nontainer-studio = "nontainer_studio.server:main"
 # PyPI like any other dependency.
 [tool.uv.sources]
 nontainer = { path = "../nontainer", editable = true }
-# TEMPORARY co-development pin: studio resolves nontainer from the local
-# checkout above, and that checkout's session-delete branch depends on
-# kvgit 0.3.2 (the delete_branches admin API), which is unreleased — so
-# the resolver needs the local kvgit too. pip ignores this table. RETIRE
-# this entry once kvgit 0.3.2 ships to PyPI.
-kvgit = { path = "../kvgit", editable = true }
 
 [build-system]
 requires = ["hatchling"]
