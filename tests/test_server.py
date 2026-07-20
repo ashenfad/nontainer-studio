@@ -2,6 +2,7 @@
 lifecycle, preview/publish, time travel — exercised with a fake agent
 (no LLM, no key)."""
 
+import re
 import time
 from types import SimpleNamespace
 
@@ -292,7 +293,7 @@ def test_busy_session_409s_chat(studio):
             == 409
         )
         assert client.get("/api/sessions").json()["sessions"] == [
-            {"name": "s1", "busy": True, "model": None}
+            {"name": "s1", "title": "New session", "busy": True, "model": None}
         ]
     finally:
         session.turn_lock.release()
@@ -561,7 +562,9 @@ def test_session_manifest_survives_restart(studio, tmp_path):
 
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
-    assert reborn.list() == [{"name": "s1", "busy": False, "model": None}]
+    assert reborn.list() == [
+        {"name": "s1", "title": "New session", "busy": False, "model": None}
+    ]
     # and it opens lazily with its files intact
     registry.get("s1").ws.write_file("keep.txt", "here")
     session = reborn.open("s1")
@@ -1277,7 +1280,7 @@ def test_delete_leaves_other_sessions_alone(studio):
     registry.get("s2").ws.write_file("mine.txt", "s2 data")
     client.delete("/api/sessions/s1")
     assert client.get("/api/sessions").json()["sessions"] == [
-        {"name": "s2", "busy": False, "model": None}
+        {"name": "s2", "title": "New session", "busy": False, "model": None}
     ]
     assert registry.get("s2").ws.fs.read("mine.txt") == b"s2 data"
 
@@ -1334,7 +1337,9 @@ def test_model_switch_persists_and_notices(studio, tmp_path):
     )
     # the rail shows it, and a restart remembers it
     listed = client.get("/api/sessions").json()["sessions"]
-    assert listed == [{"name": "s1", "busy": False, "model": "dummy"}]
+    assert listed == [
+        {"name": "s1", "title": "New session", "busy": False, "model": "dummy"}
+    ]
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
     assert reborn.open("s1").model == "dummy"
@@ -1389,11 +1394,300 @@ def test_dummy_model_drives_real_agent(tmp_path):
     registry.close()
 
 
+# -- identity is a minted slug; the label is a title -----------------------------
+
+
+def test_create_mints_a_slug_and_starts_untitled(studio):
+    """No name in the body = the UI's "+ New": the server mints identity
+    so nobody types it, and the session starts with no title."""
+    client, registry = studio
+    r = client.post("/api/sessions", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["title"] == "New session"
+    # a pettable slug, and a legal session id (it names a branch, a db
+    # file, a jsonl and every route)
+    assert re.fullmatch(r"[a-z]+(-[a-z]+)+", body["name"]), body["name"]
+    assert registry.get(body["name"]) is not None
+
+
+def test_minted_names_are_unique(studio):
+    client, _ = studio
+    names = {client.post("/api/sessions", json={}).json()["name"] for _ in range(8)}
+    assert len(names) == 8
+
+
+def test_explicit_name_still_creates(studio):
+    """The typed-name form stays for tests/scripting — it just never
+    becomes the label."""
+    client, registry = studio
+    r = client.post("/api/sessions", json={"name": "s1"})
+    assert r.json() == {"ok": True, "name": "s1", "title": "New session"}
+    assert client.post("/api/sessions", json={"name": "s1"}).json()["name"] == "s1"
+    assert client.post("/api/sessions", json={"name": "bad/name"}).status_code == 400
+
+
+def test_title_resolution_user_outranks_agent(studio):
+    """user > agent > default, and clearing the user's REVEALS the
+    agent's latest rather than falling to the default."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    assert registry.title_of("s1") == "New session"
+
+    registry.set_agent_title("s1", "Revenue dashboard")
+    assert registry.title_of("s1") == "Revenue dashboard"
+
+    r = client.post("/api/sessions/s1/title", json={"title": "Q3 numbers"})
+    assert r.json()["title"] == "Q3 numbers"
+    # the agent keeps suggesting; the human's choice still wins
+    registry.set_agent_title("s1", "Something else")
+    assert registry.title_of("s1") == "Q3 numbers"
+
+    # clearing falls back to the agent's LATEST, not the default
+    assert client.post("/api/sessions/s1/title", json={"title": ""}).json()[
+        "title"
+    ] == ("Something else")
+
+
+def test_agent_titles_are_clamped(studio):
+    """The agent writes this free-text: a newline would break the rail
+    row and a novel would blow past it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    registry.set_agent_title("s1", "  line one\nline two   \t spaced  ")
+    assert registry.title_of("s1") == "line one line two spaced"
+    registry.set_agent_title("s1", "x" * 200)
+    assert registry.title_of("s1") == "x" * 60
+    # blank/junk reads as "no title", never as ""
+    registry.set_agent_title("s1", "   ")
+    assert registry.title_of("s1") == "New session"
+
+
+def test_rail_lists_newest_first(studio):
+    """Slugs carry no order, so alphabetical would scatter new sessions
+    into random rail slots — birthdays decide."""
+    client, _ = studio
+    first = client.post("/api/sessions", json={"name": "aaa"}).json()["name"]
+    time.sleep(0.01)
+    second = client.post("/api/sessions", json={"name": "zzz"}).json()["name"]
+    listed = [s["name"] for s in client.get("/api/sessions").json()["sessions"]]
+    assert listed == [second, first]  # newest first, NOT alphabetical
+
+
+def test_titles_and_birthday_survive_restart(studio, tmp_path):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    registry.set_agent_title("s1", "Persisted title")
+
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    reborn._build_agent = lambda *a, **k: FakeAgent()
+    assert reborn.title_of("s1") == "Persisted title"
+    reborn.close()
+
+
+def test_recommend_title_tool_names_the_session(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    tool = registry._title_tool("s1")
+
+    assert "Revenue dashboard" in tool("Revenue dashboard")
+    assert registry.title_of("s1") == "Revenue dashboard"
+    # it can rename on a topic shift
+    tool("Debugging the CSV import")
+    assert registry.title_of("s1") == "Debugging the CSV import"
+
+
+def test_recommend_title_cannot_override_the_human(studio):
+    """The agent's suggestion is stored but not shown — and the tool
+    result says so, rather than claiming a title it didn't get."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/title", json={"title": "Mine"})
+
+    said = registry._title_tool("s1")("Something the agent picked")
+    assert "Mine" in said  # reports what's SHOWN, not what it asked for
+    assert registry.title_of("s1") == "Mine"
+    # ...but it was remembered: clearing the human's reveals it
+    assert client.post("/api/sessions/s1/title", json={"title": ""}).json()[
+        "title"
+    ] == ("Something the agent picked")
+
+
+def test_title_tool_survives_a_model_switch(studio):
+    """The closure captures only (registry, name) — nothing turn-scoped
+    — so the agent rebuilt by a model switch still titles the right
+    session."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    tool_before = registry._title_tool("s1")
+    client.post("/api/sessions/s1/model", json={"model": "dummy"})
+    tool_before("Still works")
+    assert registry.title_of("s1") == "Still works"
+
+
+def test_agent_is_given_the_title_tool(studio):
+    """The wiring the rest of stage 3 rests on: a studio tool riding
+    alongside the nontainer toolkit in the same agno Agent."""
+    pytest.importorskip("agno")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    # the fixture fakes _build_agent; call the real one
+    agent = sessions_mod.Registry._build_agent(
+        registry, "s1", registry.get("s1").ws, registry.get("s1").runtime
+    )
+    names = {getattr(t, "name", getattr(t, "__name__", "")) for t in agent.tools}
+    assert "recommend_title" in names
+
+
+def test_primer_teaches_when_to_title(studio):
+    assert "recommend_title" in sessions_mod.STUDIO_PRIMER
+    assert "New session" in sessions_mod.STUDIO_PRIMER
+
+
+class TitlingAgent(FakeAgent):
+    """Calls recommend_title mid-turn, like the real thing.
+
+    The real loop EXECUTES the tool and THEN emits ToolCallCompleted —
+    two separate effects (the manifest write and the transcript event).
+    A fake that only yielded the event would leave the manifest unwritten
+    and quietly test half the feature."""
+
+    def __init__(self, registry, name: str, title: str = "Revenue dashboard") -> None:
+        super().__init__()
+        self._tool = registry._title_tool(name)
+        self.title = title
+
+    async def arun(self, message, stream=True, stream_events=True):
+        self.seen.append(message)
+        run_id = f"run-{len(self.seen)}"
+        result = self._tool(self.title)  # the tool really runs
+        yield SimpleNamespace(
+            event="ToolCallCompleted",
+            tool=SimpleNamespace(
+                tool_name="recommend_title",
+                tool_args={"title": self.title},
+                result=result,
+                run_id=run_id,
+            ),
+        )
+        yield SimpleNamespace(event="RunContent", content="named it", run_id=run_id)
+
+
+def test_title_event_rides_the_transcript(studio):
+    """The tool writes the manifest; the EVENT is the temporal record —
+    it marks when the session got its name."""
+    client, registry = studio
+    registry._build_agent = lambda n, *a, **k: TitlingAgent(registry, n)
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/chat", json={"message": "hi"})
+    events = _collect_until_done(client, "s1")
+
+    titled = [e for e in events if e["type"] == "title"]
+    assert len(titled) == 1 and titled[0]["title"] == "Revenue dashboard"
+    # the tool_end stays too — the human sees the agent named the session
+    assert any(e["type"] == "tool_end" for e in events)
+
+
+def test_title_event_carries_the_stored_form(studio):
+    """Clamped like the manifest stores it, and junk emits nothing at
+    all rather than an empty label."""
+    client, registry = studio
+    registry._build_agent = lambda n, *a, **k: TitlingAgent(
+        registry, n, "  ragged\ntitle  "
+    )
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/chat", json={"message": "hi"})
+    events = _collect_until_done(client, "s1")
+    assert [e["title"] for e in events if e["type"] == "title"] == ["ragged title"]
+
+    registry._build_agent = lambda n, *a, **k: TitlingAgent(registry, n, "   ")
+    client.post("/api/sessions", json={"name": "s2"})
+    client.post("/api/sessions/s2/chat", json={"message": "hi"})
+    events = _collect_until_done(client, "s2")
+    assert not [e for e in events if e["type"] == "title"]
+
+
+def test_edit_rewinds_the_agents_title(studio):
+    """Rollback-follow: the agent named the session out of a conversation
+    the edit is unsaying, so the title goes back to the one that was in
+    force before the cut."""
+    client, registry = studio
+    registry._build_agent = lambda n, *a, **k: TitlingAgent(registry, n, "First topic")
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _turn(client, "s1", "one")
+    assert registry.title_of("s1") == "First topic"
+
+    session.agent.title = "Second topic"
+    _turn(client, "s1", "two")
+    assert registry.title_of("s1") == "Second topic"
+
+    # Unsay turn two: the title it gave goes with it. This drives the
+    # registry half directly — the /edit route then runs a FRESH turn,
+    # which re-titles and would mask the rewind we're asserting.
+    seq = _user_seqs(session)[1]
+    registry.rewind_to_event(session, seq)
+    assert registry.title_of("s1") == "First topic"
+
+
+def test_edit_keeps_a_title_it_cannot_prove_was_undone(studio):
+    """No title event survives the cut. That is ambiguous — never
+    titled, or titled before the event window — so the manifest's value
+    stands rather than being wiped."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _turn(client, "s1", "one")  # plain FakeAgent: no title event
+    registry.set_agent_title("s1", "Titled long ago")
+
+    seq = _user_seqs(session)[0]
+    r = client.post("/api/sessions/s1/edit", json={"seq": seq, "message": "redo"})
+    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
+    assert registry.title_of("s1") == "Titled long ago"
+
+
+def test_edit_never_rewinds_the_humans_title(studio):
+    """The human's title isn't a conversational fact — an edit must not
+    touch it."""
+    client, registry = studio
+    registry._build_agent = lambda n, *a, **k: TitlingAgent(registry, n, "Agent's idea")
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _turn(client, "s1", "one")
+    client.post("/api/sessions/s1/title", json={"title": "Mine"})
+
+    seq = _user_seqs(session)[0]
+    r = client.post("/api/sessions/s1/edit", json={"seq": seq, "message": "redo"})
+    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
+    assert registry.title_of("s1") == "Mine"
+
+
+def test_delete_forgets_the_title_and_birthday(studio):
+    """A slug is free to be minted again once `sessions` forgets it —
+    it must not come back wearing a dead session's name."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    registry.set_agent_title("s1", "Doomed")
+    client.delete("/api/sessions/s1")
+
+    manifest = registry._manifest()
+    assert "s1" not in manifest["titles"]
+    assert "s1" not in manifest["created"]
+    # a session reborn under the same slug starts untitled
+    client.post("/api/sessions", json={"name": "s1"})
+    assert registry.title_of("s1") == "New session"
+
+
 def test_v1_manifest_format_tolerated(studio, tmp_path):
     (tmp_path / "sessions.json").write_text('["old-style"]')
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
-    assert {"name": "old-style", "busy": False, "model": None} in reborn.list()
+    assert {
+        "name": "old-style",
+        "title": "New session",
+        "busy": False,
+        "model": None,
+    } in reborn.list()
     assert reborn.resolve("nope") is None
     reborn.close()
 

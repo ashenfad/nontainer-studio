@@ -9,11 +9,14 @@ Needs the committed frontend build and playwright's chromium
 (`playwright install chromium`); both skip cleanly when absent.
 """
 
+import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -88,6 +91,24 @@ def page(browser, server):
 def _send(page, message: str) -> None:
     page.fill("textarea", message)
     page.get_by_role("button", name="send").click()
+
+
+def _title(server: str, name: str, title: str) -> None:
+    """Name a session so its rail row is findable. Rows are labelled by
+    TITLE now — identity is a slug that never displays — so two untitled
+    sessions both read "New session" and can't be told apart by text.
+
+    Deliberately NOT page.request: that rides the browser's network
+    stack, where the SSE followers pin connections against Chromium's
+    per-origin cap and this POST can starve. It only arranges server
+    state, so it talks to the server directly."""
+    req = urllib.request.Request(
+        f"{server}/api/sessions/{name}/title",
+        data=json.dumps({"title": title}).encode(),
+        headers={"content-type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        assert r.status == 200
 
 
 # ---------------------------------------------------------------------------
@@ -439,14 +460,17 @@ def test_delete_session_from_rail(page, server):
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "del1 alive", timeout=15000
     )
-    page.fill(".new input", "e2e-del2")
-    page.press(".new input", "Enter")
-    expect(page.locator(".row.active", has_text="e2e-del2")).to_be_visible(
-        timeout=10000
-    )
+    _title(server, "e2e-del1", "del1")
+
+    # "+ New" mints the session and switches to it; the slug rides the
+    # URL — wait for it, or we'd read the PREVIOUS session's name
+    page.click(".new-btn")
+    expect(page).to_have_url(re.compile(r"\?session=[a-z]+(-[a-z]+)+$"), timeout=10000)
+    _title(server, page.url.split("session=")[-1], "del2")
+    expect(page.locator(".row.active", has_text="del2")).to_be_visible(timeout=10000)
 
     # two-tap delete on the ACTIVE session: × arms, 'sure?' confirms
-    row = page.locator(".row", has_text="e2e-del2")
+    row = page.locator(".row", has_text="del2")
     row.hover()
     row.locator(".delete").click()
     expect(row.locator(".delete")).to_have_text("sure?")
@@ -455,14 +479,97 @@ def test_delete_session_from_rail(page, server):
     # the row disappears and the shell falls back to SOME surviving
     # session (the rail is shared across this module's tests, so which
     # one isn't ours to assume)
-    expect(page.locator(".row", has_text="e2e-del2")).to_have_count(0, timeout=10000)
+    expect(page.locator(".row", has_text="del2")).to_have_count(0, timeout=10000)
     expect(page.locator(".row.active")).to_be_visible(timeout=10000)
 
     # the sibling session was untouched: its transcript replays intact
-    page.locator(".row", has_text="e2e-del1").locator(".item").click()
+    page.locator(".row", has_text="del1").locator(".item").click()
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "del1 alive", timeout=10000
     )
+
+
+def test_agent_titles_the_session_from_the_rail_default(page, server):
+    """The whole stage-3 path for real: the model calls recommend_title,
+    the studio tool writes the title, and the rail row stops reading
+    "New session" — while the URL keeps the slug that is identity."""
+    page.goto(f"{server}/?session=e2e-title")
+    expect(page.locator(".row.active .name")).to_have_text("New session", timeout=10000)
+    _send(
+        page,
+        '!tool recommend_title {"title": "Revenue dashboard"}\n'
+        "!text Named this session.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Named this session.", timeout=15000
+    )
+    # the rail relabels (it polls, so give it a beat), header agrees...
+    expect(page.locator(".row.active .name")).to_have_text(
+        "Revenue dashboard", timeout=10000
+    )
+    expect(page.locator(".session-name")).to_have_text("Revenue dashboard")
+    # ...and identity never moved
+    assert page.url.endswith("?session=e2e-title")
+
+
+def test_rename_from_the_rail_outranks_the_agent(page, server):
+    """Double-click the label to rename. The human's title wins from
+    there on, and clearing it falls back to the agent's latest."""
+    page.goto(f"{server}/?session=e2e-rename")
+    _send(page, '!tool recommend_title {"title": "Agent idea"}\n!text ok.')
+    expect(page.locator(".row.active .name")).to_have_text("Agent idea", timeout=15000)
+
+    row = page.locator(".row.active")
+    row.locator(".name").dblclick()
+    page.fill(".rename", "My name for it")
+    page.press(".rename", "Enter")
+    expect(page.locator(".row.active .name")).to_have_text(
+        "My name for it", timeout=10000
+    )
+
+    # the agent keeps suggesting; the human's title still wins
+    _send(page, '!tool recommend_title {"title": "Agent again"}\n!text ok.')
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "ok.", timeout=15000
+    )
+    expect(page.locator(".row.active .name")).to_have_text("My name for it")
+
+    # clearing reveals the agent's LATEST, not the default
+    row.locator(".name").dblclick()
+    page.fill(".rename", "")
+    page.press(".rename", "Enter")
+    expect(page.locator(".row.active .name")).to_have_text("Agent again", timeout=10000)
+
+
+def test_rename_escape_discards(page, server):
+    """Escape must not save. The input unmounts on cancel and blur still
+    fires — the commit path has to know the difference."""
+    page.goto(f"{server}/?session=e2e-esc")
+    _title(server, "e2e-esc", "Keep me")
+    expect(page.locator(".row.active .name")).to_have_text("Keep me", timeout=10000)
+
+    page.locator(".row.active .name").dblclick()
+    page.fill(".rename", "typed but abandoned")
+    page.press(".rename", "Escape")
+    expect(page.locator(".rename")).to_have_count(0)
+    expect(page.locator(".row.active .name")).to_have_text("Keep me")
+    # and it really didn't reach the server
+    page.reload()
+    expect(page.locator(".row.active .name")).to_have_text("Keep me", timeout=10000)
+
+
+def test_new_session_button_mints_an_untitled_slug(page, server):
+    """ "+ New" asks the SERVER for a session: identity is a minted slug
+    nobody typed (so the agent may title it freely), and the rail shows
+    the untitled default until something names it."""
+    page.goto(f"{server}/?session=e2e-mint")
+    expect(page.locator(".row.active")).to_be_visible(timeout=10000)
+
+    page.click(".new-btn")
+    # switchTo uses replaceState, so poll the URL rather than wait for a
+    # navigation that never fires. e2e-mint can't match: it has a digit.
+    expect(page).to_have_url(re.compile(r"\?session=[a-z]+(-[a-z]+)+$"), timeout=10000)
+    expect(page.locator(".row.active .name")).to_have_text("New session", timeout=10000)
 
 
 def test_background_turn_survives_session_switch(page, server):
@@ -471,11 +578,11 @@ def test_background_turn_survives_session_switch(page, server):
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "first session reply", timeout=15000
     )
-    # switch away via the rail's new-session box, then back
-    page.fill(".new input", "e2e-bg2")
-    page.press(".new input", "Enter")
-    expect(page.locator(".row.active", has_text="e2e-bg2")).to_be_visible(timeout=10000)
-    page.locator(".item", has_text="e2e-bg1").click()
+    # switch away via the rail's "+ New" button, then back
+    _title(server, "e2e-bg1", "bg1")
+    page.click(".new-btn")
+    expect(page.locator(".row.active")).to_be_visible(timeout=10000)
+    page.locator(".item", has_text="bg1").click()
     # the transcript replays from the server-side event log
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "first session reply", timeout=10000

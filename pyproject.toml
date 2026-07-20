@@ -15,6 +15,9 @@ dependencies = [
     # sessions.py drives kvgit directly (branch deletion); 0.3.1 fixed
     # delete_branch leaving deleted branches recoverable
     "kvgit[disk]>=0.3.1",
+    # session identity is a minted slug (sleepy-meerkat), never a
+    # typed name — the label the human reads is the title
+    "petname>=2.6",
     "uvicorn>=0.30",
     # agno's SqliteDb (durable chat) requires sqlalchemy
     "sqlalchemy>=2",

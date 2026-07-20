@@ -2,12 +2,41 @@
     // Session list: server view overlaid with live runtime status.
     // Pulsing dot = a turn in flight; steady green = finished while
     // you were elsewhere (cleared on focus).
-    import { rail, peekRuntime } from './runtime.svelte.js'
+    import { rail, peekRuntime, renameSession } from './runtime.svelte.js'
+
+    const DEFAULT_TITLE = 'New session' // mirrors the server's fallback
 
     let { active, onSwitch, onCreate, onDelete } = $props()
 
-    let name = $state('')
     let armed = $state(null) // session name whose delete is one tap away
+    let renaming = $state(null) // session name being retitled
+    let draft = $state('')
+    let cancelled = false // Escape sets it; blur (which commits) checks it
+
+    function startRename(s) {
+        renaming = s.name
+        // the default isn't a name worth editing — start empty there
+        draft = s.title === DEFAULT_TITLE ? '' : s.title
+    }
+
+    async function commitRename(s) {
+        const next = draft.trim()
+        renaming = null
+        if (cancelled) {
+            cancelled = false // Escape: blur still fires, don't save
+            return
+        }
+        // Unchanged means "I looked at it", not "make it mine": writing
+        // here would silently promote the AGENT's title to the human's
+        // and pin it, so the agent could never update the label again.
+        if (next === s.title) return
+        await renameSession(s.name, next)
+    }
+
+    function autofocus(node) {
+        node.focus()
+        node.select()
+    }
 
     function del(s, e) {
         e.stopPropagation()
@@ -32,12 +61,6 @@
         return ''
     }
 
-    function create() {
-        const n = name.trim()
-        if (!n) return
-        name = ''
-        onCreate(n)
-    }
 </script>
 
 <nav class="rail">
@@ -46,39 +69,57 @@
     <div class="items">
         {#each rail.sessions as s (s.name)}
             <div class="row" class:active={s.name === active}>
-                <button
-                    class="item"
-                    onclick={() => {
-                        armed = null
-                        onSwitch(s.name)
-                    }}
-                >
-                    <span class="dot {status(s)}"></span>
-                    <span class="name">{s.name}</span>
-                </button>
-                <button
-                    class="delete"
-                    class:armed={armed === s.name}
-                    title={armed === s.name
-                        ? 'click again to delete everything this session owns'
-                        : `delete ${s.name}`}
-                    aria-label="delete {s.name}"
-                    onclick={(e) => del(s, e)}
-                >
-                    {armed === s.name ? 'sure?' : '×'}
-                </button>
+                {#if renaming === s.name}
+                    <!-- the whole row, not just the label: an input
+                         nested in the switch button would swallow its
+                         own clicks -->
+                    <input
+                        class="rename"
+                        aria-label="rename session"
+                        placeholder={s.title}
+                        bind:value={draft}
+                        use:autofocus
+                        onblur={() => commitRename(s)}
+                        onkeydown={(e) => {
+                            if (e.key === 'Enter') e.currentTarget.blur()
+                            else if (e.key === 'Escape') {
+                                cancelled = true
+                                e.currentTarget.blur()
+                            }
+                        }}
+                    />
+                {:else}
+                    <button
+                        class="item"
+                        onclick={() => {
+                            armed = null
+                            onSwitch(s.name)
+                        }}
+                        ondblclick={() => startRename(s)}
+                    >
+                        <span class="dot {status(s)}"></span>
+                        <span class="name" title="{s.title} (double-click to rename)"
+                            >{s.title}</span
+                        >
+                    </button>
+                    <button
+                        class="delete"
+                        class:armed={armed === s.name}
+                        title={armed === s.name
+                            ? 'click again to delete everything this session owns'
+                            : `delete ${s.title}`}
+                        aria-label="delete {s.title}"
+                        onclick={(e) => del(s, e)}
+                    >
+                        {armed === s.name ? 'sure?' : '×'}
+                    </button>
+                {/if}
             </div>
         {/each}
     </div>
-    <form
-        class="new"
-        onsubmit={(e) => {
-            e.preventDefault()
-            create()
-        }}
-    >
-        <input placeholder="new session…" bind:value={name} />
-    </form>
+    <div class="new">
+        <button class="new-btn" onclick={() => onCreate()}>+ New session</button>
+    </div>
 </nav>
 
 <style>
@@ -178,6 +219,20 @@
         text-overflow: ellipsis;
         white-space: nowrap;
     }
+    .rename {
+        width: 100%;
+        min-width: 0;
+        background: var(--input-bg);
+        border: 1px solid var(--accent);
+        border-radius: 5px;
+        color: var(--text);
+        font-family: inherit;
+        font-size: 0.82rem;
+        /* line up with the .item text it replaces */
+        padding: 0.4rem 0.5rem;
+        margin: 0 0.15rem;
+        outline: none;
+    }
     .dot {
         width: 7px;
         height: 7px;
@@ -196,7 +251,7 @@
         padding: 0.6rem;
         border-top: 1px solid var(--border);
     }
-    .new input {
+    .new-btn {
         width: 100%;
         background: var(--input-bg);
         border: 1px solid var(--border);
@@ -204,10 +259,12 @@
         color: var(--text);
         font-family: inherit;
         font-size: 0.78rem;
-        padding: 0.35rem 0.55rem;
-        outline: none;
+        padding: 0.4rem 0.55rem;
+        cursor: pointer;
+        text-align: left;
     }
-    .new input:focus {
+    .new-btn:hover {
         border-color: var(--text-muted);
+        background: var(--surface-hover);
     }
 </style>

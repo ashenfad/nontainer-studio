@@ -110,6 +110,24 @@ export async function ensureSession(name) {
     return rt
 }
 
+/** The human's rename. Outranks the agent's title from here on; an
+ * empty title clears the override, falling back to whatever the agent
+ * last suggested. Identity (the slug) is untouched — nothing moves. */
+export async function renameSession(name, title) {
+    await api(`/api/sessions/${name}/title`, { title })
+    await refreshSessions()
+}
+
+/** Mint a new session. The SERVER names it (a slug like sleepy-meerkat):
+ * identity is never typed, so the agent is free to title it later.
+ * Returns the minted name — the caller switches to it. */
+export async function createSession() {
+    const { name } = await api('/api/sessions', {})
+    await refreshSessions()
+    getRuntime(name).markOpen()
+    return name
+}
+
 // ---------------------------------------------------------------------------
 
 const ARTIFACT_NOTE = /\[ui artifacts: ([^\]]+)\]/
@@ -253,6 +271,11 @@ export class SessionRuntime {
             // post-change log — which carries BOTH this event and the note
             // in the tool result — never double-appends the artifact.
             this.#addArt(ev.name, ev.path)
+        } else if (ev.type === 'title') {
+            // the agent named the session. Re-read the rail rather than
+            // display ev.title: the server resolves user > agent, and a
+            // human title outranks this one — only the server knows.
+            refreshSessions()
         } else if (ev.type === 'truncate') {
             // an edit rewound the session: only user messages carry a
             // seq, and everything after the cut derives from events
