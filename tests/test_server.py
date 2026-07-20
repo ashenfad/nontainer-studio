@@ -72,9 +72,11 @@ def post(req):
 
 
 def _seed_app(ws):
-    ws.fs.makedirs("/app/api", exist_ok=True)
-    ws.fs.write("/app/index.html", b"<html><body><h1>counter</h1></body></html>")
-    ws.fs.write("/app/api/count.py", HANDLER.encode())
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write(
+        "/workspace/app/index.html", b"<html><body><h1>counter</h1></body></html>"
+    )
+    ws.fs.write("/workspace/app/api/count.py", HANDLER.encode())
     ws.checkpoint()
 
 
@@ -150,8 +152,8 @@ def test_artifact_events_harvest_from_tool_result_note(studio):
             self.seen.append(message)
             result = (
                 "plotted 2 series\n"
-                "[ui artifacts: trend -> /ui/trend.plotly.json, "
-                "raw -> /ui/raw.table.json]"
+                "[ui artifacts: trend -> /workspace/ui/trend.plotly.json, "
+                "raw -> /workspace/ui/raw.table.json]"
             )
             yield SimpleNamespace(
                 event="ToolCallCompleted",
@@ -170,10 +172,12 @@ def test_artifact_events_harvest_from_tool_result_note(studio):
     assert arts[0] == {
         **arts[0],
         "name": "trend",
-        "path": "/ui/trend.plotly.json",
+        "path": "/workspace/ui/trend.plotly.json",
         "kind": "plotly",
     }
-    assert arts[1]["path"] == "/ui/raw.table.json" and arts[1]["kind"] == "table"
+    assert (
+        arts[1]["path"] == "/workspace/ui/raw.table.json" and arts[1]["kind"] == "table"
+    )
     # the note survives in the model-facing result text
     tool_end = next(e for e in events if e["type"] == "tool_end")
     assert "[ui artifacts:" in tool_end["result"]
@@ -188,7 +192,9 @@ def test_artifact_event_survives_a_long_tool_result(studio):
     class LongResultAgent(FakeAgent):
         async def arun(self, message, stream=True, stream_events=True):
             self.seen.append(message)
-            result = "x" * 5_000 + "\n[ui artifacts: big -> /ui/big.plotly.json]"
+            result = (
+                "x" * 5_000 + "\n[ui artifacts: big -> /workspace/ui/big.plotly.json]"
+            )
             yield SimpleNamespace(
                 event="ToolCallCompleted",
                 tool=SimpleNamespace(tool_name="run_python", result=result),
@@ -204,7 +210,7 @@ def test_artifact_event_survives_a_long_tool_result(studio):
     assert "[ui artifacts:" not in tool_end["result"]
     # ...but the artifact event survived (parsed from the raw result)
     art = next(e for e in events if e["type"] == "artifact")
-    assert art["path"] == "/ui/big.plotly.json" and art["kind"] == "plotly"
+    assert art["path"] == "/workspace/ui/big.plotly.json" and art["kind"] == "plotly"
 
 
 def test_tool_result_without_note_emits_no_artifact_events(studio):
@@ -218,21 +224,24 @@ def test_tool_result_without_note_emits_no_artifact_events(studio):
 
 def test_new_sessions_seed_skills(studio):
     """Session creation installs the repo's starter skills into
-    /skills as ordinary versioned files; existing sessions keep their
+    /workspace/skills as ordinary versioned files; existing sessions keep their
     own (possibly agent-edited) copies."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     files = client.get("/api/sessions/s1/files").json()["files"]
-    assert "/skills/building-apps/SKILL.md" in files
-    assert "/skills/building-apps/references/preact-app.html" in files
+    assert "/workspace/skills/building-apps/SKILL.md" in files
+    assert "/workspace/skills/building-apps/references/preact-app.html" in files
 
     # creation-only: a reseed must not clobber the session's copies
     session = registry.get("s1")
-    session.ws.write_file("/skills/building-apps/SKILL.md", "agent-edited")
+    session.ws.write_file("/workspace/skills/building-apps/SKILL.md", "agent-edited")
     registry.close()
     registry._sessions.clear()
     session2 = registry.open("s1")
-    assert session2.ws.fs.read("/skills/building-apps/SKILL.md") == b"agent-edited"
+    assert (
+        session2.ws.fs.read("/workspace/skills/building-apps/SKILL.md")
+        == b"agent-edited"
+    )
 
 
 def test_compression_and_usage_events_reach_the_transcript(studio):
@@ -352,9 +361,9 @@ def test_published_app_shares_live_db(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    session.ws.fs.makedirs("/app/api", exist_ok=True)
+    session.ws.fs.makedirs("/workspace/app/api", exist_ok=True)
     session.ws.fs.write(
-        "/app/api/names.py",
+        "/workspace/app/api/names.py",
         b"def get(req):\n"
         b'    db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")\n'
         b"    return {'names': [r[0] for r in db.query('SELECT v FROM t')]}\n",
@@ -375,23 +384,27 @@ def test_files_tree_and_raw(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     ws = registry.get("s1").ws
-    ws.fs.makedirs("/app/screenshots", exist_ok=True)
-    ws.fs.write("/notes.md", b"# hi")
+    ws.fs.makedirs("/workspace/app/screenshots", exist_ok=True)
+    ws.fs.write("/workspace/notes.md", b"# hi")
     png = bytes.fromhex(
         "89504e470d0a1a0a0000000d494844520000000100000001080200000090"
         "7753de0000000c49444154089963f8cfc000000301010018dd8db0000000"
         "0049454e44ae426082"
     )
-    ws.fs.write("/app/screenshots/shot-1.png", png)
+    ws.fs.write("/workspace/app/screenshots/shot-1.png", png)
 
     files = client.get("/api/sessions/s1/files").json()["files"]
-    assert "/notes.md" in files and "/app/screenshots/shot-1.png" in files
+    assert (
+        "/workspace/notes.md" in files
+        and "/workspace/app/screenshots/shot-1.png" in files
+    )
 
-    r = client.get("/api/sessions/s1/file", params={"path": "/notes.md"})
+    r = client.get("/api/sessions/s1/file", params={"path": "/workspace/notes.md"})
     assert r.status_code == 200 and r.text == "# hi"
 
     r = client.get(
-        "/api/sessions/s1/file", params={"path": "/app/screenshots/shot-1.png"}
+        "/api/sessions/s1/file",
+        params={"path": "/workspace/app/screenshots/shot-1.png"},
     )
     assert r.status_code == 200 and r.content == png
     assert r.headers["content-type"] == "image/png"
@@ -411,19 +424,19 @@ def test_upload_lands_checkpointed_with_notice(studio):
 
     r = client.post("/api/sessions/s1/upload?name=data.csv", content=b"a,b\n1,2\n")
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "path": "/uploads/data.csv", "size": 8}
-    assert session.ws.fs.read("/uploads/data.csv") == b"a,b\n1,2\n"
+    assert r.json() == {"ok": True, "path": "/workspace/uploads/data.csv", "size": 8}
+    assert session.ws.fs.read("/workspace/uploads/data.csv") == b"a,b\n1,2\n"
     # checkpointed: an edit's rewind extends to uploads
     assert any(c.info.get("tool") == "file_write" for c in session.ws.history(limit=3))
     # transcript notice
     assert any(
-        e["type"] == "notice" and "/uploads/data.csv" in e["text"]
+        e["type"] == "notice" and "/workspace/uploads/data.csv" in e["text"]
         for e in session.events
     )
 
     # basename-only: traversal-ish names collapse to a safe filename
     r = client.post("/api/sessions/s1/upload?name=../../etc/passwd", content=b"x")
-    assert r.json()["path"] == "/uploads/passwd"
+    assert r.json()["path"] == "/workspace/uploads/passwd"
 
     assert client.post("/api/sessions/s1/upload", content=b"x").status_code == 400
     assert (
@@ -450,7 +463,9 @@ def test_upload_multi_file_parallel(studio):
         codes = list(pool.map(up, range(6)))
     assert codes == [200] * 6
     for i in range(6):
-        assert session.ws.fs.read(f"/uploads/f{i}.txt") == f"file {i}".encode()
+        assert (
+            session.ws.fs.read(f"/workspace/uploads/f{i}.txt") == f"file {i}".encode()
+        )
     assert len(list(session.ws.history())) == before + 6  # one commit per file
 
 
@@ -858,7 +873,7 @@ class PlotlyArtifactAgent(FakeAgent):
 
     async def arun(self, message, stream=True, stream_events=True):
         self.seen.append(message)
-        result = "plotted it\n[ui artifacts: fig -> /ui/fig.plotly.json]"
+        result = "plotted it\n[ui artifacts: fig -> /workspace/ui/fig.plotly.json]"
         yield SimpleNamespace(
             event="ToolCallCompleted",
             tool=SimpleNamespace(tool_name="run_python", result=result),
@@ -891,7 +906,7 @@ def test_a2ui_projects_a_turn_into_a_v0_9_surface(studio):
     # real bytes in the workspace so read_bytes finds the spec (the
     # projection reads the file to build the Chart + data model)
     spec = {"data": [{"x": [1], "y": [2]}], "layout": {"title": "hi"}}
-    session.ws.fs.write("/ui/fig.plotly.json", _json.dumps(spec).encode())
+    session.ws.fs.write("/workspace/ui/fig.plotly.json", _json.dumps(spec).encode())
 
     client.post("/api/sessions/s1/chat", json={"message": "plot it"})
     events = _collect_until_done(client, "s1")
@@ -1197,9 +1212,9 @@ def test_published_urls_survive_restart(studio, tmp_path):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    session.ws.fs.makedirs("/app/api", exist_ok=True)
+    session.ws.fs.makedirs("/workspace/app/api", exist_ok=True)
     session.ws.fs.write(
-        "/app/api/names.py",
+        "/workspace/app/api/names.py",
         b"def get(req):\n"
         b'    db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")\n'
         b"    return {'names': [r[0] for r in db.query('SELECT v FROM t')]}\n",
@@ -1247,16 +1262,16 @@ def test_app_probe_flips_when_app_lands(studio):
 
 
 def test_ui_dir_exists_from_the_start(studio):
-    """Agents predictably savefig straight into /ui instead of
+    """Agents predictably savefig straight into /workspace/ui instead of
     assigning objects to `ui` — the near-miss should work, not
     FileNotFoundError (VFS open doesn't create parents)."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     ws = registry.get("s1").ws
-    assert ws.fs.isdir("/ui")
-    result = ws.run_python("open('/ui/x.png', 'wb').write(b'png-ish')")
+    assert ws.fs.isdir("/workspace/ui")
+    result = ws.run_python("open('/workspace/ui/x.png', 'wb').write(b'png-ish')")
     assert not result.error
-    assert ws.fs.read("/ui/x.png") == b"png-ish"
+    assert ws.fs.read("/workspace/ui/x.png") == b"png-ish"
 
 
 def test_error_truncation_keeps_the_exception_line(studio):
@@ -1267,13 +1282,13 @@ def test_error_truncation_keeps_the_exception_line(studio):
     trace = (
         "Traceback (most recent call last):\n"
         + "\n".join(f'  File "<x>", line {i}, in frame_{i}' for i in range(200))
-        + "\nFileNotFoundError: No such file or directory: '/ui/plot.png'"
+        + "\nFileNotFoundError: No such file or directory: '/workspace/ui/plot.png'"
     )
     capped = _short_middle(trace)
     assert len(capped) <= 2_100
     assert capped.startswith("Traceback")
     assert capped.endswith(
-        "FileNotFoundError: No such file or directory: '/ui/plot.png'"
+        "FileNotFoundError: No such file or directory: '/workspace/ui/plot.png'"
     )
     assert "…[truncated]…" in capped
     # short messages pass through untouched
@@ -1327,7 +1342,7 @@ def test_delete_removes_the_whole_universe(studio, tmp_path):
     client.post("/api/sessions", json={"name": "s1"})
     reborn = registry.get("s1")
     assert not reborn.ws.fs.exists("keep.txt")
-    assert not reborn.ws.fs.exists("/app/index.html")
+    assert not reborn.ws.fs.exists("/workspace/app/index.html")
 
 
 def test_delete_busy_409s_and_unknown_404s(studio):
@@ -1441,7 +1456,7 @@ def test_dummy_model_drives_real_agent(tmp_path):
     with TestClient(server.build_app(registry)) as client:
         client.post("/api/sessions", json={"name": "s1"})
         message = (
-            '!tool file_write {"path": "/notes.md", "content": "scripted"}\n'
+            '!tool file_write {"path": "/workspace/notes.md", "content": "scripted"}\n'
             "!text Wrote your note."
         )
         client.post("/api/sessions/s1/chat", json={"message": message})
@@ -1451,12 +1466,14 @@ def test_dummy_model_drives_real_agent(tmp_path):
         assert "tool_start" in kinds and "tool_end" in kinds
         started = next(e for e in events if e["type"] == "tool_start")
         assert started["name"] == "file_write"
-        assert started["args"]["path"] == "/notes.md"  # structured through agno
+        assert (
+            started["args"]["path"] == "/workspace/notes.md"
+        )  # structured through agno
         reply = "".join(e["delta"] for e in events if e["type"] == "text")
         assert reply == "Wrote your note."
         # the tool REALLY ran: the workspace has the file, checkpointed
         ws = registry.get("s1").ws
-        assert ws.fs.read("/notes.md") == b"scripted"
+        assert ws.fs.read("/workspace/notes.md") == b"scripted"
         # and the done event carries the run mapping for undo
         done = next(e for e in events if e["type"] == "done")
         assert done["run_id"] and done["head"]

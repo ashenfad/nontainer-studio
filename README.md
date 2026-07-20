@@ -14,8 +14,9 @@ you can rewind, fork, or publish.
   browser. Switch sessions, reload, or close the tab mid-turn; the work
   continues and the rail dots show what's running (pulsing) and what
   finished while you were away (green).
-- **Live preview → publish.** Anything the agent writes under `/app`
-  serves live in the preview pane as it takes shape. `publish` freezes
+- **Live preview → publish.** Anything the agent writes under
+  `/workspace/app` serves live in the preview pane as it takes shape.
+  `publish` freezes
   the current state behind a capability URL — frozen code over the
   session's live `db`, while your session keeps moving.
 - **Rich replies.** The agent can drop plots, tables, images, and HTML
@@ -64,14 +65,52 @@ wins) — see `.env.example`.
 
 Other knobs: `NONTAINER_STUDIO_PORT`, `NONTAINER_STUDIO_STORE`
 (defaults to `~/.nontainer-studio`), `NONTAINER_STUDIO_CSP` (override
-the published-app CSP; `none` disables), `NONTAINER_STUDIO_ISOLATION`
-(`process` by default — agent code runs in a forked worker so a
-segfault/OOM in C-extension guts costs the turn, not the server; the
-workspace files, cache, and `db` stay host-side, bridged over RPC.
-`kernel` adds syscall/network lockdown; `none` runs in-process).
+the published-app CSP; `none` disables), `NONTAINER_STUDIO_SKILLS`
+(directory of starter skills seeded into new sessions; defaults to the
+repo's `skills/`), `NONTAINER_STUDIO_COMPRESS_TOKENS` (context-
+compression watermark), and `NONTAINER_STUDIO_ISOLATION` (`process` by
+default — agent code runs in a forked worker so a segfault/OOM in
+C-extension guts costs the turn, not the server; the workspace files,
+cache, and `db` stay host-side, bridged over RPC. `kernel` adds
+syscall/network lockdown; `none` runs in-process).
 
-> **Note:** nontainer isn't on PyPI yet — `pyproject.toml` currently
-> points at a sibling `../nontainer` checkout.
+### Where agent code runs
+
+By default the agent's Python and shell run **in-process**, gated by
+[sandtrap](https://github.com/ashenfad/sandtrap) — a walled garden for
+cooperative code, tuned by `NONTAINER_STUDIO_ISOLATION` above.
+
+`NONTAINER_STUDIO_EXECUTOR` swaps that for a real machine via
+[dud](https://github.com/ashenfad/dud) (needs the `dud` extra and
+Python 3.11+):
+
+| value | what runs the code | isolation |
+|---|---|---|
+| unset (default) | in-process sandbox | sandtrap's gates |
+| `dud-vm` | a disposable microVM — vfkit on macOS, firecracker on Linux/KVM | real |
+| `dud` | a host process — real bash, real files | **none** |
+
+```sh
+uv sync --extra dud
+NONTAINER_STUDIO_EXECUTOR=dud-vm uv run nontainer-studio
+```
+
+`dud-vm` boots a `python:slim` guest matched to your interpreter, with
+the data stack layered in; the first run builds and caches the image
+(~40s), later runs and restarts reuse it. Warm VMs are pooled —
+`NONTAINER_STUDIO_VM_WARM` (default 1) sets how many to pre-boot at
+startup, `DUD_VM_MAX_TOTAL` (default 4) caps running VMs, and
+`NONTAINER_STUDIO_VM_MEDIUM` overrides the rootfs medium (`auto`
+picks erofs for big images — smaller RAM, faster boot).
+
+Take `=dud` seriously: it's real bash and real files with **no
+containment at all**, running as your user with your network. It buys
+fidelity for development, not a boundary — the server warns at startup.
+
+What changes under either: the terminal is real bash (GNU tools,
+command substitution) rather than the emulated shell, so the apps
+loop's `curl` builtin doesn't exist — the agent is told as much and
+uses `test_app` and the preview instead.
 
 ## What owns what
 

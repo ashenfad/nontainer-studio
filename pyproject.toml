@@ -9,9 +9,9 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    # 0.1.2: the Executor seam (DudExecutor, ViewSpec, exec_python
-    # view= dispatch) that the dud / dud-vm executor toggles ride on
-    "nontainer[agno,apps]>=0.1.2",
+    # 0.2.0: the workspace root contract (files at /workspace across
+    # executors) on top of 0.1.2's Executor seam
+    "nontainer[agno,apps]>=0.2.0",
     # sessions.py drives kvgit directly (branch deletion); 0.3.1 fixed
     # delete_branch leaving deleted branches recoverable
     "kvgit[disk]>=0.3.1",
@@ -54,7 +54,10 @@ dev = [
 # execution via nontainer's DudExecutor). dud requires >=3.11; the
 # marker keeps the studio's 3.10 floor for everyone not opting in.
 dud = [
-    "dud>=0.1.1; python_version >= '3.11'",
+    # 0.2.1: guest workspace mounts AT /workspace — the same absolute
+    # paths the local sandbox teaches (staging internals stashed away).
+    # 0.2.0 never published (its tag shipped a stale version).
+    "dud>=0.2.1; python_version >= '3.11'",
 ]
 
 [project.scripts]
@@ -65,8 +68,14 @@ nontainer-studio = "nontainer_studio.server:main"
 
 # nontainer IS on PyPI (that's what the dependency above resolves to,
 # and what CI tests against). The sibling link is a uv-only convenience
-# for CO-DEVELOPMENT: the two repos move together, so a local checkout
-# sees core changes before they're released. pip ignores this table.
+# for CO-DEVELOPMENT: the two repos are developed as one, so a local
+# checkout sees core changes before they're released. pip ignores this
+# table.
+#
+# Standing pin, unlike the sandtrap/dud entries that lived here for the
+# /workspace root contract — those are retired now that sandtrap 0.2.12
+# and dud 0.2.1 ship the pieces studio needs, and both resolve from
+# PyPI like any other dependency.
 [tool.uv.sources]
 nontainer = { path = "../nontainer", editable = true }
 

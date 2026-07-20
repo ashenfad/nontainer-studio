@@ -603,7 +603,7 @@ def build_app(registry: Registry) -> Starlette:
                 {"error": f"too large ({len(data)} bytes; cap {MAX_UPLOAD})"},
                 status_code=413,
             )
-        dest = f"/uploads/{filename}"
+        dest = f"{session.ws.root}/uploads/{filename}"
         out = await anyio.to_thread.run_sync(session.ws.write_file, dest, data)
         await session.emit(
             {"type": "notice", "text": f"uploaded {dest} ({out.size:,} bytes)"}
@@ -665,7 +665,7 @@ def build_app(registry: Registry) -> Starlette:
 
         def check() -> bool:
             with session.ws.lock:
-                return bool(session.ws.fs.isdir("/app"))
+                return bool(session.ws.fs.isdir(f"{session.ws.root}/app"))
 
         return JSONResponse({"exists": await anyio.to_thread.run_sync(check)})
 
@@ -864,7 +864,7 @@ def main() -> None:
         )
     elif executor == "dud-vm":
         print(
-            "executor=dud-vm: vfkit microVMs, budget "
+            "executor=dud-vm: disposable microVMs, budget "
             f"DUD_VM_MAX_TOTAL={os.environ.get('DUD_VM_MAX_TOTAL', '4')}"
         )
     print(f"nontainer-studio → http://127.0.0.1:{port}")

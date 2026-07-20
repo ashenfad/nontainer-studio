@@ -355,7 +355,9 @@ export class SessionRuntime {
         // expandable timeline, not in the transcript. The agent
         // referencing an image in prose is what puts it inline.
         const images = result.match(IMAGE_PATHS) || []
-        const paths = [...new Set(images)].filter((p) => !p.startsWith('/ui/'))
+        const paths = [...new Set(images)].filter(
+            (p) => !p.startsWith('/workspace/ui/'),
+        )
         if (paths.length) tool.images = paths
     }
 

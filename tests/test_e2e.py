@@ -118,7 +118,7 @@ def test_turn_streams_into_transcript(page, server):
     page.goto(f"{server}/?session=e2e-chat")
     _send(
         page,
-        '!tool file_write {"path": "/notes.md", "content": "hello"}\n'
+        '!tool file_write {"path": "/workspace/notes.md", "content": "hello"}\n'
         "!text Wrote your note.",
     )
     # activity chip for the real tool call, then the streamed reply
@@ -128,13 +128,15 @@ def test_turn_streams_into_transcript(page, server):
     )
     # chip expands to the timeline with the REAL tool result
     page.locator(".chip", has_text="file_write").click()
-    expect(page.locator(".timeline")).to_contain_text("wrote /notes.md")
+    expect(page.locator(".timeline")).to_contain_text("wrote /workspace/notes.md")
 
     # the files tab lists the real workspace write; clicking opens the
     # shared file modal with a RENDERED view (markdown, not raw text)
     page.get_by_role("button", name="files", exact=True).click()
-    expect(page.locator(".file", has_text="/notes.md")).to_be_visible(timeout=5000)
-    page.locator(".file", has_text="/notes.md").click()
+    expect(page.locator(".file", has_text="/workspace/notes.md")).to_be_visible(
+        timeout=5000
+    )
+    page.locator(".file", has_text="/workspace/notes.md").click()
     expect(page.locator(".modal .markdown")).to_contain_text("hello", timeout=5000)
     page.keyboard.press("Escape")
     expect(page.locator(".modal")).to_have_count(0)
@@ -142,7 +144,7 @@ def test_turn_streams_into_transcript(page, server):
 
 def test_ui_artifact_renders_from_server_event(page, server):
     """The full artifact path: run_python assigns `ui`, WorkspaceTools
-    materializes it into /ui and appends the `[ui artifacts: ...]` note,
+    materializes it into /workspace/ui and appends the `[ui artifacts: ...]` note,
     the server harvests that into a first-class `artifact` event, and
     the shell renders it (here the json floor as a details block). Prose
     doesn't reference the path, so the done-time Jupyter rule appends it
@@ -166,7 +168,7 @@ def test_ui_artifact_renders_from_server_event(page, server):
 
 def test_cards_artifact_renders_stat_and_callout(page, server):
     """A `ui` value that is a list of card dicts materializes into
-    /ui/*.cards.json, and the shell renders a mixed row: a stat tile
+    /workspace/ui/*.cards.json, and the shell renders a mixed row: a stat tile
     (muted label, prominent value, muted sublabel) and a callout card
     (tone-tinted icon + title + markdown body) — not raw JSON. Prose
     doesn't name the path, so the done-time rule appends it. Sentiment is
@@ -336,7 +338,7 @@ def test_preview_serves_the_agents_app(page, server):
     page.goto(f"{server}/?session=e2e-app")
     _send(
         page,
-        '!tool file_write {"path": "/app/index.html", "content": '
+        '!tool file_write {"path": "/workspace/app/index.html", "content": '
         '"<html><body><h1 id=marker>hi from the app</h1></body></html>"}\n'
         "!text App is up.",
     )
@@ -440,9 +442,9 @@ def test_preview_app_json_post_passes_cors_preflight(page, server):
     echo = "def post(req):\n    return {'v': 'pong'}\n"
     message = (
         "!tool file_write "
-        + _json.dumps({"path": "/app/index.html", "content": html})
+        + _json.dumps({"path": "/workspace/app/index.html", "content": html})
         + "\n!tool file_write "
-        + _json.dumps({"path": "/app/api/echo.py", "content": echo})
+        + _json.dumps({"path": "/workspace/app/api/echo.py", "content": echo})
         + "\n!text cors app up"
     )
     page.goto(f"{server}/?session=e2e-cors")
