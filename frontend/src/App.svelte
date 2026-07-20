@@ -26,6 +26,10 @@
     let active = $state(new URLSearchParams(location.search).get('session'))
     let tab = $state('preview')
     let ready = $state(false)
+    // Set when the shell has no session to show and couldn't mint one.
+    // Distinct from a per-session error: there's no message list to put
+    // it in, so it renders as the body.
+    let bootstrapError = $state(null)
 
     // layout prefs: per-browser, survive reloads, no server involvement
     let showRail = $state(localStorage.getItem('nts.rail') !== '0')
@@ -54,7 +58,10 @@
         rt.setForeground(true)
         ensureSession(name)
             .then(() => (ready = true))
-            .catch(() => {})
+            // ready stays false on failure, so the chat pane never
+            // appears — say why instead of showing an empty shell
+            // forever (a stale ?session= in the URL lands here).
+            .catch((e) => (bootstrapError = e.message))
         return () => rt.setForeground(false)
     })
 
@@ -76,8 +83,18 @@
     $effect(() => {
         if (active) return
         ;(async () => {
-            await refreshSessions()
-            switchTo(rail.sessions[0]?.name ?? (await createSession()))
+            try {
+                bootstrapError = null
+                await refreshSessions()
+                switchTo(rail.sessions[0]?.name ?? (await createSession()))
+            } catch (e) {
+                // Nothing to report INTO yet — no session means no
+                // message list — so the shell itself has to say it.
+                // Silence here reads as a broken build, not a down
+                // server. (refreshSessions swallows its own errors; a
+                // throw here is createSession.)
+                bootstrapError = e.message
+            }
         })()
     })
 
@@ -101,8 +118,16 @@
         await refreshSessions()
         // deleting the last session leaves nothing to fall back to: mint
         // one rather than strand the shell with no active session
-        if (name === active)
-            switchTo(rail.sessions[0]?.name ?? (await createSession()))
+        if (name === active) {
+            try {
+                switchTo(rail.sessions[0]?.name ?? (await createSession()))
+            } catch (e) {
+                // The delete succeeded and the fallback didn't, so there
+                // is no active session left to report into — the same
+                // stranded shell the bootstrap handles.
+                bootstrapError = e.message
+            }
+        }
     }
 </script>
 
@@ -139,7 +164,19 @@
                 onDelete={deleteSession}
             />
         {/if}
-        {#if ready}
+        {#if bootstrapError}
+            <div class="bootstrap-error">
+                <p class="what">Couldn't open a session.</p>
+                <p class="why">{bootstrapError}</p>
+                <p class="hint">
+                    The server may have stopped — check the terminal you
+                    launched it from.
+                </p>
+                <button class="retry" onclick={() => location.reload()}>
+                    retry
+                </button>
+            </div>
+        {:else if ready}
             {#if showSide}
                 <SplitPane>
                     {#snippet left()}
@@ -222,6 +259,42 @@
         flex: 1;
         min-height: 0;
     }
+    .bootstrap-error {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        padding: 2rem;
+        text-align: center;
+    }
+    .bootstrap-error .what {
+        color: var(--text);
+        font-weight: 600;
+    }
+    .bootstrap-error .why {
+        color: var(--error);
+        font-family: ui-monospace, monospace;
+        font-size: 0.9em;
+    }
+    .bootstrap-error .hint {
+        color: var(--text-muted);
+        font-size: 0.9em;
+    }
+    .bootstrap-error .retry {
+        margin-top: 0.5rem;
+        padding: 0.35rem 1rem;
+        color: var(--text);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+    }
+    .bootstrap-error .retry:hover {
+        background: var(--surface-hover);
+    }
+
     .chat {
         display: flex;
         flex-direction: column;

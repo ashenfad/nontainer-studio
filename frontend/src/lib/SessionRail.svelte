@@ -30,7 +30,17 @@
         // here would silently promote the AGENT's title to the human's
         // and pin it, so the agent could never update the label again.
         if (next === s.title) return
-        await renameSession(s.name, next)
+        try {
+            await renameSession(s.name, next)
+        } catch (e) {
+            // Say so where the human is looking. Without this the title
+            // just snaps back to the old one — indistinguishable from
+            // "the rename didn't take" and from "I mistyped".
+            peekRuntime(s.name)?.messages.push({
+                role: 'error',
+                text: `rename failed: ${e.message}`,
+            })
+        }
     }
 
     function autofocus(node) {
