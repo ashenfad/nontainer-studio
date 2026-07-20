@@ -132,9 +132,7 @@ def available() -> dict:
         env, sdk, default_model, models = _PROVIDERS[name]
         if not (os.getenv(env) and _installed(sdk)):
             continue
-        providers.append(
-            {"name": name, "default": default_model, "models": models}
-        )
+        providers.append({"name": name, "default": default_model, "models": models})
     if default == "dummy":
         providers.append({"name": "dummy", "default": "dummy", "models": ["dummy"]})
     return {"providers": providers, "default": default}
@@ -245,9 +243,7 @@ def _safe_openrouter() -> Any:
                 formatted = super()._format_message(message, *args, **kwargs)
                 details = formatted.get("reasoning_details")
                 if isinstance(details, list) and len(details) > 1:
-                    formatted["reasoning_details"] = _merge_reasoning_details(
-                        details
-                    )
+                    formatted["reasoning_details"] = _merge_reasoning_details(details)
                 return formatted
 
         _safe_openrouter_cls = SafeOpenRouter

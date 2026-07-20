@@ -42,14 +42,16 @@ class DummyModel(Model):
 
     @staticmethod
     def _plan(messages: List[Message]) -> ModelResponse:
-        last_user = next(
-            (m for m in reversed(messages) if m.role == "user"), None
-        )
+        last_user = next((m for m in reversed(messages) if m.role == "user"), None)
         text = str(getattr(last_user, "content", "") or "")
-        tools_ran = any(
-            m.role == "tool"
-            for m in messages[messages.index(last_user) + 1 :]  # type: ignore[arg-type]
-        ) if last_user is not None else False
+        tools_ran = (
+            any(
+                m.role == "tool"
+                for m in messages[messages.index(last_user) + 1 :]  # type: ignore[arg-type]
+            )
+            if last_user is not None
+            else False
+        )
 
         tool_calls: list[dict] = []
         reply: list[str] = []

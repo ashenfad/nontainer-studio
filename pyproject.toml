@@ -9,7 +9,9 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "nontainer[agno,apps]>=0.0.1",
+    # 0.1.1: the a2ui basic-catalog Card takes a singular `child` — the
+    # /a2ui egress emits empty cards against 0.1.0
+    "nontainer[agno,apps]>=0.1.1",
     # sessions.py drives kvgit directly (branch deletion); 0.3.1 fixed
     # delete_branch leaving deleted branches recoverable
     "kvgit[disk]>=0.3.1",
@@ -52,9 +54,10 @@ nontainer-studio = "nontainer_studio.server:main"
 [project.urls]
 "Source" = "https://github.com/ashenfad/nontainer-studio"
 
-# nontainer isn't on PyPI yet (and the studio needs core changes that
-# currently live on its `studio` branch) — develop against a sibling
-# checkout. TODO: switch to a git/PyPI source once those changes land.
+# nontainer IS on PyPI (that's what the dependency above resolves to,
+# and what CI tests against). The sibling link is a uv-only convenience
+# for CO-DEVELOPMENT: the two repos move together, so a local checkout
+# sees core changes before they're released. pip ignores this table.
 [tool.uv.sources]
 nontainer = { path = "../nontainer", editable = true }
 
@@ -64,6 +67,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["nontainer_studio"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = ["E731"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

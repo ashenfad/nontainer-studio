@@ -6,7 +6,6 @@ import time
 from types import SimpleNamespace
 
 import pytest
-
 from starlette.testclient import TestClient
 
 from nontainer_studio import server
@@ -366,7 +365,6 @@ def test_published_app_shares_live_db(studio):
     session.db.execute("INSERT INTO t VALUES ('amy')")
     # the FROZEN app sees the post-publish db write — live state
     assert client.get(f"{pub['url']}api/names").json() == {"names": ["amy"]}
-
 
 
 # -- files ----------------------------------------------------------------------
@@ -1021,8 +1019,6 @@ class CancellableAgent(FakeAgent):
         return True
 
     async def arun(self, message, stream=True, stream_events=True):
-        import asyncio
-
         self.seen.append(message)
         yield SimpleNamespace(event="RunContent", content="working…", run_id="run-9")
         await self.cancelled.wait()
@@ -1051,9 +1047,7 @@ def test_cancel_stops_the_turn_and_repairs_memory(studio):
     assert r.status_code == 200 and agent.cancel_requests == ["run-9"]
 
     events = _collect_until_done(client, "s1")
-    assert any(
-        e["type"] == "notice" and e["text"] == "turn stopped" for e in events
-    )
+    assert any(e["type"] == "notice" and e["text"] == "turn stopped" for e in events)
     assert not session.busy and session.run_id is None
     # the cancelled run was repaired: memory keeps the partial work
     run = chat_db.record.runs[0]
@@ -1206,7 +1200,9 @@ def test_error_truncation_keeps_the_exception_line(studio):
     capped = _short_middle(trace)
     assert len(capped) <= 2_100
     assert capped.startswith("Traceback")
-    assert capped.endswith("FileNotFoundError: No such file or directory: '/ui/plot.png'")
+    assert capped.endswith(
+        "FileNotFoundError: No such file or directory: '/ui/plot.png'"
+    )
     assert "…[truncated]…" in capped
     # short messages pass through untouched
     assert _short_middle("boom") == "boom"
@@ -1321,9 +1317,7 @@ def test_models_endpoint_reflects_env(studio, monkeypatch):
     monkeypatch.setenv("NONTAINER_STUDIO_MODEL", "openrouter")
     data = client.get("/api/models").json()
     assert data["default"] == "openrouter:anthropic/claude-sonnet-5"
-    openrouter = next(
-        p for p in data["providers"] if p["name"] == "openrouter"
-    )
+    openrouter = next(p for p in data["providers"] if p["name"] == "openrouter")
     assert openrouter["models"]  # curated picks for the picker
 
 
@@ -1336,8 +1330,7 @@ def test_model_switch_persists_and_notices(studio, tmp_path):
     assert r.json() == {"ok": True, "model": "dummy"}
     assert session.model == "dummy"
     assert any(
-        e["type"] == "notice" and "model → dummy" in e["text"]
-        for e in session.events
+        e["type"] == "notice" and "model → dummy" in e["text"] for e in session.events
     )
     # the rail shows it, and a restart remembers it
     listed = client.get("/api/sessions").json()["sessions"]
