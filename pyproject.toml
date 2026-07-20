@@ -11,10 +11,10 @@ requires-python = ">=3.10"
 dependencies = [
     # 0.2.0: the workspace root contract (files at /workspace across
     # executors) on top of 0.1.2's Executor seam
+    # session deletion now goes through nontainer's delete_workspace
+    # (branch teardown, the __void__ anchor dance) — studio no longer
+    # drives kvgit directly, so kvgit is only a transitive dep here
     "nontainer[agno,apps]>=0.2.0",
-    # sessions.py drives kvgit directly (branch deletion); 0.3.1 fixed
-    # delete_branch leaving deleted branches recoverable
-    "kvgit[disk]>=0.3.1",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",

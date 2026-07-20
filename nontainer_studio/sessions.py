@@ -34,7 +34,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 import petname
-from nontainer import PythonConfig, Workspace, validate_session_id, workspace
+from nontainer import (
+    PythonConfig,
+    Workspace,
+    delete_workspace,
+    validate_session_id,
+    workspace,
+)
 from nontainer.adapters.agno import WorkspaceTools
 from nontainer.apps import AppRuntime, enable_apps, mint_token
 
@@ -893,36 +899,14 @@ class Registry:
             pass
 
     def _delete_branches(self, names: set[str]) -> None:
-        """Remove kvgit branches. kvgit can't delete the current
-        branch, so deletions run from a hidden ``__void__`` anchor
-        branch (created on first delete; never listed — the rail is
-        manifest-driven). Orphaning instead would be worse: recreating
-        a deleted name would resume the old branch, resurrecting
-        'deleted' files."""
-        path = self._store / "kvgit"
-        if not path.is_dir():
-            return  # non-kvgit or never-materialized store
-        import kvgit
-
-        def close(staged: Any) -> None:
-            store = getattr(staged.versioned, "store", None)
-            if callable(getattr(store, "close", None)):
-                store.close()
-
-        anchor = next(iter(names))
-        probe = kvgit.store(kind="disk", path=str(path), branch=anchor)
-        try:
-            if "__void__" not in probe.list_branches():
-                probe.create_branch("__void__")
-        finally:
-            close(probe)
-        admin = kvgit.store(kind="disk", path=str(path), branch="__void__")
-        try:
-            branches = set(admin.list_branches())
-            for branch in names & branches:
-                admin.delete_branch(branch)
-        finally:
-            close(admin)
+        """Remove the session's kvgit branches — the workspace branch
+        plus any published-snapshot branches (all live in the one shared
+        store). Deletion is nontainer's now: `delete_workspace` resolves
+        `store/kvgit` from the same `store` the workspaces were built
+        with, and carries the `__void__`-anchor dance kvgit needs to
+        delete a branch a handle can't be anchored on (that hidden
+        anchor branch keeps working across the move — same name)."""
+        delete_workspace(names, store=self._store, backend="kvgit")
 
     # -- model switching ----------------------------------------------------
 
