@@ -526,8 +526,8 @@ def build_app(registry: Registry) -> Starlette:
 
     # -- upload: browser file -> workspace write ---------------------------
     # Raw body, not multipart (the browser sends File bytes natively).
-    # Each upload is a write_file: checkpointed, so restore/fork extend
-    # to uploads for free. Multi-file drops are N parallel requests —
+    # Each upload is a write_file: checkpointed, so an edit's rewind
+    # extends to uploads for free. Multi-file drops are N parallel requests —
     # the workspace lock serializes them safely. Same-name uploads
     # overwrite (idempotent re-drops).
 
@@ -617,48 +617,6 @@ def build_app(registry: Registry) -> Starlette:
                 return bool(session.ws.fs.isdir("/app"))
 
         return JSONResponse({"exists": await anyio.to_thread.run_sync(check)})
-
-    # -- time travel ------------------------------------------------------
-
-    @with_session
-    async def history(request: Any, session: Any) -> JSONResponse:
-        entries = [
-            {"id": c.id, "time": c.time, "info": c.info}
-            for c in session.ws.history(limit=100)
-        ]
-        return JSONResponse({"history": entries, "head": session.ws.head})
-
-    @with_session
-    async def restore(request: Any, session: Any) -> JSONResponse:
-        if session.busy:
-            return JSONResponse(
-                {"error": "can't restore while a turn is running"}, status_code=409
-            )
-        checkpoint = (await request.json()).get("checkpoint") or ""
-        try:
-            await anyio.to_thread.run_sync(registry.restore, session, checkpoint)
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-        await session.emit(
-            {
-                "type": "notice",
-                "text": f"restored files AND agent memory to {checkpoint[:8]} "
-                "(the app db and this transcript keep their history)",
-            }
-        )
-        return JSONResponse({"ok": True})
-
-    async def fork(request: Any) -> JSONResponse:
-        name = request.path_params["name"]
-        body = await request.json()
-        new_name = (body.get("name") or "").strip()
-        try:
-            registry.fork(name, new_name, checkpoint=body.get("checkpoint"))
-        except KeyError:
-            return JSONResponse({"error": f"no session {name!r}"}, status_code=404)
-        except (SessionIdError, ValueError) as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-        return JSONResponse({"ok": True, "name": new_name})
 
     # -- live preview: dispatch into the AUTHORING runtime ---------------
     # Mutable (unlike frozen /apps serving): the iframe shows the app as
@@ -794,9 +752,6 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions/{name}/files", files, methods=["GET"]),
             Route("/api/sessions/{name}/app", app_exists, methods=["GET"]),
             Route("/api/sessions/{name}/file", file_raw, methods=["GET"]),
-            Route("/api/sessions/{name}/history", history, methods=["GET"]),
-            Route("/api/sessions/{name}/restore", restore, methods=["POST"]),
-            Route("/api/sessions/{name}/fork", fork, methods=["POST"]),
             Route("/api/sessions/{name}/publish", publish, methods=["POST"]),
             # after every real /api route: absolute-path fetches from
             # preview'd apps get a CORS-readable teaching 404

@@ -19,7 +19,6 @@
     import ChatInput from './lib/ChatInput.svelte'
     import Preview from './lib/Preview.svelte'
     import FilesTab from './lib/FilesTab.svelte'
-    import HistoryTab from './lib/HistoryTab.svelte'
 
     let active = $state(
         new URLSearchParams(location.search).get('session') || 'scratch',
@@ -130,7 +129,7 @@
                     {#snippet right()}
                         <div class="side">
                             <div class="tabs">
-                                {#each ['preview', 'files', 'history'] as t (t)}
+                                {#each ['preview', 'files'] as t (t)}
                                     <button
                                         class="tab"
                                         class:active={tab === t}
@@ -140,10 +139,8 @@
                             </div>
                             {#if tab === 'preview'}
                                 <Preview {rt} />
-                            {:else if tab === 'files'}
-                                <FilesTab {rt} />
                             {:else}
-                                <HistoryTab {rt} onFork={switchTo} />
+                                <FilesTab {rt} />
                             {/if}
                         </div>
                     {/snippet}

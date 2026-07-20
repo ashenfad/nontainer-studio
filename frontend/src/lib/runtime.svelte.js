@@ -14,7 +14,7 @@
 //   {type:'artifact', name, path, kind} — a ui = {...} artifact the turn
 //                                      produced; server-harvested from the
 //                                      tool result's [ui artifacts: ...] note
-//   {type:'notice', text}            — uploads, restores, ...
+//   {type:'notice', text}            — uploads, ...
 //   {type:'error',  message}
 //   {type:'done',   run_id, head}    — turn boundary
 //   {type:'truncate', to}            — an edit cut the transcript at seq `to`:
@@ -121,7 +121,7 @@ export class SessionRuntime {
     unseen = $state(false)
     connected = $state(false)
     /** bumps whenever the workspace likely changed (done / notice) —
-     * preview iframe, files tab, and history rail refresh off it */
+     * the preview iframe and files tab refresh off it */
     version = $state(0)
     attachments = $state([])
     lastError = $state(null)
@@ -381,16 +381,4 @@ export class SessionRuntime {
         }
     }
 
-    /** restore to an explicit checkpoint id (the history rail) —
-     * unlike edit, the visible transcript keeps its record */
-    async restore(checkpoint) {
-        try {
-            await api(`/api/sessions/${this.name}/restore`, { checkpoint })
-            this.version++
-            return true
-        } catch (e) {
-            this.messages.push({ role: 'error', text: e.message })
-            return false
-        }
-    }
 }
