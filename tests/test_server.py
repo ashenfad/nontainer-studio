@@ -1105,6 +1105,75 @@ def test_aborted_run_is_repaired_into_memory(studio):
     assert "credit balance" in run.messages[-1].content
 
 
+class RunErrorAgent(FakeAgent):
+    """Streams some real work, then reports a provider failure as a
+    RunError EVENT and ends cleanly — agno's post-retry behavior. No
+    exception ever raises, so only the event flags the death."""
+
+    async def arun(self, message, stream=True, stream_events=True):
+        self.seen.append(message)
+        run_id = f"run-{len(self.seen)}"
+        yield SimpleNamespace(event="RunContent", content="working…", run_id=run_id)
+        yield SimpleNamespace(
+            event="RunError", content="Provider returned error", run_id=run_id
+        )
+
+
+def test_provider_error_event_is_repaired_into_memory(studio):
+    """The equal-grouse amnesia: a provider error arrives as a RunError
+    STREAM EVENT (agno's retries exhausted), the stream ends cleanly,
+    and without repair the stored status=error run vanishes from the
+    agent's memory — 'please continue' then replans from scratch while
+    the workspace holds all the work."""
+    from agno.run.base import RunStatus
+
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    erroring = RunErrorAgent()
+    chat_db = FakeChatDb()
+    erroring.db = chat_db
+    session.agent = erroring
+    chat_db.record = SimpleNamespace(
+        runs=[SimpleNamespace(run_id="run-1", status=RunStatus.error, messages=[])]
+    )
+
+    client.post("/api/sessions/s1/chat", json={"message": "build it"})
+    events = _collect_until_done(client, "s1")
+    assert any(e["type"] == "error" for e in events)  # failure surfaced
+
+    run = chat_db.record.runs[0]
+    assert run.status == RunStatus.completed  # memory retained
+    assert "turn aborted early" in run.messages[-1].content
+    assert "Provider returned error" in run.messages[-1].content
+
+
+def test_arrow_pool_is_fork_safe_from_first_import():
+    """Sandbox workers fork from the server process, and arrow's
+    default mimalloc pool segfaults in forked children (observed:
+    SIGSEGV in libarrow's mi_thread_init, 'multi-threaded process
+    forked'). pyarrow reads ARROW_DEFAULT_MEMORY_POOL at import — and
+    importing pandas imports pyarrow — so the package __init__ must
+    win the race. A subprocess proves the end state, immune to
+    whatever this test process already imported."""
+    import subprocess
+    import sys
+
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import nontainer_studio, pyarrow;"
+            "print(pyarrow.default_memory_pool().backend_name)",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "system"
+
+
 def test_repair_leaves_healthy_runs_alone(studio):
     from agno.run.base import RunStatus
 
@@ -1735,3 +1804,22 @@ def test_db_host_object_bridges_through_isolation(studio):
     assert r.namespace["rows"] == [("from worker",)]
     # the PARENT's db saw the writes (it IS the store)
     assert session.db.query("SELECT v FROM t") == [("from worker",)]
+
+
+def test_db_executemany_bulk_loads_through_isolation(studio):
+    """Bulk insert is the first thing an agent does when building an
+    app on uploaded data, and executemany is the sqlite3 API every
+    model assumes. Without it (equal-grouse) they fall back to
+    hand-escaped literal INSERT strings."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    r = session.ws.run_python(
+        "db.execute('CREATE TABLE ev (make TEXT, n INTEGER)')\n"
+        "rows = [('TESLA', 1), ('KIA', 2), ('FORD', 3)]\n"
+        "db.executemany('INSERT INTO ev VALUES (?, ?)', rows)\n"
+        "count = db.query('SELECT COUNT(*) FROM ev')[0][0]"
+    )
+    assert r.error is None, r.error
+    assert r.namespace["count"] == 3
+    assert session.db.query("SELECT n FROM ev ORDER BY n") == [(1,), (2,), (3,)]

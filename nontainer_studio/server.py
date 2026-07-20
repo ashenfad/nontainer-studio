@@ -298,6 +298,7 @@ async def _run_turn(session: Any, message: str) -> None:
     abort work. Caller holds the turn lock; released here."""
     run_id = None
     cancelled = False
+    errored = None
     try:
         # head here = the workspace BEFORE this turn: the user event's
         # stamp is the undo anchor (restore to it = unwind this turn)
@@ -305,7 +306,13 @@ async def _run_turn(session: Any, message: str) -> None:
         async for ev in session.agent.arun(message, stream=True, stream_events=True):
             run_id = getattr(ev, "run_id", None) or run_id
             session.run_id = run_id  # the stop button's cancel handle
-            cancelled = cancelled or getattr(ev, "event", "") == "RunCancelled"
+            kind = getattr(ev, "event", "")
+            cancelled = cancelled or kind == "RunCancelled"
+            if kind == "RunError":
+                # provider failure after agno's retries are exhausted:
+                # the stream ends CLEANLY (no exception), so this flag
+                # is the only signal the turn died
+                errored = getattr(ev, "content", None) or "provider error"
             for payload in _client_events(ev):
                 await session.emit(payload)
         if cancelled:
@@ -314,6 +321,13 @@ async def _run_turn(session: Any, message: str) -> None:
             # the agent's memory (see repair_aborted_run)
             await asyncio.to_thread(
                 repair_aborted_run, session, run_id, "stopped by the user"
+            )
+        elif errored is not None:
+            # same skip-on-replay problem for status=error runs — the
+            # equal-grouse amnesia: without repair, "please continue"
+            # replans from scratch while the workspace holds the work
+            await asyncio.to_thread(
+                repair_aborted_run, session, run_id, _short_middle(str(errored), 300)
             )
     except Exception as e:
         await session.emit({"type": "error", "message": _short_middle(str(e))})
