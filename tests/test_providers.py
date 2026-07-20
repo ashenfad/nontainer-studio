@@ -147,9 +147,10 @@ def test_openrouter_tag_is_ignored_for_catalog_metadata(monkeypatch):
         {"anthropic/claude-sonnet-5": (True, 1_000_000)},
     )
     assert providers.supports_vision("openrouter:anthropic/claude-sonnet-5@anthropic")
-    assert providers.context_window(
-        "openrouter:anthropic/claude-sonnet-5@anthropic"
-    ) == 1_000_000
+    assert (
+        providers.context_window("openrouter:anthropic/claude-sonnet-5@anthropic")
+        == 1_000_000
+    )
 
 
 def test_gpt56_rides_the_responses_endpoint():

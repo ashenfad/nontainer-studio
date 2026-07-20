@@ -153,11 +153,11 @@ def test_cards_artifact_renders_stat_and_callout(page, server):
     page.goto(f"{server}/?session=e2e-cards")
     _send(
         page,
-        "!tool run_python {\"code\": \"ui = {'kpis': ["
+        '!tool run_python {"code": "ui = {\'kpis\': ['
         "{'label': 'Revenue', 'value': 1284, 'sublabel': 'up 3.2% MoM'}, "
         "{'type': 'callout', 'title': 'Churn rising', "
         "'body': 'Cancellations up **12%** this week.', 'tone': 'warning'}"
-        "]}\"}\n"
+        ']}"}\n'
         "!text Here are the numbers.",
     )
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
@@ -215,7 +215,9 @@ def test_stop_button_cancels_the_turn(page, server):
     expect(page.locator(".notice", has_text="turn stopped")).to_be_visible(
         timeout=20000
     )
-    expect(page.locator(".agent-msg .bubble", has_text="finished anyway")).to_have_count(0)
+    expect(
+        page.locator(".agent-msg .bubble", has_text="finished anyway")
+    ).to_have_count(0)
     # composer back to send: the session is usable again
     expect(page.locator(".send-btn.stop")).to_have_count(0, timeout=10000)
 
@@ -292,9 +294,7 @@ def test_edit_rewinds_files_and_truncates_transcript(page, server):
     rows.last.hover()
     rows.last.locator(".edit").click()
     box = page.locator(".edit-box textarea")
-    box.fill(
-        '!tool file_write {"path": "/c.txt", "content": "C"}\n!text two revised'
-    )
+    box.fill('!tool file_write {"path": "/c.txt", "content": "C"}\n!text two revised')
     page.locator(".edit-actions .send").click()
 
     # the old turn is gone from the transcript; the edited turn replaces it
@@ -375,9 +375,7 @@ def test_chat_markdown_link_opens_file_modal(page, server):
         "Wrote it up", timeout=15000
     )
     page.locator(".agent-msg .bubble a", has_text="the report").click()
-    expect(page.locator(".modal .markdown h1")).to_have_text(
-        "Findings", timeout=5000
-    )
+    expect(page.locator(".modal .markdown h1")).to_have_text("Findings", timeout=5000)
     expect(page.locator(".modal .path")).to_have_text("/report.md")
     page.keyboard.press("Escape")
 
@@ -476,9 +474,7 @@ def test_background_turn_survives_session_switch(page, server):
     # switch away via the rail's new-session box, then back
     page.fill(".new input", "e2e-bg2")
     page.press(".new input", "Enter")
-    expect(page.locator(".row.active", has_text="e2e-bg2")).to_be_visible(
-        timeout=10000
-    )
+    expect(page.locator(".row.active", has_text="e2e-bg2")).to_be_visible(timeout=10000)
     page.locator(".item", has_text="e2e-bg1").click()
     # the transcript replays from the server-side event log
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
