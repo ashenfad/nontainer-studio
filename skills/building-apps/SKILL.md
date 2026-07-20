@@ -1,6 +1,6 @@
 ---
 name: building-apps
-description: deep guide for building /app web apps — architecture, debugging endpoints, frontend patterns, verification strategy
+description: deep guide for building /workspace/app web apps — architecture, debugging endpoints, frontend patterns, verification strategy
 ---
 
 # Building apps in this workspace
@@ -12,7 +12,7 @@ come back when debugging.
 ## Architecture that works
 
 - Convert big source data ONCE (run_python -> parquet under
-  /app/data/), then handlers read the parquet. Never re-parse a big
+  /workspace/app/data/), then handlers read the parquet. Never re-parse a big
   CSV per request.
 - Shared backend code goes in /helpers/<mod>.py, imported QUALIFIED:
   `from helpers.mymod import fn`. Imports resolve from the workspace
@@ -20,7 +20,7 @@ come back when debugging.
 - Handlers are VERB functions only: get/post/put/delete/patch. A
   `def query(req)` or `def search(req)` is NEVER called by requests —
   read filters from req.params inside a verb instead. (Dispatch notes
-  stray non-verb functions in /app/logs/api.log.)
+  stray non-verb functions in /workspace/app/logs/api.log.)
 - Module-level caches (`_DF = None` + lazy load) persist per process:
   cheap and effective for read-mostly data.
 
@@ -49,7 +49,7 @@ names blocked URLs in its [rejected requests] section).
 
 1. `curl api/x` in the terminal — instant, no server. `-i` shows
    status+headers, `-w '%{http_code}'` prints the code.
-2. `tail /app/logs/api.log` — handler tracebacks, prints, and
+2. `tail /workspace/app/logs/api.log` — handler tracebacks, prints, and
    dispatch notes land there.
 3. test_app for the frontend: page errors carry file:line for runtime
    errors; parse errors mean bisecting your <script> blocks.

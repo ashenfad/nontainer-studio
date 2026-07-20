@@ -98,7 +98,7 @@
             <div class="toolbar-left">
                 <button
                     class="icon-btn"
-                    title="attach files (they land in /uploads/)"
+                    title="attach files (they land in /workspace/uploads/)"
                     aria-label="Attach files"
                     disabled={uploading}
                     onclick={() => fileInput?.click()}

@@ -85,7 +85,7 @@
                 <h3>no app yet</h3>
                 <p>
                     Ask the agent to build one — anything it writes under
-                    <code>/app</code> serves live here as it takes shape.
+                    <code>/workspace/app</code> serves live here as it takes shape.
                 </p>
             </div>
         </div>

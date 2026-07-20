@@ -47,11 +47,12 @@ def _executor_factory() -> Callable[[], Any] | None:
     """Select the execution backend from the environment.
 
     ``NONTAINER_STUDIO_EXECUTOR=dud`` runs agent code on a real
-    disposable machine (dud's rung-1 subprocess backend: real bash,
-    real python, real files) instead of the in-process
-    sandtrap+termish LocalExecutor. ``=dud-vm`` selects dud's rung-2
-    vfkit backend — the same guest inside a real disposable macOS
-    microVM (HVF), so isolation is real; boots a ``python:slim``
+    machine with NO containment (dud's subprocess backend: real bash,
+    real python, real files, running as you) instead of the in-process
+    sandtrap+termish LocalExecutor. It buys fidelity, not isolation —
+    for isolation without a VM, leave this unset. ``=dud-vm`` selects
+    a real disposable microVM (vfkit on macOS, firecracker on
+    Linux/KVM), so isolation is real; boots a ``python:slim``
     matched to the host interpreter (see ``_vm_config``) with the
     kernel from ``$DUD_KERNEL``/``~/.dud``, fails closed off macOS or
     without a kernel, and defaults the pool's VM budget (see
@@ -61,17 +62,25 @@ def _executor_factory() -> Callable[[], Any] | None:
     nontainer new enough to accept ``executor_factory`` (see
     ``_ws_kwargs``).
 
-    Caveat: dud's rung 1 has NO isolation (own-machine posture). Apps
-    dispatch works under dud as of stage 3c — the live preview and
-    ``test_app`` (both drive ``dispatch`` host-side) run, and the
-    apps.md-recommended handler pattern (state in cache/an external
-    store) crosses the boundary cleanly. Two rung-1 gaps remain, both
-    closed by the VM rungs: the agent's in-terminal ``curl`` builtin is
-    a termish command and doesn't exist in dud's real bash (use the
-    preview / test_app instead), and a handler writing an ABSOLUTE VFS
-    path (``open('/app/x')``) hits the real root rather than the
-    workspace. The analyst loop (terminal + run_python over the real
-    data stack) is unaffected.
+    Caveat: the subprocess backend has NO isolation (own-machine
+    posture). Apps dispatch works under dud as of stage 3c — the live
+    preview and ``test_app`` (both drive ``dispatch`` host-side) run,
+    and the apps.md-recommended handler pattern (state in cache/an
+    external store) crosses the boundary cleanly. Two gaps remain:
+
+    - ``curl`` is a termish command and doesn't exist in dud's real
+      bash — on ANY dud backend, not just the subprocess one. nontainer
+      gates its apps primer on ``ws.supports_commands``, so the agent
+      is never taught it here and is steered to test_app / the preview
+      instead. Closing it needs a guest->host channel reachable from
+      the shell (dud DESIGN.md, "The apps loop").
+    - Absolute paths under the SUBPROCESS backend live in the guest's
+      own temp dir rather than ``/workspace``. This one the VM backends
+      do close: they mount the workspace AT ``/workspace``, so absolute
+      paths match the local sandbox everywhere else.
+
+    The analyst loop (terminal + run_python over the real data stack)
+    is unaffected.
     """
     choice = os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower()
     if choice not in ("dud", "dud-vm"):
@@ -81,8 +90,13 @@ def _executor_factory() -> Callable[[], Any] | None:
     if choice == "dud-vm":
         _ensure_vm_cap()
         vm = _vm_config()
-        return lambda: DudExecutor(backend="vfkit", vm=vm)
-    return lambda: DudExecutor()
+        # "vm", not "vfkit": dud resolves the rung per platform, so this
+        # works on Linux/KVM too. Pinning a hypervisor here would defeat
+        # the alias that exists precisely to avoid that.
+        return lambda: DudExecutor(backend="vm", vm=vm)
+    # Explicit: DudExecutor defaults to a VM now, and =dud means the
+    # zero-isolation rung by deliberate choice (warned about at startup).
+    return lambda: DudExecutor(backend="subprocess")
 
 
 def _ensure_vm_cap() -> None:
@@ -245,14 +259,16 @@ def _compact(events: list[dict]) -> list[dict]:
 
 STUDIO_PRIMER = (
     "You work inside nontainer-studio; the human sees your workspace "
-    "live. Anything under /app serves in a PREVIEW PANE beside the "
+    "live. Anything under /workspace/app serves in a PREVIEW PANE beside the "
     "chat as you build it — they watch it take shape. After changing "
     "the app, always verify with test_app before saying it works, and "
     "assert on DATA-bearing elements (a chart rendered, a count "
     "non-zero), not just static text — a page can look loaded while "
     "every fetch failed. When endpoints misbehave, tail "
-    "/app/logs/api.log: handler errors, prints, and dispatch notes "
-    "land there. Files the human uploads arrive under /uploads/. In "
+    "/workspace/app/logs/api.log: handler errors, prints, and dispatch "
+    "notes "
+    "land there. Files the human uploads arrive under "
+    "/workspace/uploads/. In "
     "run_python, set `ui = {...}` (figure/DataFrame/image values) to "
     "render results inline in your reply. For chat reports, match the "
     "artifact to the story: when it's a few headline numbers, LEAD "
@@ -618,17 +634,17 @@ class Registry:
                 python=self._python_config(db),
                 **_ws_kwargs(),
             )
-            # /ui exists from the start: agents predictably savefig
-            # into it directly (instead of assigning objects to `ui`),
-            # and VFS open honors real-fs semantics — no parent, no
-            # write. Forgive the near-miss.
-            if not ws.fs.isdir("/ui"):
-                ws.fs.makedirs("/ui", exist_ok=True)
+            # <root>/ui exists from the start: agents predictably
+            # savefig into it directly (instead of assigning objects to
+            # `ui`), and VFS open honors real-fs semantics — no parent,
+            # no write. Forgive the near-miss.
+            if not ws.fs.isdir(f"{ws.root}/ui"):
+                ws.fs.makedirs(f"{ws.root}/ui", exist_ok=True)
                 ws.checkpoint(info={"tool": "init"})
             # Seed skills once, at session CREATION — after that they
             # are the session's own versioned state (agents may edit or
             # add them; a reseed would clobber that).
-            if not ws.fs.isdir("/skills"):
+            if not ws.fs.isdir(f"{ws.root}/skills"):
                 self._seed_skills(ws)
             session = self._assemble(name, ws, db, model)
             loaded = self._load_events(session.log_path)
