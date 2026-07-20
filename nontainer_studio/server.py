@@ -29,7 +29,7 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from .sessions import Registry, repair_aborted_run
+from .sessions import Registry, _clean_title, repair_aborted_run
 
 STATIC = Path(__file__).parent / "static"
 MAX_UPLOAD = 50_000_000  # upload bodies buffer in memory; cap them
@@ -132,6 +132,22 @@ def _client_events(ev: Any) -> list[dict]:
                         "kind": artifact_kind(path),
                     }
                 )
+        # The title the agent just gave, as a first-class event. The TOOL
+        # already wrote it to the manifest (it can't emit — it's sync code
+        # inside agno's run, and emit is loop-bound), so this is not the
+        # write path: it is the temporal record, which buys two things the
+        # manifest can't. It marks WHEN the session got that name, so an
+        # edit's rewind can put the title back the way the conversation
+        # was; and it lets the shell relabel now instead of on the next
+        # rail poll. Carries the agent's SUGGESTION (clamped as stored) —
+        # a human title may outrank it, so the client re-reads the
+        # resolved label rather than trusting this text.
+        if getattr(tool, "tool_name", None) == "recommend_title":
+            args = _tool_args(tool)
+            asked = args.get("title") if isinstance(args, dict) else None
+            titled = _clean_title(asked)
+            if titled:
+                events.append({"type": "title", "title": titled})
         return events
     if kind == "RunCancelled":
         return [{"type": "notice", "text": "turn stopped"}]
@@ -357,13 +373,39 @@ def build_app(registry: Registry) -> Starlette:
         return JSONResponse({"sessions": registry.list()})
 
     async def open_session(request: Any) -> JSONResponse:
+        """Create-or-return. With no `name`, MINT one — that's what the
+        UI does ("+ New"), so identity is always a slug nobody typed.
+        An explicit `name` still works (tests, scripting); it never
+        becomes the session's label either way — titles do that."""
         body = await request.json()
         name = (body.get("name") or "").strip()
         try:
-            registry.open(name)
+            if name:
+                session = await anyio.to_thread.run_sync(registry.open, name)
+            else:
+                session = await anyio.to_thread.run_sync(registry.create)
         except SessionIdError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
-        return JSONResponse({"ok": True, "name": name})
+        return JSONResponse(
+            {
+                "ok": True,
+                "name": session.name,
+                "title": registry.title_of(session.name),
+            }
+        )
+
+    @with_session
+    async def set_title(request: Any, session: Any) -> JSONResponse:
+        """The human's rename. A blank title CLEARS the override, so the
+        rail falls back to whatever the agent last suggested."""
+        body = await request.json()
+        # off-loop: set_user_title takes the registry lock, which a
+        # session open can hold for the length of a workspace build —
+        # blocking here would stall every SSE follower with it
+        title = await anyio.to_thread.run_sync(
+            registry.set_user_title, session.name, body.get("title")
+        )
+        return JSONResponse({"ok": True, "name": session.name, "title": title})
 
     @with_session
     async def chat(request: Any, session: Any) -> Any:
@@ -737,6 +779,7 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions", list_sessions, methods=["GET"]),
             Route("/api/sessions", open_session, methods=["POST"]),
             Route("/api/sessions/{name}/model", set_model, methods=["POST"]),
+            Route("/api/sessions/{name}/title", set_title, methods=["POST"]),
             Route("/api/sessions/{name}", delete_session, methods=["DELETE"]),
             Route("/api/sessions/{name}/chat", chat, methods=["POST"]),
             Route("/api/sessions/{name}/edit", edit, methods=["POST"]),

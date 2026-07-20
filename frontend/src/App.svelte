@@ -4,6 +4,7 @@
     // backgrounded — switching sessions is just switching projections.
     import { api } from './lib/api.js'
     import {
+        createSession,
         dropRuntime,
         ensureSession,
         getRuntime,
@@ -20,9 +21,9 @@
     import Preview from './lib/Preview.svelte'
     import FilesTab from './lib/FilesTab.svelte'
 
-    let active = $state(
-        new URLSearchParams(location.search).get('session') || 'scratch',
-    )
+    // null until the bootstrap picks one: session names are minted
+    // slugs now, so there is no well-known name to default to
+    let active = $state(new URLSearchParams(location.search).get('session'))
     let tab = $state('preview')
     let ready = $state(false)
 
@@ -47,6 +48,7 @@
     // session streams (cleanup backgrounds the previous one)
     $effect(() => {
         const name = active
+        if (!name) return
         setForegroundName(name)
         const rt = getRuntime(name)
         rt.setForeground(true)
@@ -56,7 +58,10 @@
         return () => rt.setForeground(false)
     })
 
-    const rt = $derived(getRuntime(active))
+    const rt = $derived(active ? getRuntime(active) : null)
+    // the rail row is the title's source of truth (the server resolves
+    // user > agent > default); the slug never shows
+    const title = $derived(rail.sessions.find((s) => s.name === active)?.title ?? '')
 
     $effect(() => {
         refreshSessions()
@@ -65,22 +70,39 @@
         return () => clearInterval(t)
     })
 
+    // Bootstrap: no ?session= means adopt the newest session, or mint the
+    // very first one on a fresh install. Runs once — setting `active`
+    // re-enters and returns early.
+    $effect(() => {
+        if (active) return
+        ;(async () => {
+            await refreshSessions()
+            switchTo(rail.sessions[0]?.name ?? (await createSession()))
+        })()
+    })
+
     function switchTo(name) {
         history.replaceState(null, '', `?session=${encodeURIComponent(name)}`)
         active = name
+    }
+
+    async function createAndSwitch() {
+        switchTo(await createSession())
     }
 
     async function deleteSession(name) {
         try {
             await api(`/api/sessions/${name}`, undefined, 'DELETE')
         } catch (e) {
-            getRuntime(active).messages.push({ role: 'error', text: e.message })
+            getRuntime(active)?.messages.push({ role: 'error', text: e.message })
             return
         }
         dropRuntime(name)
         await refreshSessions()
+        // deleting the last session leaves nothing to fall back to: mint
+        // one rather than strand the shell with no active session
         if (name === active)
-            switchTo(rail.sessions.find((s) => s.name !== name)?.name ?? 'scratch')
+            switchTo(rail.sessions[0]?.name ?? (await createSession()))
     }
 </script>
 
@@ -95,9 +117,9 @@
             aria-label="toggle session drawer"
             onclick={() => (showRail = !showRail)}>☰</button
         >
-        <span class="session-name">{active}</span>
+        <span class="session-name">{title}</span>
         <span class="grow"></span>
-        {#if !rt.connected}
+        {#if rt && !rt.connected}
             <span class="offline" title="event feed reconnecting…">⟳</span>
         {/if}
         <button
@@ -113,7 +135,7 @@
             <SessionRail
                 {active}
                 onSwitch={switchTo}
-                onCreate={switchTo}
+                onCreate={createAndSwitch}
                 onDelete={deleteSession}
             />
         {/if}
