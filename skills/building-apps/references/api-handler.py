@@ -1,10 +1,11 @@
 """Reference handler — filtered aggregates as chart-ready JSON.
 
 Copy to /workspace/app/api/summary.py and it serves GET /api/summary.
-A file's PATH is its route and its get/post/put/delete functions are the
-verbs, so a SECOND endpoint is a SECOND FILE — not another branch in
-here. `Request`, `Response` and `HttpError` are already in scope; do not
-import them.
+The route is the filename WITHOUT the `.py` — the frontend fetches
+`api/summary`, never `api/summary.py`. The get/post/put/delete
+functions are the verbs, so a SECOND endpoint is a SECOND FILE, not
+another branch in here. `Request`, `Response` and `HttpError` are
+already in scope; do not import them.
 
 Two facts decide how this is written:
 

@@ -9,12 +9,34 @@ The tool descriptions cover the contract basics. This is the deep
 guide: read it before building anything beyond a trivial page, and
 come back when debugging.
 
-**Start from the references, not from scratch.** They are a matched,
-working pair — copy both and edit down:
+## Do this first
 
-- `references/api-handler.py` — filters in, chart-ready JSON out
-- `references/chart-app.html` — dropdowns -> fetch -> plotly, plain DOM
-- `references/preact-app.html` — the same frontend job with components
+The references are WORKING FILES, not illustrations. Read both before
+you write anything:
+
+```sh
+cat /workspace/skills/building-apps/references/api-handler.py
+cat /workspace/skills/building-apps/references/chart-app.html
+```
+
+`api-handler.py` is filters in / chart-ready JSON out. `chart-app.html`
+is dropdowns -> fetch -> plotly in plain DOM. They are a matched pair —
+the frontend calls the endpoint the handler serves.
+
+Copy rather than retype; it is one call instead of a few hundred lines:
+
+```sh
+cp /workspace/skills/building-apps/references/chart-app.html /workspace/app/index.html
+cp /workspace/skills/building-apps/references/api-handler.py /workspace/app/api/summary.py
+```
+
+Then edit them down to your data — rename the columns, drop what you
+don't need. Starting from the pair and cutting is consistently faster
+than building up from nothing, and it is where the non-obvious parts
+already live (empty results, numpy casts, relative urls, stable ids).
+
+Want components instead of plain DOM? `references/preact-app.html` does
+the same frontend job with Preact. Pick ONE frontend, not both.
 
 ## A handler, whole
 
@@ -37,8 +59,10 @@ def get(req):
     }
 ```
 
-- The file's PATH is its route; its verb functions are the methods. A
-  second endpoint is a SECOND FILE.
+- The route is the filename WITHOUT the `.py`: `app/api/summary.py`
+  serves `/api/summary`, and the frontend fetches `api/summary`. Never
+  put `.py` in a url. Its verb functions are the methods, and a second
+  endpoint is a SECOND FILE, not another branch inside this one.
 - `Request`, `Response`, `HttpError` are already in scope — no import.
   `raise HttpError(400, "why")` for a bad request; return a dict/list
   for JSON, a str for text, bytes for a blob, None for 204.
