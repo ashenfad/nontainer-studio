@@ -78,6 +78,11 @@ def get(req):
   float NaN with str. Use `sorted(df[col].dropna().unique())`.
 - Numpy types don't JSON-serialize: wrap with int()/float() or use
   `df.to_dict(orient="records")` after `.astype(object)` care.
+- NaN is not JSON either, and a response carrying one is REFUSED (500,
+  naming the path) — because a bare NaN would make the browser reject
+  the entire body and blank the page. An aggregate over an empty or
+  all-null selection is the usual source: `mean()` of nothing is NaN.
+  Send None instead: `float(x) if pd.notna(x) else None`.
 - Error responses are JSON: `{"error": ...}` — your frontend's
   res.json() will parse them; check `res.ok` and show `data.error`.
 - A filter combination matching NO rows is a normal outcome, not an
@@ -98,6 +103,32 @@ modules from esm.sh, never UMD builds with guessed globals.
 Give every control a stable `id` or `data-key`. test_app drives the page
 by selector, and positional guesses (`nth-child`, `:first-of-type`)
 break the moment you add a filter.
+
+## Keep it editable — this is where turns get burned
+
+Writing the whole frontend as one 20KB `file_write` feels fast and then
+costs you the rest of the session: every later change is a blind edit on
+a file you cannot see, and you end up spending more calls FINDING code
+than changing it.
+
+- **Split once it grows.** `index.html` holds the markup and
+  `<script src="app.js"></script>`; `app.js` holds the logic. Relative
+  src works exactly like relative fetch. A single-purpose `app.js` is
+  also small enough to rewrite wholesale when an edit gets hairy —
+  which a 900-line index.html never is.
+- **Grow in verified steps.** Get one endpoint plus one rendered number
+  working, THEN add charts and filters. A big-bang first draft moves all
+  the debugging to the point where you have the least idea which part
+  is wrong.
+- **Find code with `grep`, not Python.** `grep -n 'populateSelect'
+  /workspace/app/app.js` is one call. Reading the file into run_python
+  and looping over `readlines()` to print line numbers is the same
+  answer for several calls and a lot of context.
+- **When file_edit fails, retry file_edit.** "old_string not found"
+  prints the lines it *did* find near your match — copy those exactly
+  (whitespace included) and go again. Falling back to string surgery in
+  run_python is slower, and unlike file_edit it will happily match the
+  wrong occurrence and tell you it worked.
 
 Scripts may only load from: esm.sh, unpkg.com, cdn.jsdelivr.net,
 cdn.plot.ly, cdn.tailwindcss.com. Anything else is blocked (test_app
