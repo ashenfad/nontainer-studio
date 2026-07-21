@@ -1,0 +1,108 @@
+<!doctype html>
+<!-- Reference frontend: filters -> fetch -> plotly, no build step.
+     Copy to /workspace/app/index.html; it pairs with api-handler.py.
+     Plain DOM is the most reliable shape here — reach for
+     preact-app.html only when you actually want components. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Explorer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+</head>
+<body class="bg-gray-50">
+  <main class="p-6 max-w-5xl mx-auto">
+    <h1 class="text-2xl font-bold mb-4">Explorer</h1>
+
+    <!-- Give every control a STABLE id or data-key. test_app drives the
+         page by selector, and positional guesses (nth-child) break the
+         moment you add a filter. -->
+    <div class="flex gap-3 mb-4">
+      <select id="f-category" data-key="category" class="border rounded px-2 py-1"></select>
+      <select id="f-region"   data-key="region"   class="border rounded px-2 py-1"></select>
+      <button id="reset" class="border rounded px-3 py-1 bg-white">Reset</button>
+    </div>
+
+    <p id="error" class="hidden mb-4 p-3 rounded bg-red-50 text-red-700"></p>
+    <p id="empty" class="hidden mb-4 p-3 rounded bg-yellow-50 text-yellow-800">
+      No rows match these filters.
+    </p>
+
+    <!-- Data-bearing elements worth asserting on. Assert a COUNT or a
+         chart's existence, never just static text — a page can look
+         perfectly loaded while every fetch failed. -->
+    <div class="flex gap-6 mb-4">
+      <div><div class="text-sm text-gray-500">Rows</div>
+           <div id="total" class="text-2xl font-semibold">—</div></div>
+      <div><div class="text-sm text-gray-500">Mean value</div>
+           <div id="mean" class="text-2xl font-semibold">—</div></div>
+    </div>
+
+    <div id="chart" class="bg-white rounded border" style="height:360px"></div>
+  </main>
+
+  <script>
+    let optionsLoaded = false;
+
+    function fill(sel, values) {
+      sel.innerHTML = '<option value="">All</option>' +
+        values.map((v) => `<option value="${v}">${v}</option>`).join('');
+    }
+
+    async function load() {
+      const params = new URLSearchParams();
+      for (const sel of document.querySelectorAll('select[data-key]')) {
+        if (sel.value) params.set(sel.dataset.key, sel.value);
+      }
+
+      let data;
+      try {
+        // RELATIVE url, always — the app is served under a prefix, so a
+        // leading slash escapes it and 404s.
+        const res = await fetch('api/summary?' + params);
+        // Errors come back as JSON too, so read the body either way and
+        // surface data.error rather than a blank page.
+        data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.status);
+      } catch (e) {
+        document.getElementById('error').textContent = String(e);
+        document.getElementById('error').classList.remove('hidden');
+        return;
+      }
+      document.getElementById('error').classList.add('hidden');
+
+      // Populate the dropdowns once, from the unfiltered option lists.
+      if (!optionsLoaded) {
+        fill(document.getElementById('f-category'), data.options.category);
+        fill(document.getElementById('f-region'), data.options.region);
+        optionsLoaded = true;
+      }
+
+      document.getElementById('total').textContent = data.total.toLocaleString();
+      document.getElementById('mean').textContent = data.mean_value.toLocaleString();
+      document.getElementById('empty').classList.toggle('hidden', data.total > 0);
+
+      // Plotly.react redraws in place — cheaper than newPlot on every
+      // filter change, and it leaves no stale trace behind when the
+      // filtered result is empty.
+      Plotly.react(
+        'chart',
+        [{ x: data.chart.x, y: data.chart.y, type: 'bar' }],
+        { margin: { t: 20, r: 20, b: 40, l: 60 }, xaxis: { title: 'year' } },
+        { displayModeBar: false, responsive: true },
+      );
+    }
+
+    for (const sel of document.querySelectorAll('select[data-key]')) {
+      sel.addEventListener('change', load);
+    }
+    document.getElementById('reset').addEventListener('click', () => {
+      for (const sel of document.querySelectorAll('select[data-key]')) sel.value = '';
+      load();
+    });
+
+    load();
+  </script>
+</body>
+</html>

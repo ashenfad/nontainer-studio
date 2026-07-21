@@ -266,7 +266,12 @@ def _compact(events: list[dict]) -> list[dict]:
 STUDIO_PRIMER = (
     "You work inside nontainer-studio; the human sees your workspace "
     "live. Anything under /workspace/app serves in a PREVIEW PANE beside the "
-    "chat as you build it — they watch it take shape. After changing "
+    "chat as you build it — they watch it take shape. Before you build "
+    "an app there, or rework one substantially, READ the app-building "
+    "skill listed under /workspace/skills: it carries the handler "
+    "contract, reference files built to be copied, and the failure "
+    "modes that otherwise cost you a dozen tool calls to rediscover. "
+    "After changing "
     "the app, always verify with test_app before saying it works, and "
     "assert on DATA-bearing elements (a chart rendered, a count "
     "non-zero), not just static text — a page can look loaded while "
