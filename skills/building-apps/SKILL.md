@@ -9,11 +9,61 @@ The tool descriptions cover the contract basics. This is the deep
 guide: read it before building anything beyond a trivial page, and
 come back when debugging.
 
+**Start from the references, not from scratch.** They are a matched,
+working pair — copy both and edit down:
+
+- `references/api-handler.py` — filters in, chart-ready JSON out
+- `references/chart-app.html` — dropdowns -> fetch -> plotly, plain DOM
+- `references/preact-app.html` — the same frontend job with components
+
+## A handler, whole
+
+```python
+# /workspace/app/api/summary.py  ->  serves GET /api/summary
+import pandas as pd
+
+def get(req):
+    df = pd.read_parquet("/workspace/app/data/records.parquet")
+    region = req.params.get("region") or ""      # optional filter
+    if region:
+        df = df[df["region"] == region]
+    if df.empty:                                  # NOT an error
+        return {"total": 0, "chart": {"x": [], "y": []}}
+    by_year = df.groupby("year")["value"].sum().sort_index()
+    return {
+        "total": int(len(df)),                    # int(): numpy won't
+        "chart": {"x": [int(v) for v in by_year.index],
+                  "y": [float(v) for v in by_year.values]},
+    }
+```
+
+- The file's PATH is its route; its verb functions are the methods. A
+  second endpoint is a SECOND FILE.
+- `Request`, `Response`, `HttpError` are already in scope — no import.
+  `raise HttpError(400, "why")` for a bad request; return a dict/list
+  for JSON, a str for text, bytes for a blob, None for 204.
+- `req.params` is `dict[str, str]` — use `.get()` for OPTIONAL filters.
+  For a REQUIRED one, `req.require("n", int)` coerces and raises a
+  clean 400 when it is missing or unparseable.
+- Return CHART-READY data. Aggregate server-side into parallel arrays
+  the frontend can hand straight to plotly; don't ship raw rows and
+  reshape them in JS.
+
 ## Architecture that works
 
 - Convert big source data ONCE (run_python -> parquet under
   /workspace/app/data/), then handlers read the parquet. Never re-parse a big
-  CSV per request.
+  CSV per request. Create the directory first — `to_parquet` will not
+  make it, and fails with "Cannot save file into a non-existent
+  directory".
+- The handler source is RE-EXECUTED on every request, so module-level
+  state does NOT persist between requests: a `_DF = None` lazy cache
+  reloads every time. Keep the per-request read cheap (parquet, and
+  pass `columns=[...]` for just what you use) rather than assuming it
+  happens once.
+- For something genuinely too expensive to redo per request, precompute
+  it into `cache` from run_python — handlers can READ `cache` and it
+  persists. A GET cannot WRITE it (read-only; writing 500s).
 - Shared backend code goes in /helpers/<mod>.py, imported QUALIFIED:
   `from helpers.mymod import fn`. Imports resolve from the workspace
   root — a bare `import mymod` will not find it.
@@ -21,8 +71,6 @@ come back when debugging.
   `def query(req)` or `def search(req)` is NEVER called by requests —
   read filters from req.params inside a verb instead. (Dispatch notes
   stray non-verb functions in /workspace/app/logs/api.log.)
-- Module-level caches (`_DF = None` + lazy load) persist per process:
-  cheap and effective for read-mostly data.
 
 ## Data gotchas (they 500 in production, not in your head)
 
@@ -32,14 +80,24 @@ come back when debugging.
   `df.to_dict(orient="records")` after `.astype(object)` care.
 - Error responses are JSON: `{"error": ...}` — your frontend's
   res.json() will parse them; check `res.ok` and show `data.error`.
+- A filter combination matching NO rows is a normal outcome, not an
+  error. Return the same shape with zeros/empty arrays so the page can
+  render an empty state; erroring here is how a valid selection kills
+  the UI. Compute options from the UNFILTERED frame too, or the
+  dropdowns collapse as the user narrows.
 
 ## Frontend
 
-Plain HTML + DOM + fetch is the most reliable pattern. RELATIVE urls
-always (`fetch('api/x')` — the app serves under a prefix, absolute
-paths 404 with a hint). If you want components, copy
-references/preact-app.html from this skill EXACTLY — ES modules from
-esm.sh, never UMD builds with guessed globals.
+Plain HTML + DOM + fetch is the most reliable pattern — copy
+references/chart-app.html: dropdowns, a relative fetch, error and empty
+states, and `Plotly.react` to redraw in place (cheaper than newPlot per
+change, and it leaves no stale trace when the result is empty). If you
+want components instead, copy references/preact-app.html EXACTLY — ES
+modules from esm.sh, never UMD builds with guessed globals.
+
+Give every control a stable `id` or `data-key`. test_app drives the page
+by selector, and positional guesses (`nth-child`, `:first-of-type`)
+break the moment you add a filter.
 
 Scripts may only load from: esm.sh, unpkg.com, cdn.jsdelivr.net,
 cdn.plot.ly, cdn.tailwindcss.com. Anything else is blocked (test_app
