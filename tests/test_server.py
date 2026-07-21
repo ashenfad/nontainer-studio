@@ -1163,6 +1163,77 @@ def test_provider_error_event_is_repaired_into_memory(studio):
     assert "Provider returned error" in run.messages[-1].content
 
 
+class RestartingAgent:
+    """agno's whole-run retry, as the stream shows it: RunStarted is
+    yielded once PER ATTEMPT, so a restarted run replays the opening
+    event with the turn's earlier tool calls already dropped from the
+    model's memory."""
+
+    async def arun(self, message: str, stream: bool = True, stream_events: bool = True):
+        yield SimpleNamespace(event="RunStarted", run_id="run-1")
+        yield SimpleNamespace(
+            event="ToolCallStarted",
+            tool=SimpleNamespace(tool_name="file_write", tool_args={"path": "/a"}),
+        )
+        # provider drops the stream here; agno sleeps and re-enters the
+        # attempt loop, rebuilding messages from history + the prompt
+        yield SimpleNamespace(event="RunStarted", run_id="run-1")
+        yield SimpleNamespace(
+            event="RunContent", content="starting over", run_id="run-1"
+        )
+        yield SimpleNamespace(event="RunCompleted")
+
+
+def test_retry_rewind_hook_keeps_files_in_step_with_memory(studio):
+    """agno's whole-run retry rebuilds the agent's memory from history +
+    the prompt, dropping the failed attempt's tool calls. The files those
+    calls wrote must go with them, or the model builds a second version
+    beside work it can't remember doing. pre_hooks run per ATTEMPT under a
+    stable run_id, which is what makes the rewind placeable at all."""
+    import asyncio
+
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    hook = sessions_mod.Registry._retry_rewind_hook(ws)
+    ctx = SimpleNamespace(run_id="run-1")
+
+    asyncio.run(hook(ctx))  # attempt 1: records the pre-turn head
+    start = ws.head
+    ws.write_file("/workspace/app/index.html", "half an app")
+    assert ws.head != start, "the write should have moved the head"
+
+    asyncio.run(hook(ctx))  # attempt 2 under the same run: a retry
+    assert ws.head == start
+    assert not ws.fs.isfile("/workspace/app/index.html")
+
+    # a NEW run is a new turn, not a retry — it re-anchors and rewinds
+    # nothing, or the next turn would undo the previous one's work
+    ws.write_file("/workspace/keep.txt", "second turn")
+    after_write = ws.head
+    asyncio.run(hook(SimpleNamespace(run_id="run-2")))
+    assert ws.head == after_write
+    assert ws.fs.isfile("/workspace/keep.txt")
+
+
+def test_run_restart_is_surfaced_as_a_notice(studio):
+    """A silent restart reads as the model losing the plot: the human
+    watches the turn redo itself with no explanation. The second
+    RunStarted is the only signal agno gives, so the turn names it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    registry.get("s1").agent = RestartingAgent()
+
+    client.post("/api/sessions/s1/chat", json={"message": "build it"})
+    events = _collect_until_done(client, "s1")
+
+    notices = [e["text"] for e in events if e["type"] == "notice"]
+    assert any("restarted" in n for n in notices), notices
+    assert any("attempt 2" in n for n in notices), notices
+    # the FIRST RunStarted must stay quiet — every turn has one
+    assert len([n for n in notices if "restarted" in n]) == 1
+
+
 def test_arrow_pool_is_fork_safe_from_first_import():
     """Sandbox workers fork from the server process, and arrow's
     default mimalloc pool segfaults in forked children (observed:

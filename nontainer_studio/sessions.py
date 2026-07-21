@@ -791,6 +791,52 @@ class Registry:
 
         return recommend_title
 
+    @staticmethod
+    def _retry_rewind_hook(ws: Workspace) -> Callable:
+        """Keep the WORKSPACE in step with the agent's memory when agno
+        restarts a run.
+
+        agno's whole-run retry rebuilds the message list from persisted
+        history + the user message, so a restarted attempt begins with
+        no memory of the previous attempt's tool calls — while every
+        file those calls wrote is still on disk. That divergence is the
+        exact thing this product exists to prevent: an edit rewinds
+        files, memory, and transcript together, and a retry is the same
+        rewind, just triggered by the provider instead of the human.
+        Left unsynchronized it produces the worst failure mode we have
+        — the model, blind to work it can still see the effects of,
+        builds a second divergent version beside the first.
+
+        The seam is agno's ``pre_hooks``: they run INSIDE the attempt
+        loop, after the session read and before the messages are built,
+        and ``run_context.run_id`` is stable across attempts (the
+        RunOutput is created once, outside the loop). So the first call
+        of a run records the pre-turn head — the same commit the `user`
+        event stamps as its undo anchor — and any later call under that
+        run_id is by definition a retry: restore to it.
+
+        One slot rather than a map: a session runs one turn at a time
+        (``turn_lock``), so there is only ever one live run to track.
+        """
+        state: dict[str, str | None] = {}
+
+        async def rewind_workspace_on_retry(run_context: Any) -> None:
+            run_id = getattr(run_context, "run_id", None)
+            if run_id is None:
+                return
+            if state.get("run_id") != run_id:  # first attempt of a new turn
+                state["run_id"] = run_id
+                state["head"] = ws.head
+                return
+            head = state.get("head")
+            if head is None or ws.head == head:
+                return  # nothing was committed to unwind
+            # off-loop: restore takes the workspace lock and rewrites the
+            # tree (and re-syncs a remote executor's guest)
+            await asyncio.to_thread(ws.restore, head)
+
+        return rewind_workspace_on_retry
+
     def _build_agent(
         self, name: str, ws: Workspace, runtime: AppRuntime, model: str | None = None
     ) -> Any:
@@ -825,6 +871,9 @@ class Registry:
             tools=[toolkit, self._title_tool(name)],
             compress_tool_results=compression is not None,
             compression_manager=compression,
+            # runs per ATTEMPT, which is what makes it the right seam for
+            # keeping files and memory rewinding together (see the hook)
+            pre_hooks=[self._retry_rewind_hook(ws)],
             # studio-owned context: nontainer's tool descriptions cover
             # the MECHANICS (workspace, handlers, curl); this covers the
             # product the human is looking at (preview, artifacts,
@@ -837,14 +886,24 @@ class Registry:
             session_id=name,
             add_history_to_context=True,
             markdown=True,
-            # Transient provider errors (5xx, dropped streams) shouldn't
-            # cost the turn: agno restarts the whole attempt (2s then 4s
-            # delay). A failed attempt's tool side effects persist in the
-            # workspace — the retried model pass redoes the turn's work,
-            # which is why turns are checkpoints. If all attempts fail,
-            # the run lands status=error and repair_aborted_run keeps it
-            # in the agent's memory.
-            retries=2,
+            # A LAST-DITCH FLOOR, not the primary defense. Transient
+            # provider errors are absorbed one layer down, at the model
+            # call, where the retry keeps the turn's tool results (see
+            # providers._with_retries). This layer restarts the WHOLE
+            # run: attempt > 0 re-reads the session from the db and
+            # rebuilds the messages from persisted history + the user
+            # message, so every tool call the failed attempt made is
+            # gone from the agent's memory while its side effects stay
+            # in the workspace — the model then builds a second,
+            # divergent version over the first. Kept at 1 because only
+            # ModelProviderError routes through the model layer; a
+            # failure of another class would otherwise cost the turn
+            # outright. When it does fire, the workspace rewinds with
+            # the memory (_retry_rewind_hook) so the restart is a clean
+            # one, and the turn says so (server.py counts RunStarted).
+            # If all attempts fail, the run lands status=error and
+            # repair_aborted_run keeps it in the agent's memory.
+            retries=1,
             delay_between_retries=2,
             exponential_backoff=True,
         )

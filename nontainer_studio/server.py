@@ -299,6 +299,7 @@ async def _run_turn(session: Any, message: str) -> None:
     run_id = None
     cancelled = False
     errored = None
+    attempts = 0
     try:
         # head here = the workspace BEFORE this turn: the user event's
         # stamp is the undo anchor (restore to it = unwind this turn)
@@ -308,6 +309,26 @@ async def _run_turn(session: Any, message: str) -> None:
             session.run_id = run_id  # the stop button's cancel handle
             kind = getattr(ev, "event", "")
             cancelled = cancelled or kind == "RunCancelled"
+            if kind == "RunStarted":
+                # agno yields RunStarted once PER ATTEMPT (inside the
+                # retry loop in agent/_run.py), so a second one means the
+                # run restarted from the user message and dropped this
+                # turn's tool calls from the agent's memory. The
+                # workspace rewinds with it (Registry._retry_rewind_hook),
+                # so the restart is clean rather than divergent — but the
+                # human still watches the turn redo itself, and nothing
+                # else in the stream explains why: agno logs a warning
+                # and the event feed otherwise looks seamless.
+                attempts += 1
+                if attempts > 1:
+                    await session.emit(
+                        {
+                            "type": "notice",
+                            "text": f"provider error — the turn restarted "
+                            f"(attempt {attempts}); files and memory rewound "
+                            "to where it began",
+                        }
+                    )
             if kind == "RunError":
                 # provider failure after agno's retries are exhausted:
                 # the stream ends CLEANLY (no exception), so this flag

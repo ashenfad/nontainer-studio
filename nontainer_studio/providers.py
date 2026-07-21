@@ -377,6 +377,54 @@ def _split_openrouter_tag(model: str) -> tuple[str, dict | None]:
 
 
 def build_model(spec: str | None = None) -> Any:
+    """spec -> a constructed agno Model (None = server default), with
+    the transient-failure policy applied (see ``_with_retries``)."""
+    return _with_retries(_construct_model(spec))
+
+
+# Retry AT THE MODEL CALL, not at the run. agno has two retry layers and
+# they mean very different things for a tool-using turn:
+#
+#   Model.retries  (models/base.py) wraps one invoke/stream. The retried
+#     call re-sends the SAME in-flight message list, so every tool result
+#     the turn has produced so far survives — "retry the last step".
+#   Agent.retries  (agent/_run.py) wraps the WHOLE run: attempt > 0
+#     re-reads the session from the db and rebuilds the messages from
+#     persisted history + the original user message. The failed attempt's
+#     tool calls were never persisted, so they are simply GONE.
+#
+# A long build turn can be 40 tool calls deep when a provider drops the
+# stream; restarting it from the prompt loses all of that AND starts the
+# model blind while its work still sits in the workspace — it then writes
+# a second, divergent implementation over the first. So the fine layer is
+# the primary defense here; Agent.retries stays as a last-ditch floor
+# (see the Agent construction in sessions.py).
+#
+# Only ModelProviderError routes through this, and agno declines to retry
+# 400/401/403/404/413/422 and context-window overflow — a transient 429 or
+# 5xx retries, a malformed request fails fast. Caveat: a stream that dies
+# mid-flight restarts that call's stream from its start, so deltas already
+# emitted can repeat inside one reply. That is one model call's worth of
+# duplicated prose against a whole turn's worth of lost work.
+_RETRIES = 2
+_RETRY_DELAY = 2
+
+
+def _with_retries(model: Any) -> Any:
+    """Apply the model-call retry policy. Set as attributes rather than
+    constructor kwargs: every branch below builds a different class, and
+    these are plain ``Model`` dataclass fields on all of them."""
+    for field, value in (
+        ("retries", _RETRIES),
+        ("delay_between_retries", _RETRY_DELAY),
+        ("exponential_backoff", True),
+    ):
+        if hasattr(model, field):
+            setattr(model, field, value)
+    return model
+
+
+def _construct_model(spec: str | None = None) -> Any:
     """spec -> a constructed agno Model (None = server default)."""
     provider, model = parse_spec(spec or default_spec())
     if provider == "dummy":
