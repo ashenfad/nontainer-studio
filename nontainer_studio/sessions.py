@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import secrets
 import sqlite3
 import sys
@@ -75,11 +76,15 @@ def _executor_factory() -> Callable[[], Any] | None:
     external store) crosses the boundary cleanly. Two gaps remain:
 
     - ``curl`` is a termish command and doesn't exist in dud's real
-      bash — on ANY dud backend, not just the subprocess one. nontainer
-      gates its apps primer on ``ws.supports_commands``, so the agent
-      is never taught it here and is steered to test_app / the preview
-      instead. Closing it needs a guest->host channel reachable from
-      the shell (dud DESIGN.md, "The apps loop").
+      bash — on ANY dud backend, not just the subprocess one. Worse
+      than absent: real curl IS on the guest PATH, so a `curl api/x`
+      reaches the network rather than failing. Both places that could
+      teach it are gated on ``ws.supports_commands`` — nontainer's apps
+      primer, and the seeded skill text (see
+      ``_resolve_skill_conditionals``) — so the agent is steered to
+      test_app / the preview instead. Closing it needs a guest->host
+      channel reachable from the shell (dud DESIGN.md, "The apps
+      loop").
     - Absolute paths under the SUBPROCESS backend live in the guest's
       own temp dir rather than ``/workspace``. This one the VM backends
       do close: they mount the workspace AT ``/workspace``, so absolute
@@ -672,7 +677,12 @@ class Registry:
         directory of NONTAINER_STUDIO_SKILLS (default: the repo's
         skills/) plus any skills EMBEDDED in granted python libraries
         (<pkg>/skills/ — the nontainer convention). Best-effort: a bad
-        skill must never block a session."""
+        skill must never block a session.
+
+        Skill text is resolved for the executor first (see
+        ``_resolve_skill_text``) — the seeded copy must not teach
+        affordances this session doesn't have.
+        """
         from nontainer import skills
 
         root = Path(
@@ -690,6 +700,58 @@ class Registry:
             skills.install_from_modules(ws)
         except Exception:
             pass
+        try:
+            Registry._resolve_skill_conditionals(ws)
+        except Exception:
+            pass  # a skill that won't resolve is still better than none
+
+    # Conditional blocks in seeded SKILL.md files. The terminal-command
+    # affordances (the apps `curl` builtin) exist only on LocalExecutor;
+    # under dud the terminal is real bash, where `curl api/x` silently
+    # hits the NETWORK instead of the dispatcher. nontainer already
+    # gates its tool-description primer on ws.supports_commands; seeded
+    # skill text has to be gated the same way or it teaches a debugging
+    # step that fails open.
+    _IF_BLOCK = re.compile(
+        r"[ \t]*<!--if:(commands|no-commands)-->[ \t]*\n(.*?)[ \t]*<!--endif-->[ \t]*\n?",
+        re.DOTALL,
+    )
+
+    @staticmethod
+    def _resolve_skill_text(text: str, *, commands: bool) -> str:
+        """Keep the blocks matching this executor, drop the others."""
+        want = "commands" if commands else "no-commands"
+
+        def _pick(m: "re.Match[str]") -> str:
+            return m.group(2) if m.group(1) == want else ""
+
+        return Registry._IF_BLOCK.sub(_pick, text)
+
+    @staticmethod
+    def _resolve_skill_conditionals(ws: Workspace) -> None:
+        """Rewrite seeded SKILL.md files in place for this executor.
+
+        Post-install rather than pre-install because ``skills.install``
+        takes a directory of bytes; rewriting the installed copy keeps
+        the source skill single-sourced (one file, both rungs) instead
+        of forking it into per-executor variants that drift.
+        """
+        root = f"{ws.root}/skills"
+        if not ws.fs.isdir(root):
+            return
+        commands = ws.supports_commands
+        changed = False
+        for name in sorted(ws.fs.list(root)):
+            path = f"{root}/{name}/SKILL.md"
+            if not ws.fs.exists(path):
+                continue
+            text = ws.fs.read(path).decode("utf-8", "replace")
+            resolved = Registry._resolve_skill_text(text, commands=commands)
+            if resolved != text:
+                ws.fs.write(path, resolved.encode())
+                changed = True
+        if changed and ws.caps.versioned and ws.dirty:
+            ws.checkpoint(info={"tool": "skill", "skill": "resolve-conditionals"})
 
     @staticmethod
     def _python_config(db: Db) -> PythonConfig:

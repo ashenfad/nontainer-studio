@@ -244,6 +244,58 @@ def test_new_sessions_seed_skills(studio):
     )
 
 
+def test_seeded_skill_teaches_curl_only_where_it_exists(studio):
+    """The apps `curl` builtin is a LocalExecutor affordance. Under any
+    dud backend the terminal is real bash, where `curl api/x` reaches
+    the NETWORK instead of the dispatcher — it fails open, silently, so
+    the seeded text has to be gated rather than merely softened.
+
+    In the audited session this was half of a compound failure: the
+    log rung was invisible (fixed in nontainer) and this rung was
+    actively misleading, which left the documented debugging ladder
+    with no working step at all under dud-vm.
+    """
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "sk"})
+    session = registry.get("sk")
+    text = session.ws.fs.read("/workspace/skills/building-apps/SKILL.md").decode()
+
+    # the studio fixture runs the default (Local) executor
+    assert session.ws.supports_commands
+    assert "curl api/x" in text
+    assert "There is no `curl` builtin" not in text
+    # markers are resolved away, never seeded raw
+    assert "<!--if:" not in text and "<!--endif-->" not in text
+
+
+def test_skill_conditionals_resolve_for_a_command_less_executor():
+    """The other side of the gate, on the resolver directly: a dud-like
+    executor gets the no-commands variant and is told WHY curl is
+    absent (its presence on PATH is the trap)."""
+    src = (
+        "1. read the log\n"
+        "<!--if:commands-->\n"
+        "2. `curl api/x` in the terminal\n"
+        "<!--endif-->\n"
+        "<!--if:no-commands-->\n"
+        "2. test_app — no `curl` builtin here\n"
+        "<!--endif-->\n"
+        "tail line\n"
+    )
+    with_cmds = sessions_mod.Registry._resolve_skill_text(src, commands=True)
+    assert "curl api/x" in with_cmds
+    assert "test_app" not in with_cmds
+
+    without = sessions_mod.Registry._resolve_skill_text(src, commands=False)
+    assert "curl api/x" not in without
+    assert "test_app" in without
+
+    for out in (with_cmds, without):
+        assert "<!--if:" not in out and "<!--endif-->" not in out
+        assert out.startswith("1. read the log\n")
+        assert out.endswith("tail line\n")  # surrounding text survives
+
+
 def test_compression_and_usage_events_reach_the_transcript(studio):
     """Compaction waves surface as notices (the slow turn explains
     itself); per-call token usage rides a `usage` event for the UI."""
