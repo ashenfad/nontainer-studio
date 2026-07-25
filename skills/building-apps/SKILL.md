@@ -160,12 +160,31 @@ names blocked URLs in its [rejected requests] section).
 
 ## Debugging loop
 
-1. `curl api/x` in the terminal — instant, no server. `-i` shows
-   status+headers, `-w '%{http_code}'` prints the code.
-2. `tail /workspace/app/logs/api.log` — handler tracebacks, prints, and
-   dispatch notes land there.
+1. `tail /workspace/app/logs/api.log` — handler tracebacks, prints, and
+   dispatch notes land there. A 500 from any endpoint means the
+   traceback is already in this file: READ IT before changing code.
+   Guessing from the frontend is how a one-line fix turns into a
+   rewrite.
+<!--if:commands-->
+2. `curl api/x` in the terminal — instant, no server. `-i` shows
+   status+headers, `-w '%{http_code}'` prints the code. This hits the
+   dispatcher directly, so it isolates backend from frontend in one
+   call.
 3. test_app for the frontend: page errors carry file:line for runtime
    errors; parse errors mean bisecting your <script> blocks.
+<!--endif-->
+<!--if:no-commands-->
+2. test_app for everything else — both the frontend AND the endpoints.
+   Page errors carry file:line for runtime errors; parse errors mean
+   bisecting your <script> blocks. To probe an endpoint on its own, use
+   an `eval` action: `await (await fetch('api/x')).text()` — `eval`
+   awaits what you return, so return the promise chain rather than
+   referencing a `.then(r => ...)` binding from outside it.
+
+   There is no `curl` builtin on this executor. The terminal has the
+   REAL curl, which would hit the network instead of your app — a
+   `curl api/x` here does NOT test your endpoint.
+<!--endif-->
 
 ## Verification that means something
 
