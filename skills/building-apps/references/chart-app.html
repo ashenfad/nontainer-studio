@@ -45,9 +45,14 @@
   <script>
     let optionsLoaded = false;
 
+    // Build option NODES rather than interpolating data into innerHTML.
+    // A value holding a quote (`North "A"`) would truncate the value
+    // attribute, so the selection stops round-tripping and the handler
+    // filters on something the user never picked -- which reads as a
+    // backend bug. Markup in the data would inject nodes outright.
     function fill(sel, values) {
-      sel.innerHTML = '<option value="">All</option>' +
-        values.map((v) => `<option value="${v}">${v}</option>`).join('');
+      sel.replaceChildren(new Option('All', ''));
+      for (const v of values) sel.append(new Option(v, v));
     }
 
     async function load() {
@@ -80,7 +85,11 @@
       }
 
       document.getElementById('total').textContent = data.total.toLocaleString();
-      document.getElementById('mean').textContent = data.mean_value.toLocaleString();
+      // mean_value is null when there was nothing to average (no rows,
+      // or an all-null column). Render the dash rather than calling
+      // toLocaleString on null, which throws and kills the whole render.
+      document.getElementById('mean').textContent =
+        data.mean_value === null ? '—' : data.mean_value.toLocaleString();
       document.getElementById('empty').classList.toggle('hidden', data.total > 0);
 
       // Plotly.react redraws in place — cheaper than newPlot on every
