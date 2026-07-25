@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -101,14 +102,30 @@ def _title(server: str, name: str, title: str) -> None:
     Deliberately NOT page.request: that rides the browser's network
     stack, where the SSE followers pin connections against Chromium's
     per-origin cap and this POST can starve. It only arranges server
-    state, so it talks to the server directly."""
+    state, so it talks to the server directly.
+
+    Going out-of-band is what makes it RACE, though: page.goto returns
+    when the document loads, and the frontend only then calls
+    ensureSession -> POST /api/sessions. A caller that titles a session
+    straight after goto can beat that create and get a 404 (the CI flake
+    in test_rename_escape_discards, seen on more than one branch). Poll
+    through 404 rather than making each caller remember to wait for the
+    rail first — any other status still fails immediately."""
     req = urllib.request.Request(
         f"{server}/api/sessions/{name}/title",
         data=json.dumps({"title": title}).encode(),
         headers={"content-type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=10) as r:
-        assert r.status == 200
+    deadline = time.time() + 10
+    while True:
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                assert r.status == 200
+                return
+        except urllib.error.HTTPError as e:
+            if e.code != 404 or time.time() >= deadline:
+                raise
+            time.sleep(0.05)  # session create still in flight
 
 
 # ---------------------------------------------------------------------------
