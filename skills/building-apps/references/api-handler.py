@@ -61,25 +61,36 @@ def get(req):
         df = df[df["region"] == region]
 
     # EMPTY IS NOT AN ERROR. A filter combination matching no rows is a
-    # normal outcome — return the same SHAPE with zeros so the frontend
-    # renders an empty state instead of crashing on a missing key. (An
-    # error here is the classic bug: the UI dies on a valid selection.)
+    # normal outcome — return the same SHAPE so the frontend renders an
+    # empty state instead of crashing on a missing key. (An error here
+    # is the classic bug: the UI dies on a valid selection.)
+    #
+    # mean_value is None, not 0.0: "no rows to average" is not "the
+    # average is zero", and a real mean of 0.0 would be indistinguishable
+    # from it. The frontend renders None as a dash.
     if df.empty:
         return {
             "options": options,
             "total": 0,
-            "mean_value": 0.0,
+            "mean_value": None,
             "chart": {"x": [], "y": []},
         }
 
     by_year = df.groupby("year")["value"].sum().sort_index()
+
+    # NaN IS NOT JSON. A non-empty selection whose `value` column is all
+    # null still means NaN out of mean(), and a response carrying one is
+    # REFUSED (500) — so a valid selection 500s on data you didn't
+    # expect. pd.notna() is the guard; the same shape applies to any
+    # aggregate that can see an all-null column.
+    mean = df["value"].mean()
 
     return {
         "options": options,
         # int()/float() are not decoration: numpy scalars don't
         # JSON-serialize, and the handler 500s on the way out.
         "total": int(len(df)),
-        "mean_value": round(float(df["value"].mean()), 2),
+        "mean_value": round(float(mean), 2) if pd.notna(mean) else None,
         # Chart-ready: the frontend should plot what it receives, not
         # reshape it. Parallel x/y arrays drop straight into plotly.
         "chart": {

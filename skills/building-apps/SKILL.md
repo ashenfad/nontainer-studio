@@ -106,7 +106,11 @@ def get(req):
   naming the path) — because a bare NaN would make the browser reject
   the entire body and blank the page. An aggregate over an empty or
   all-null selection is the usual source: `mean()` of nothing is NaN.
-  Send None instead: `float(x) if pd.notna(x) else None`.
+  Send None instead: `float(x) if pd.notna(x) else None`. This bites a
+  NON-empty selection too — rows exist, the aggregated column is all
+  null — so an `if df.empty` guard alone does NOT cover it. Then render
+  the null frontend-side as a dash; `null.toLocaleString()` throws and
+  takes the whole render down with it.
 - Error responses are JSON: `{"error": ...}` — your frontend's
   res.json() will parse them; check `res.ok` and show `data.error`.
 - A filter combination matching NO rows is a normal outcome, not an
@@ -127,6 +131,13 @@ modules from esm.sh, never UMD builds with guessed globals.
 Give every control a stable `id` or `data-key`. test_app drives the page
 by selector, and positional guesses (`nth-child`, `:first-of-type`)
 break the moment you add a filter.
+
+Build elements that carry DATA as nodes — `new Option(v, v)`, or set
+`.value`/`.textContent` — never by interpolating values into
+`innerHTML`. One quote in a category name (`North "A"`) truncates the
+value attribute, the selection stops round-tripping, and the handler
+filters on something the user never picked — which reads as a backend
+bug and sends you debugging the wrong half.
 
 ## Keep it editable — this is where turns get burned
 
