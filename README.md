@@ -68,11 +68,17 @@ Other knobs: `NONTAINER_STUDIO_PORT`, `NONTAINER_STUDIO_STORE`
 the published-app CSP; `none` disables), `NONTAINER_STUDIO_SKILLS`
 (directory of starter skills seeded into new sessions; defaults to the
 repo's `skills/`), `NONTAINER_STUDIO_COMPRESS_TOKENS` (context-
-compression watermark), and `NONTAINER_STUDIO_ISOLATION` (`process` by
-default — agent code runs in a forked worker so a segfault/OOM in
-C-extension guts costs the turn, not the server; the workspace files,
-cache, and `db` stay host-side, bridged over RPC. `kernel` adds
-syscall/network lockdown; `none` runs in-process).
+compression watermark), `NONTAINER_STUDIO_ISOLATION` (`process` by
+default — agent code runs in a worker process of its own so a
+segfault/OOM in C-extension guts costs the turn, not the server; the
+workspace files, cache, and `db` stay host-side, bridged over RPC.
+`kernel` adds syscall/network lockdown; `none` runs in-process), and
+`NONTAINER_STUDIO_VIEW_WORKERS` (default 0 — how many app-handler
+workers to keep warm per view. Studio preloads the granted data stack
+into sandtrap's forkserver broker, which puts a pristine worker at
+roughly 12ms, so 0 buys clean per-request process state for about the
+price of reusing one. Raise it only if a published app serves real
+concurrency).
 
 ### Where agent code runs
 
