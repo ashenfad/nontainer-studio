@@ -29,7 +29,10 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        # [dud] too: its subprocess rung needs no hypervisor and no guest
+        # image, so the host-object smoke test runs on both runners. The
+        # extra's own marker keeps it off 3.10, where it importorskips.
+        pip install -e ".[dev,dud]"
 
     - name: Run tests
       run: |

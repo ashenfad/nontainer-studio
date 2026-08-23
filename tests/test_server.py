@@ -408,8 +408,8 @@ def test_publish_freezes_a_snapshot(studio):
 
 def test_published_app_shares_live_db(studio):
     """Frozen code, live state: the published snapshot's handlers call
-    the SAME db as the authoring session (host_objects inherit through
-    the fork)."""
+    the SAME db as the authoring session (the fork carries host_objects,
+    and the worker reaches the real one over the RPC bridge)."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
@@ -1287,13 +1287,16 @@ def test_run_restart_is_surfaced_as_a_notice(studio):
 
 
 def test_arrow_pool_is_fork_safe_from_first_import():
-    """Sandbox workers fork from the server process, and arrow's
-    default mimalloc pool segfaults in forked children (observed:
-    SIGSEGV in libarrow's mi_thread_init, 'multi-threaded process
-    forked'). pyarrow reads ARROW_DEFAULT_MEMORY_POOL at import — and
-    importing pandas imports pyarrow — so the package __init__ must
-    win the race. A subprocess proves the end state, immune to
-    whatever this test process already imported."""
+    """Arrow's default mimalloc pool segfaults in forked children
+    (observed: SIGSEGV in libarrow's mi_thread_init, 'multi-threaded
+    process forked'). Sandbox workers fork from sandtrap's forkserver
+    broker rather than from the server process now, but the broker
+    inherits this process's environment — and preload_grants imports
+    pyarrow into it — so the pin still has to be set here. pyarrow
+    reads ARROW_DEFAULT_MEMORY_POOL at import, and importing pandas
+    imports pyarrow, so the package __init__ must win the race. A
+    subprocess proves the end state, immune to whatever this test
+    process already imported."""
     import subprocess
     import sys
 
@@ -1905,10 +1908,11 @@ def test_v1_manifest_format_tolerated(studio, tmp_path):
 
 
 def test_agent_sandbox_is_process_isolated_and_crash_proof(studio):
-    """The default: agent code runs in a forked worker. Killing that
-    worker (a stand-in for segfault/OOM) costs nothing but the moment —
-    the server survives, and the next execution respawns and still
-    sees the workspace."""
+    """The default: agent code runs in a worker process of its own,
+    forked from sandtrap's broker rather than from this server. Killing
+    that worker (a stand-in for segfault/OOM) costs nothing but the
+    moment — the server survives, and the next execution respawns and
+    still sees the workspace."""
     import os
     import signal
 
@@ -2064,6 +2068,50 @@ def test_executor_factory_plumbed_on_open_and_resolve(tmp_path, monkeypatch):
         assert isinstance(snapshot._executor, MarkedExecutor)
     finally:
         registry.close()
+
+
+def test_dud_rung_bridges_the_db_host_object(tmp_path, monkeypatch):
+    """The dud rung's version floor, enforced by exercising it.
+
+    Every other dud test here monkeypatches the executor away, so the
+    only thing that ever touched a real one was a running server — and
+    the studio/nontainer/dud version triple broke there silently once
+    already: nontainer 0.3 passes `allow=dud.public_methods(obj)` for
+    every host object, which older duds have neither the keyword nor
+    the helper for. That is a TypeError on session construction, not a
+    degraded rung, and it reaches a user before it reaches CI.
+
+    The subprocess backend, deliberately: it needs no hypervisor and no
+    guest image, so it runs anywhere the extra is installed, and it
+    crosses the same host-object bridge the VM rung does.
+    """
+    pytest.importorskip("dud", reason="the [dud] extra is optional (3.11+)")
+    from nontainer import workspace
+
+    monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "dud")
+    db = sessions_mod.Db(tmp_path / "dbs" / "smoke.sqlite")
+    ws = workspace(
+        "smoke",
+        store=tmp_path,
+        python=sessions_mod.Registry._python_config(db),
+        **sessions_mod._ws_kwargs(),
+    )
+    try:
+        r = ws.run_python(
+            "db.execute('CREATE TABLE t (v TEXT)')\n"
+            "db.execute('INSERT INTO t VALUES (?)', ('from guest',))\n"
+            "rows = db.query('SELECT v FROM t')"
+        )
+        assert r.error is None, r.error
+        # Rows cross the guest boundary as JSON, so they arrive as lists
+        # where the in-process rung hands back sqlite3's tuples. Compare
+        # the contents, not the container.
+        assert [list(row) for row in r.namespace["rows"]] == [["from guest"]]
+        # The write landed in the HOST's sqlite file — the bridge is to
+        # the live object, not a copy that dies with the guest.
+        assert db.query("SELECT v FROM t") == [("from guest",)]
+    finally:
+        ws.close()
 
 
 def test_failed_create_rolls_back_the_reservation(tmp_path, monkeypatch):
