@@ -110,6 +110,22 @@ def _executor_factory() -> Callable[[], Any] | None:
     return lambda: DudExecutor(backend="subprocess")
 
 
+def _view_workers() -> int:
+    """``NONTAINER_STUDIO_VIEW_WORKERS``, the warm app-handler pool size.
+
+    A cache size, not a limit — nothing here caps how many workers a
+    burst of concurrent requests can create. Default 0 (a pristine
+    worker per handler call), which is only affordable because
+    ``preload_grants`` makes one cheap; see ``_python_config``.
+    Unparseable or negative values fall back to the default rather than
+    raising, matching how ISOLATION handles a bad value.
+    """
+    try:
+        return max(0, int(os.getenv("NONTAINER_STUDIO_VIEW_WORKERS", "0")))
+    except ValueError:
+        return 0
+
+
 def _ensure_vm_cap() -> None:
     """Default dud's VM budget for the studio's long-running posture.
 
@@ -769,7 +785,7 @@ class Registry:
                 modules.append(getattr(presets, preset)())
             except ImportError:
                 pass
-        # Crash containment: agent code runs in a forked worker (the
+        # Crash containment: agent code runs in a separate worker (the
         # workspace fs, cache, and db stay host-side, RPC-bridged) — a
         # segfault or OOM in C-extension guts costs the turn, not the
         # server. NONTAINER_STUDIO_ISOLATION=none opts out; =kernel
@@ -778,7 +794,34 @@ class Registry:
         if isolation not in ("none", "process", "kernel"):
             isolation = "process"
         return PythonConfig(
-            modules=modules, host_objects={"db": db}, isolation=isolation
+            modules=modules,
+            host_objects={"db": db},
+            isolation=isolation,
+            # Import the granted stack ONCE into sandtrap's forkserver
+            # broker; every worker then inherits it copy-on-write. With
+            # dataframes()+plotting() granted that is the difference
+            # between a worker costing ~233ms / 111MB and ~12ms / 29MB
+            # (measured on this venv), and studio holds a session worker
+            # per open workspace for its life — so it is memory, not
+            # just latency. The safety caveat is grants whose IMPORT
+            # starts a thread, which would leave the broker
+            # multi-threaded; studio grants only nontainer's own presets,
+            # and the arrow allocator they'd otherwise trip on is pinned
+            # in `nontainer_studio/__init__` before anything imports
+            # pandas. Process-wide, not per-workspace — the first
+            # workspace to start a worker decides for the whole server,
+            # which is safe here because EVERY workspace studio builds
+            # (sessions and published snapshots alike) comes from this
+            # one function.
+            preload_grants=True,
+            # App-handler workers, kept warm per distinct view. Preloaded,
+            # a pristine worker is ~12ms, so the default of 0 gives every
+            # request clean process state for about the cost of reusing
+            # one. Raise it only for a published app under real
+            # concurrency: past the cap, calls fall back to a per-call
+            # sandbox rather than queueing, so too-low is latency while
+            # too-high is resident memory that nothing reclaims.
+            warm_view_workers=_view_workers(),
         )
 
     def _assemble(
@@ -1138,8 +1181,9 @@ class Registry:
     def publish(self, name: str) -> tuple[str, str | None]:
         """Freeze the current state behind a capability token. The
         snapshot branch never moves; its handlers share the session's
-        LIVE db (fork inherits host_objects) — frozen code, live state,
-        the idiomatic shape."""
+        LIVE db — the workspace fork carries host_objects, and a worker
+        reaches the real object over sandtrap's RPC bridge rather than
+        holding a copy. Frozen code, live state, the idiomatic shape."""
         session = self._sessions.get(name)
         if session is None:
             raise KeyError(name)
