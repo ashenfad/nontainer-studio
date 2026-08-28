@@ -2503,3 +2503,185 @@ def test_the_vendored_react_exports_its_whole_public_surface():
     # A hand-list drifts DOWN; this catches that shape without pinning a
     # number that a React release would have to chase.
     assert len(names) >= 50, f"only {len(names)} exports — did the generator run?"
+
+
+# -- the house theme (one palette, two frontends) -----------------------------
+
+# app-facing property -> the shell's own custom property it copies.
+# frontend/src/app.css is the source; appassets/theme.css is the copy an
+# agent's app sees. The names differ on purpose (the shell stays free to
+# rename its internals), which is exactly why they need pairing.
+_PALETTE_PAIRS = {
+    "--app-background": "--bg",
+    "--app-surface": "--surface",
+    "--app-surface-hover": "--surface-hover",
+    "--app-border": "--border",
+    "--app-text": "--text",
+    "--app-text-muted": "--text-muted",
+    "--app-link": "--link",
+    "--app-primary": "--accent",
+    "--app-secondary": "--purple",
+    "--app-success": "--success",
+    "--app-warning": "--warning",
+    "--app-error": "--error",
+}
+
+
+def _root_properties(path: Path) -> dict[str, str]:
+    """Custom properties declared in the FIRST `:root {...}` block."""
+    import re
+
+    block = re.search(r":root\s*\{(.*?)\}", path.read_text(), re.S)
+    assert block, f"no :root block in {path}"
+    return {
+        name: value.strip()
+        for name, value in re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", block.group(1))
+    }
+
+
+def test_the_app_palette_still_matches_the_shell():
+    """A palette stated in two places and updated in one is the whole
+    reason this pairing exists. theme.css is a hand-copy of the shell's
+    :root block under app-facing names; nothing else would notice it
+    going stale, because an app with last quarter's accent colour still
+    renders perfectly."""
+    root = Path(__file__).parent.parent
+    shell = _root_properties(root / "frontend" / "src" / "app.css")
+    app = _root_properties(root / "nontainer_studio" / "appassets" / "theme.css")
+
+    drifted = {
+        app_name: (app.get(app_name), shell.get(shell_name))
+        for app_name, shell_name in _PALETTE_PAIRS.items()
+        if app.get(app_name) != shell.get(shell_name)
+    }
+    assert not drifted, (
+        "theme.css no longer matches frontend/src/app.css "
+        f"(app value, shell value): {drifted}"
+    )
+
+
+def test_theme_assets_serve_to_preview_and_publish(studio):
+    """Both spellings are real files on both lifecycles: the module a
+    React app imports and the stylesheet a plain-DOM one links."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    ws.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", b"<h1>hi</h1>")
+    ws.checkpoint()
+
+    for path in ("vendor/theme.css", "vendor/theme.js"):
+        assert client.get(f"/preview/s1/{path}").status_code == 200, path
+
+    pub = client.post("/api/sessions/s1/publish").json()
+    for path in ("vendor/theme.css", "vendor/theme.js"):
+        assert client.get(f"{pub['url']}{path}").status_code == 200, path
+
+
+def test_the_notes_name_both_theme_spellings(studio):
+    """A vendored theme the agent is never told about is a file nobody
+    imports."""
+    _, registry = studio
+    notes = registry.apps.frontend_notes
+    assert "house/theme" in notes  # the React spelling
+    assert "vendor/theme.css" in notes  # the plain-DOM one
+
+
+def test_the_themed_reference_app_picks_up_the_shell_palette(studio):
+    """The bug this closes: mui-app.jsx read --app-primary and
+    --app-color-scheme, and nothing in the stack set either — so the
+    reference an agent copies quietly rendered stock Material purple on
+    white. Asserting the COMPUTED colour is the only check that would
+    have caught it; the file looked correct."""
+    pytest.importorskip("playwright")
+
+    refs = Path(__file__).parent.parent / "skills" / "building-apps" / "references"
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", (refs / "mui-app.html").read_bytes())
+    ws.fs.write("/workspace/app/app.jsx", (refs / "mui-app.jsx").read_bytes())
+    ws.fs.write(
+        "/workspace/app/api/runs.py",
+        b'def get(req):\n    return {"runs": [{"id": 42, "status": "done"}]}\n',
+    )
+    ws.checkpoint()
+
+    result = registry.get("s1").runtime.test_app(
+        [
+            # The stylesheet reached the page even though the html never
+            # mentions it — the loader prepends it.
+            {
+                "assert": "getComputedStyle(document.documentElement)"
+                ".getPropertyValue('--app-primary').trim() === '#e94560'"
+            },
+            # ...and the theme built from it actually reached MUI. rgb(),
+            # because that is how the browser reports a resolved colour.
+            {
+                "assert": "getComputedStyle(document.querySelector('#open-42'))"
+                ".color === 'rgb(233, 69, 96)'"
+            },
+            # CssBaseline painted the shell's background, not white.
+            {
+                "assert": "getComputedStyle(document.body)"
+                ".backgroundColor === 'rgb(26, 26, 46)'"
+            },
+        ]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)
+    assert result.ok, render_test_app(result)
+
+
+def test_the_themed_chart_reference_actually_runs(studio):
+    """The plain-DOM reference, verified the same way as the MUI one.
+
+    The specific unknown worth pinning: chart-app.html colours itself
+    with Tailwind ARBITRARY-value classes (`bg-[var(--app-surface)]`).
+    Those are a JIT feature, and the vendored build is the play CDN — if
+    it ever stopped compiling them the page would render unstyled rather
+    than fail, which is the kind of break nobody notices until a human
+    looks at a screenshot."""
+    pytest.importorskip("playwright")
+
+    refs = Path(__file__).parent.parent / "skills" / "building-apps" / "references"
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", (refs / "chart-app.html").read_bytes())
+    ws.fs.write(
+        "/workspace/app/api/summary.py",
+        b"def get(req):\n"
+        b'    return {"total": 3, "mean_value": 1.5,\n'
+        b'            "options": {"category": ["a"], "region": ["north"]},\n'
+        b'            "chart": {"x": [2020, 2021], "y": [1.0, 2.0]}}\n',
+    )
+    ws.checkpoint()
+
+    result = registry.get("s1").runtime.test_app(
+        [
+            {"assert": "document.querySelector('#total').textContent === '3'"},
+            # Plotly drew, and drew onto the page's own background rather
+            # than its default white paper.
+            {"assert": "document.querySelector('#chart .plot-container') !== null"},
+            {
+                "assert": "document.querySelector('#chart .main-svg')"
+                ".style.backgroundColor === 'rgba(0, 0, 0, 0)'"
+            },
+            # The palette reached the page, and Tailwind compiled the
+            # arbitrary-value class that consumes it.
+            {
+                "assert": "getComputedStyle(document.body)"
+                ".backgroundColor === 'rgb(26, 26, 46)'"
+            },
+            {
+                "assert": "getComputedStyle(document.querySelector('#reset'))"
+                ".backgroundColor === 'rgb(22, 33, 62)'"
+            },
+        ]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)
+    assert result.ok, render_test_app(result)

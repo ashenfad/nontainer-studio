@@ -1,0 +1,70 @@
+/* The shell's palette, published to the app that the shell embeds.
+ *
+ * This file is OURS (hand-written, not produced by fetch-appassets.sh).
+ * It is the app-facing half of a contract whose other half is
+ * frontend/src/app.css: the studio chrome's own :root block. The values
+ * below are copied from it, and tests/test_server.py asserts they still
+ * agree -- a palette stated in two places and updated in one is the
+ * failure this pairing exists to catch.
+ *
+ * The names are deliberately NOT the shell's own (--bg, --accent). An
+ * agent's app sees a small, stable, prefixed surface; the shell stays
+ * free to rename its internals.
+ *
+ * jsx-loader.js links this automatically, PREPENDED to <head> so an
+ * app's own styles still win on equal specificity. A plain-DOM app that
+ * does not use the loader links it itself:
+ *
+ *     <link rel="stylesheet" href="vendor/theme.css">
+ *
+ * Fonts name only stacks that resolve with no network. The shell's
+ * display face (Fraunces) and body face (Public Sans) come from Google
+ * Fonts, which an air-gapped deployment cannot reach -- naming them
+ * here would promise a match this file cannot deliver. Vendoring the
+ * woff2s is the follow-up that would close it.
+ */
+
+:root {
+    /* Tells the browser to render native controls, scrollbars, and form
+     * widgets dark. Without it a themed MUI app still gets a white
+     * scrollbar and a light date picker. */
+    color-scheme: dark;
+
+    --app-color-scheme: dark;
+
+    --app-background: #1a1a2e;
+    --app-surface: #16213e;
+    --app-surface-hover: #1a2744;
+    --app-border: #0f3460;
+
+    --app-text: #e0e0e0;
+    --app-text-muted: #888;
+    --app-link: #7cb7ff;
+
+    --app-primary: #e94560;
+    --app-secondary: #a371f7;
+    --app-success: #4caf50;
+    --app-warning: #ff9800;
+    --app-error: #e94560;
+
+    --app-font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --app-font-mono: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+}
+
+/* Base styles, so a plain-DOM app matches the shell without writing any
+ * CSS at all. MUI's CssBaseline paints the same values through the
+ * theme; the two agree because both read this palette. */
+body {
+    margin: 0;
+    background: var(--app-background);
+    color: var(--app-text);
+    font-family: var(--app-font-body);
+}
+
+code, kbd, samp, pre {
+    font-family: var(--app-font-mono);
+}
+
+a {
+    color: var(--app-link);
+}

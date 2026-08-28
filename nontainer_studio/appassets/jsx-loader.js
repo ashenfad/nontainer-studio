@@ -52,6 +52,10 @@ const VENDOR_IMPORTS = {
   "react-dom": "./vendor/react.min.js",
   "react-dom/client": "./vendor/react.min.js",
   "@mui/material": "./vendor/mui.min.js",
+  // The shell's palette as a ready-made MUI theme. Namespaced rather
+  // than bare so it reads as house-supplied at the import site, and so
+  // the namespace has room for whatever else the house ships later.
+  "house/theme": "./vendor/theme.js",
 };
 
 // Defer to a map the page already declares: an agent extending the set
@@ -61,6 +65,31 @@ if (!document.querySelector('script[type="importmap"]')) {
   map.type = "importmap";
   map.textContent = JSON.stringify({ imports: VENDOR_IMPORTS });
   document.head.appendChild(map);
+}
+
+// The shell's palette, so an app inherits the look of the page it is
+// embedded in without asking for it. PREPENDED, not appended: a
+// stylesheet added at the END of head would beat the app's own rules on
+// equal specificity, so styling the page would stop working the moment
+// the app matched.
+//
+// Awaited, because theme.js reads these properties through
+// getComputedStyle at module-evaluation time -- an unloaded stylesheet
+// resolves every one of them to "" and the theme silently degrades to
+// stock Material. Resolve on error too: a missing theme.css should cost
+// the palette, not the whole app.
+function themeStylesheet() {
+  if (document.querySelector('link[rel="stylesheet"][href*="theme.css"]')) {
+    return Promise.resolve(); // the page linked it itself; parsing awaited it
+  }
+  return new Promise((resolve) => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "vendor/theme.css";
+    link.onload = resolve;
+    link.onerror = resolve;
+    document.head.prepend(link);
+  });
 }
 
 function report(message) {
@@ -76,6 +105,7 @@ function report(message) {
 }
 
 try {
+  await themeStylesheet();
   const { transform } = await import("./sucrase.min.js");
   const response = await fetch(entry);
   if (!response.ok) {

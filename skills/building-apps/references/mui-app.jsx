@@ -8,20 +8,15 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  Button, Dialog, DialogActions, DialogContent, DialogTitle,
+  Button, CssBaseline, Dialog, DialogActions, DialogContent, DialogTitle,
   Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
-  TextField, ThemeProvider, Typography, createTheme,
+  TextField, ThemeProvider, Typography,
 } from "@mui/material";
 
-// The shell publishes its palette as CSS custom properties; read them so
-// the app matches the page it is embedded in instead of guessing.
-const shell = getComputedStyle(document.documentElement);
-const theme = createTheme({
-  palette: {
-    mode: shell.getPropertyValue("--app-color-scheme").trim() || "light",
-    primary: { main: shell.getPropertyValue("--app-primary").trim() || "#6750a4" },
-  },
-});
+// The house theme: the shell's own palette, already built. Use it rather
+// than calling createTheme yourself -- an app that picks its own colours
+// looks like a different product from the page embedding it.
+import theme from "house/theme";
 
 function App() {
   const [rows, setRows] = useState([]);
@@ -38,6 +33,11 @@ function App() {
 
   return (
     <ThemeProvider theme={theme}>
+      {/* Paints the theme's background and text colours onto the page
+          itself. Without it the app renders dark-on-dark text over the
+          browser's default white. */}
+      <CssBaseline />
+
       <Typography variant="h5" id="title" sx={{ m: 2 }}>Runs</Typography>
 
       {error && <Typography id="error" color="error" sx={{ m: 2 }}>{error}</Typography>}
