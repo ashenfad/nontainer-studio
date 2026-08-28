@@ -128,11 +128,56 @@ def apps_config() -> AppsConfig:
     Nothing in nontainer forced the split — it is studio's discipline to
     keep, so it is kept here, once.
 
-    Defaults today. This is the seam a vendored frontend stack
-    (``static_assets``) and a house component library (``apps_primer``)
-    will be declared on.
+    The frontend stack is VENDORED (see ``appassets/``): plotly and
+    tailwind are served from the app's own origin, so an agent on a
+    locally-hosted model with no internet still gets a chart that
+    renders. ``static_assets`` puts the bytes in place and
+    ``frontend_notes`` says they exist — the pair is one decision, since
+    a library the agent isn't told about may as well not be here.
+
+    ``script_hosts`` is deliberately left at nontainer's default rather
+    than emptied. Studio is not itself air-gapped, and the public CDNs
+    remain useful where they resolve; what changed is that nothing the
+    agent is *told to use* requires them. An air-gapped deployment can
+    set ``script_hosts=()`` on top of this, and the notes then say
+    scripts may load only from the app itself.
     """
-    return AppsConfig()
+    return AppsConfig(
+        static_assets={"vendor": app_assets_dir()},
+        frontend_notes=FRONTEND_NOTES,
+    )
+
+
+def app_assets_dir() -> Path:
+    """Where the vendored browser libraries live.
+
+    ``NONTAINER_STUDIO_APP_ASSETS`` overrides, mirroring
+    ``NONTAINER_STUDIO_SKILLS`` — an embedder swapping in its own design
+    system replaces the directory and the notes together."""
+    override = os.getenv("NONTAINER_STUDIO_APP_ASSETS")
+    return Path(override) if override else Path(__file__).parent / "appassets"
+
+
+FRONTEND_NOTES = """\
+Charts: <script src="vendor/plotly.min.js"></script>, then Plotly.react(
+el, data, layout). Plotly 3.x, the full build — every trace type,
+including tile-free scattergeo/choropleth for maps.
+CSS: <script src="vendor/tailwind.js"></script> for tailwind utility
+classes (it compiles them in the browser; no build, no config file).
+Both are served WITH your app from its own origin, so they work with no
+network at all. Do not load them from a CDN.
+"""
+"""What the agent is told it has. Replaces nontainer's default block,
+which names esm.sh and cdn.jsdelivr — instructions to fetch from the
+internet, in the one part of the prompt introduced with "copy this
+known-good pattern exactly". Appending a correction underneath would
+have left the wrong instruction both first and more emphatic, which is
+why nontainer 0.3.4 made this block replaceable rather than additive.
+
+No components entry: the Preact reference is gone until the component
+library question is settled, and plain DOM is what the surrounding
+notes already call the most reliable choice. Better a documented gap
+than a CDN pointer that fails only where it matters."""
 
 
 def _view_workers() -> int:
