@@ -1,15 +1,18 @@
 <!doctype html>
 <!-- Reference frontend: filters -> fetch -> plotly, no build step.
      Copy to /workspace/app/index.html; it pairs with api-handler.py.
-     Plain DOM is the most reliable shape here — reach for
-     preact-app.html only when you actually want components. -->
+     Plain DOM is the most reliable shape here.
+
+     The two <script> tags below load from vendor/ — served with your
+     app from its own origin, so they work with no network at all.
+     Don't swap them for CDN urls. -->
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Explorer</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <script src="vendor/tailwind.js"></script>
+  <script src="vendor/plotly.min.js"></script>
 </head>
 <body class="bg-gray-50">
   <main class="p-6 max-w-5xl mx-auto">

@@ -67,7 +67,10 @@ Other knobs: `NONTAINER_STUDIO_PORT`, `NONTAINER_STUDIO_STORE`
 (defaults to `~/.nontainer-studio`), `NONTAINER_STUDIO_CSP` (override
 the published-app CSP; `none` disables), `NONTAINER_STUDIO_SKILLS`
 (directory of starter skills seeded into new sessions; defaults to the
-repo's `skills/`), `NONTAINER_STUDIO_COMPRESS_TOKENS` (context-
+repo's `skills/`), `NONTAINER_STUDIO_APP_ASSETS` (directory of browser
+libraries served to agent-authored apps at `vendor/`; defaults to the
+repo's `nontainer_studio/appassets/` — see **Works offline** below),
+`NONTAINER_STUDIO_COMPRESS_TOKENS` (context-
 compression watermark), `NONTAINER_STUDIO_ISOLATION` (`process` by
 default — agent code runs in a worker process of its own so a
 segfault/OOM in C-extension guts costs the turn, not the server; the
@@ -79,6 +82,26 @@ into sandtrap's forkserver broker, which puts a pristine worker at
 roughly 12ms, so 0 buys clean per-request process state for about the
 price of reusing one. Raise it only if a published app serves real
 concurrency).
+
+### Works offline
+
+The libraries an agent's app uses — **plotly** and **tailwind** — are
+vendored into `nontainer_studio/appassets/` and served from the app's own
+origin at `vendor/`, so a chart renders with no internet at all. That
+matters for a locally-hosted model on an air-gapped machine, where a CDN
+`<script src>` is a blank page.
+
+The bytes are committed, like the frontend build, so nothing is fetched at
+install or run time. They stay out of the workspace — no session, fork, or
+published snapshot carries a copy — and the agent is told what it has in
+the terminal tool's description rather than being left to guess.
+
+`./scripts/fetch-appassets.sh` regenerates them (pinned versions and
+checksums in `nontainer_studio/appassets/README.md`). Swap the whole
+directory with `NONTAINER_STUDIO_APP_ASSETS` — and if you do, update
+`FRONTEND_NOTES` in `nontainer_studio/sessions.py` so the agent is told
+about *your* libraries. The bytes and the sentence describing them are one
+decision.
 
 ### Where agent code runs
 

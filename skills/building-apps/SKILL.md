@@ -35,8 +35,10 @@ don't need. Starting from the pair and cutting is consistently faster
 than building up from nothing, and it is where the non-obvious parts
 already live (empty results, numpy casts, relative urls, stable ids).
 
-Want components instead of plain DOM? `references/preact-app.html` does
-the same frontend job with Preact. Pick ONE frontend, not both.
+Plain DOM is the only frontend shape documented here. There is no
+component-library reference right now — the tool description names what
+libraries you actually have, and everything else is unavailable rather
+than merely unmentioned.
 
 ## A handler, whole
 
@@ -124,9 +126,13 @@ def get(req):
 Plain HTML + DOM + fetch is the most reliable pattern — copy
 references/chart-app.html: dropdowns, a relative fetch, error and empty
 states, and `Plotly.react` to redraw in place (cheaper than newPlot per
-change, and it leaves no stale trace when the result is empty). If you
-want components instead, copy references/preact-app.html EXACTLY — ES
-modules from esm.sh, never UMD builds with guessed globals.
+change, and it leaves no stale trace when the result is empty).
+
+Its two <script> tags load from `vendor/` — plotly and tailwind, served
+with your app from its own origin. That is why they work with no
+network. Don't rewrite them as CDN urls: those hosts may not resolve
+where this is deployed, and the failure looks like a broken page rather
+than a blocked request.
 
 Give every control a stable `id` or `data-key`. test_app drives the page
 by selector, and positional guesses (`nth-child`, `:first-of-type`)
@@ -165,9 +171,11 @@ than changing it.
   run_python is slower, and unlike file_edit it will happily match the
   wrong occurrence and tell you it worked.
 
-Scripts may only load from: esm.sh, unpkg.com, cdn.jsdelivr.net,
-cdn.plot.ly, cdn.tailwindcss.com. Anything else is blocked (test_app
-names blocked URLs in its [rejected requests] section).
+The libraries you have are served from `vendor/` and listed in the
+terminal tool's description — that list is the authority, not this
+file. External scripts are limited to an allowlist and may not resolve
+at all; test_app names anything it blocked in its [rejected requests]
+section.
 
 ## Debugging loop
 

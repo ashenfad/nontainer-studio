@@ -230,7 +230,7 @@ def test_new_sessions_seed_skills(studio):
     client.post("/api/sessions", json={"name": "s1"})
     files = client.get("/api/sessions/s1/files").json()["files"]
     assert "/workspace/skills/building-apps/SKILL.md" in files
-    assert "/workspace/skills/building-apps/references/preact-app.html" in files
+    assert "/workspace/skills/building-apps/references/chart-app.html" in files
 
     # creation-only: a reseed must not clobber the session's copies
     session = registry.get("s1")
@@ -2184,3 +2184,114 @@ def test_the_default_studio_still_serves_the_library_csp(studio):
     csp = client.get(pub["url"]).headers["content-security-policy"]
     assert "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'" in csp
     assert "https://esm.sh" in csp
+
+
+# -- vendored browser libraries (the air-gap floor) ---------------------------
+
+
+def test_vendored_assets_serve_to_preview_and_publish(studio):
+    """plotly and tailwind come from the app's own origin, so an agent
+    with no internet still gets a chart that renders."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+
+    for path in ("vendor/plotly.min.js", "vendor/tailwind.js"):
+        r = client.get(f"/preview/s1/{path}")
+        assert r.status_code == 200, path
+        assert r.headers["content-type"].startswith("text/javascript")
+        assert len(r.content) > 100_000  # a real bundle, not a stub
+
+    # ... and the same bytes survive publishing, since the router serves
+    # under the same AppsConfig the session was built with
+    pub = client.post("/api/sessions/s1/publish").json()
+    assert client.get(f"{pub['url']}vendor/plotly.min.js").status_code == 200
+
+
+def test_vendored_assets_stay_out_of_the_workspace(studio):
+    """They are served, not stored: nothing enters the agent's
+    filesystem, so they cost nothing in commits, forks, or a guest
+    tree."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    _seed_app(ws)
+    assert client.get("/preview/s1/vendor/plotly.min.js").status_code == 200
+
+    assert not ws.fs.exists("/workspace/app/vendor")
+    files = client.get("/api/sessions/s1/files").json()["files"]
+    assert not any("vendor/" in f for f in files)
+
+
+def test_the_agent_is_told_what_it_actually_has(studio):
+    """static_assets puts the bytes in place; frontend_notes says they
+    exist. A library the agent isn't told about may as well not be
+    here — and nontainer's default block would name CDNs instead."""
+    from nontainer.adapters.render import apps_notes
+
+    client, registry = studio
+    notes = apps_notes(registry.apps)
+    assert "vendor/plotly.min.js" in notes
+    assert "vendor/tailwind.js" in notes
+    assert "esm.sh/preact" not in notes
+    assert "cdn.jsdelivr.net/npm/plotly" not in notes
+
+
+def test_shipped_skills_reference_no_cdn():
+    """The reference files are what the agent copies. One CDN url here
+    is an app that renders for us and breaks air-gapped -- the exact
+    failure vendoring exists to remove."""
+    import re
+    from pathlib import Path
+
+    skills = Path(__file__).parent.parent / "skills"
+    offenders = []
+    for path in skills.rglob("*"):
+        if not path.is_file():
+            continue
+        for m in re.finditer(r"https?://[^\s\"'<>)]+", path.read_text()):
+            offenders.append(f"{path.relative_to(skills)}: {m.group()}")
+    assert not offenders, "external urls in shipped skills:\n" + "\n".join(offenders)
+
+
+def test_vendored_stack_actually_runs_in_a_browser(studio):
+    """Serving the bytes is not the claim -- rendering without a network
+    is. Drives the real thing through test_app: plotly draws a trace and
+    tailwind compiles a utility class, both from vendor/."""
+    pytest.importorskip("playwright")
+
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    session.ws.fs.makedirs("/workspace/app", exist_ok=True)
+    session.ws.fs.write(
+        "/workspace/app/index.html",
+        b"""<!doctype html>
+<html><head>
+  <script src="vendor/tailwind.js"></script>
+  <script src="vendor/plotly.min.js"></script>
+</head><body class="bg-gray-50">
+<div id="chart"></div><div id="status">init</div>
+<script>
+Plotly.react('chart', [{x:[1,2,3], y:[2,4,8], type:'scatter'}], {})
+  .then(() => { document.getElementById('status').textContent =
+      'plotly ' + Plotly.version; });
+</script>
+</body></html>""",
+    )
+    session.ws.checkpoint()
+
+    result = session.runtime.test_app(
+        [
+            {"assert": "document.querySelectorAll('#chart .trace').length > 0"},
+            {"read": "#status"},
+            {"eval": "getComputedStyle(document.body).backgroundColor"},
+        ]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)  # no chromium
+
+    assert result.ok, result
+    assert result.results[1].value == "plotly 3.7.0"  # the pinned version
+    assert "249, 250, 251" in result.results[2].value  # tailwind compiled it
+    assert not result.rejected  # nothing tried to reach a CDN
