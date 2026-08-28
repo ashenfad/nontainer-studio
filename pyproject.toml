@@ -18,7 +18,16 @@ dependencies = [
     # 0.2.1 brought delete_workspace (session teardown is nontainer's,
     # so kvgit is only transitive here); 0.2.0 the workspace root
     # contract (files at /workspace across executors).
-    "nontainer[agno,apps]>=0.3.1",
+    #
+    # 0.3.3 is the floor studio needs NEXT rather than now: it adds
+    # AppsConfig.static_assets — host files served with an app but
+    # absent from the workspace — which is how the vendored frontend
+    # stack (and an air-gapped deployment) gets built. It also carries
+    # two things studio gets for free: test_app page errors attributed
+    # to the agent's own file rather than the top of a vendored bundle,
+    # and a fork that keeps its workspace's mounts, which matters here
+    # because publish() IS a fork.
+    "nontainer[agno,apps]>=0.3.3",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",
