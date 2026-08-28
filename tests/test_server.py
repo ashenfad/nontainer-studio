@@ -2372,3 +2372,81 @@ def test_the_mui_reference_app_actually_runs(studio):
     assert result.ok, render_test_app(result)
     assert result.results[3].value == "'done'"  # fetched, rendered, and bound
     assert not result.rejected  # nothing reached for a CDN
+
+
+def _jsx_app(ws, html: bytes, jsx: bytes):
+    ws.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", html)
+    ws.fs.write("/workspace/app/app.jsx", jsx)
+    ws.checkpoint()
+
+
+BARE_IMPORT_JSX = b"""import { useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { Button } from '@mui/material';
+
+function App() {
+  const [n, setN] = useState(0);
+  return <Button id="b" onClick={() => setN(n + 1)}>count {n}</Button>;
+}
+createRoot(document.getElementById('root')).render(<App />);
+"""
+
+
+def test_an_agent_written_page_needs_no_import_map(studio):
+    """The map is machinery an agent would otherwise have to reproduce
+    in every app, and an app whose html lacks it fails on the first
+    import with an error about specifiers rather than about the thing
+    the agent got wrong. The loader supplies it."""
+    pytest.importorskip("playwright")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _jsx_app(
+        session.ws,
+        b"""<html><body><div id="root"></div>
+<script type="module" src="vendor/jsx-loader.js" data-app="app.jsx"></script>
+</body></html>""",
+        BARE_IMPORT_JSX,
+    )
+    result = session.runtime.test_app(
+        [
+            {"click": "#b"},
+            {"assert": "document.querySelector('#b').textContent === 'count 1'"},
+        ]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)
+    assert result.ok, render_test_app(result)
+
+
+def test_a_page_that_declares_its_own_map_wins(studio):
+    """An agent extending the set with its own entry should win -- and
+    older engines allow only one map, so injecting a second would break
+    the page rather than help it."""
+    pytest.importorskip("playwright")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _jsx_app(
+        session.ws,
+        b"""<html><head><script type="importmap">
+{"imports": {"react": "./vendor/react.min.js",
+             "react/jsx-runtime": "./vendor/react.min.js",
+             "react-dom/client": "./vendor/react.min.js",
+             "react-dom": "./vendor/react.min.js",
+             "@mui/material": "./vendor/mui.min.js",
+             "house/theme": "./vendor/react.min.js"}}
+</script></head><body><div id="root"></div>
+<script type="module" src="vendor/jsx-loader.js" data-app="app.jsx"></script>
+</body></html>""",
+        b"import { Fragment as HouseFragment } from 'house/theme';\n"
+        b"if (!HouseFragment) throw new Error('house entry did not resolve');\n"
+        + BARE_IMPORT_JSX,
+    )
+    result = session.runtime.test_app(
+        [{"assert": "document.querySelectorAll('script[type=importmap]').length === 1"}]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)
+    assert result.ok, render_test_app(result)

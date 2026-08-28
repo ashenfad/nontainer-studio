@@ -182,20 +182,22 @@ def app_assets_dir() -> Path:
 
 
 FRONTEND_NOTES = """\
-Components: MUI (Material UI) with React and JSX. Copy BOTH
-skills/building-apps/references/mui-app.html and mui-app.jsx into
-<root>/app (as index.html and app.jsx) and edit them down — the html is
-boilerplate you should not write from scratch, because it carries the
-import map that makes the imports below resolve.
-Then write ordinary React:
+Components: MUI (Material UI) with React and JSX. Put your JSX in
+<root>/app/app.jsx and add ONE tag to your html:
+
+    <div id="root"></div>
+    <script type="module" src="vendor/jsx-loader.js" data-app="app.jsx"></script>
+
+That compiles app.jsx in the browser (no build step) and resolves the
+imports, so write ordinary React:
 
     import { useState } from 'react';
+    import { createRoot } from 'react-dom/client';
     import { Button, Dialog, Table } from '@mui/material';
 
-Import BARE names exactly as you would in any React project. Do not
-rewrite them as 'vendor/mui.min.js' — the import map already points them
-there, and a rewritten path is the thing most likely to break. There is
-no build step: app.jsx is compiled in the browser when the page loads.
+Import BARE names, exactly as in any React project — do NOT rewrite them
+as 'vendor/mui.min.js'. Copy references/mui-app.{html,jsx} for a working
+pair (fetch -> table -> dialog, theming, empty and error states).
 Charts: <script src="vendor/plotly.min.js"></script>, then Plotly.react(
 el, data, layout). Plotly 3.x, the full build — every trace type,
 including tile-free scattergeo/choropleth for maps.
@@ -217,11 +219,14 @@ memory. The mechanically cheaper option (Material Web Components, 472KB
 and no transpiler) verified just as well in a spike, but a private
 component library extending MUI makes MUI a dependency regardless.
 
-The import-map instruction is the load-bearing sentence. Bare names only
-resolve because mui-app.html declares the map, and an agent that
-'helpfully' rewrites '@mui/material' to a vendor path is the failure
-seen most in spiking this — so the note says not to, in the imperative,
-next to the thing it applies to."""
+The import map used to live in the reference html, which made it
+machinery the agent had to reproduce in every app it wrote — and an app
+whose html lacked it failed on the first import, with an error about
+module specifiers rather than about the thing the agent got wrong. The
+loader supplies it now (deferring to one the page declares), so the
+agent's whole obligation is a script tag and ordinary React imports.
+The 'do NOT rewrite them' line stays: it is the remaining edit that
+would break a working app, and it is cheap to say."""
 
 
 def _view_workers() -> int:

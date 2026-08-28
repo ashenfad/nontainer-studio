@@ -39,10 +39,10 @@ Want components instead of plain DOM? Copy `references/mui-app.html`
 AND `references/mui-app.jsx` — MUI with React and JSX, compiled in the
 browser, no build step. Pick ONE frontend, not both.
 
-The html is boilerplate: copy it rather than writing your own, because
-it carries the import map that makes `import { Button } from
-'@mui/material'` resolve. Write bare imports exactly as you would in any
-React project; do NOT rewrite them as vendor paths.
+The html is tiny: a `#root` div and one `<script src="vendor/jsx-loader.js">`
+tag. That tag compiles your JSX and resolves the imports, so write bare
+names (`react`, `@mui/material`) exactly as in any React project — do
+NOT rewrite them as vendor paths.
 
 ## A handler, whole
 

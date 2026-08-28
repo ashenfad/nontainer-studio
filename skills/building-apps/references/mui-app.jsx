@@ -1,9 +1,10 @@
 // Reference app: fetch -> table -> dialog, with MUI components.
 // Pairs with mui-app.html (copy that too) and api-handler.py.
 //
-// Note the imports: bare names like '@mui/material' work because the
-// import map in the html resolves them. Write them exactly as you would
-// in any React project -- do NOT rewrite them as 'vendor/mui.min.js'.
+// Write imports exactly as you would in any React project. The bare
+// names below resolve because the loader supplies an import map; you do
+// not need to do anything for that, and rewriting them as
+// 'vendor/mui.min.js' would break them.
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {

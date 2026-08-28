@@ -36,6 +36,33 @@
 const tag = document.currentScript || document.querySelector("script[data-app]");
 const entry = (tag && tag.dataset.app) || "app.jsx";
 
+// What `import { Button } from '@mui/material'` resolves to. Carried
+// HERE rather than written into the page, because an import map is
+// machinery the agent would otherwise have to reproduce correctly in
+// every app it writes -- and an app whose html lacks it fails on the
+// first import, with an error about specifiers rather than about the
+// thing the agent got wrong.
+//
+// Injecting it works because a map applies to every module resolved
+// AFTER it is added, and the compiled app is injected below. This
+// loader itself imports only relative paths, so it needs no map.
+const VENDOR_IMPORTS = {
+  react: "./vendor/react.min.js",
+  "react/jsx-runtime": "./vendor/react.min.js",
+  "react-dom": "./vendor/react.min.js",
+  "react-dom/client": "./vendor/react.min.js",
+  "@mui/material": "./vendor/mui.min.js",
+};
+
+// Defer to a map the page already declares: an agent extending the set
+// with its own entry should win, and older engines allow only one.
+if (!document.querySelector('script[type="importmap"]')) {
+  const map = document.createElement("script");
+  map.type = "importmap";
+  map.textContent = JSON.stringify({ imports: VENDOR_IMPORTS });
+  document.head.appendChild(map);
+}
+
 function report(message) {
   console.error(message);
   // Surface it where a human (and a screenshot) can see it too.

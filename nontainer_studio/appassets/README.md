@@ -16,7 +16,7 @@ internet can still write an app that renders.
 | `react.min.js` | npm `react` + `react-dom`, bundled | `295e2d8bf23368bac660be041ae21cc45f401b03477dffbdc9a7b2b7edf312e1` |
 | `mui.min.js` | npm `@mui/material@6` + emotion, bundled | `51e357905679523efe86a0624935ffd55a1b41ac2a3ce9ec02cac4377686ddc9` |
 | `sucrase.min.js` | npm `sucrase@3`, bundled | `8bbf28da8aedb231f4315800f6b0d7310706ae4f1e6e4cdbca2311bbfb7a2913` |
-| `jsx-loader.js` | **ours** — hand-written, not generated | `c9b69c3ce21949050dfa3bb4aa3592d00b169f80dab2fd35ede4c202e8202f7d` |
+| `jsx-loader.js` | **ours** — hand-written, not generated | `1001e88e78f0590a13354f60b718cffdecd46c16fa5c4db97e434998e86bb3e0` |
 
 All MIT licensed. ~6.0 MB total, of which plotly is 4.7 MB.
 
@@ -64,8 +64,15 @@ named 'jsx'"*.
 
 ## After changing anything here
 
-Update `FRONTEND_NOTES` in `nontainer_studio/sessions.py`, and the import
-map in `skills/building-apps/references/mui-app.html`. The bytes, the
-sentence that describes them, and the map that resolves them are one
-decision: a library the agent isn't told about may as well not be here,
-and one it's told about that doesn't resolve is worse.
+Update `FRONTEND_NOTES` in `nontainer_studio/sessions.py` and
+`VENDOR_IMPORTS` in `jsx-loader.js`. The bytes, the sentence that
+describes them, and the map that resolves them are one decision: a
+library the agent isn't told about may as well not be here, and one it's
+told about that doesn't resolve is worse.
+
+The import map lives in the loader rather than in the page on purpose.
+In the page it was machinery the agent had to reproduce in every app,
+and an app whose html lacked it failed on the first import with an error
+about module specifiers — pointing at the wrong thing entirely. The
+loader defers to a map the page declares, so an embedder or agent
+extending the set still wins.
