@@ -128,10 +128,10 @@ def apps_config() -> AppsConfig:
     Nothing in nontainer forced the split — it is studio's discipline to
     keep, so it is kept here, once.
 
-    The frontend stack is VENDORED (see ``appassets/``): plotly and
-    tailwind are served from the app's own origin, so an agent on a
-    locally-hosted model with no internet still gets a chart that
-    renders. ``static_assets`` puts the bytes in place and
+    The frontend stack is VENDORED (see ``appassets/``): MUI with React
+    and JSX, plotly, and tailwind, all served from the app's own origin,
+    so an agent on a locally-hosted model with no internet still gets a
+    page that renders. ``static_assets`` puts the bytes in place and
     ``frontend_notes`` says they exist — the pair is one decision, since
     a library the agent isn't told about may as well not be here.
 
@@ -183,7 +183,7 @@ def app_assets_dir() -> Path:
 
 FRONTEND_NOTES = """\
 Components: MUI (Material UI) with React and JSX. Put your JSX in
-<root>/app/app.jsx and add ONE tag to your html:
+__WS__/app/app.jsx and add ONE tag to your html:
 
     <div id="root"></div>
     <script type="module" src="vendor/jsx-loader.js" data-app="app.jsx"></script>
@@ -226,7 +226,12 @@ module specifiers rather than about the thing the agent got wrong. The
 loader supplies it now (deferring to one the page declares), so the
 agent's whole obligation is a script tag and ordinary React imports.
 The 'do NOT rewrite them' line stays: it is the remaining edit that
-would break a working app, and it is cheap to say."""
+would break a working app, and it is cheap to say.
+
+__WS__, not a literal path: nontainer substitutes the workspace root
+into the notes AFTER splicing this block in, so the agent is told the
+real path even when an embedder moves the root. Writing '<root>' here
+sent it the angle brackets."""
 
 
 def _view_workers() -> int:
