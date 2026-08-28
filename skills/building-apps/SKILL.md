@@ -11,38 +11,45 @@ come back when debugging.
 
 ## Do this first
 
-The references are WORKING FILES, not illustrations. Read both before
-you write anything:
+The references are WORKING FILES, not illustrations. Read all three
+before you write anything:
 
 ```sh
 cat /workspace/skills/building-apps/references/api-handler.py
-cat /workspace/skills/building-apps/references/chart-app.html
+cat /workspace/skills/building-apps/references/app.jsx
+cat /workspace/skills/building-apps/references/app.html
 ```
 
-`api-handler.py` is filters in / chart-ready JSON out. `chart-app.html`
-is dropdowns -> fetch -> plotly in plain DOM. They are a matched pair —
-the frontend calls the endpoint the handler serves.
+They are one matched app: `api-handler.py` is filters in / chart-ready
+JSON out, and `app.{html,jsx}` is the frontend that calls it — filters,
+stat cards, a plotly chart, a table, and a details dialog, in MUI.
 
-Copy rather than retype; it is one call instead of a few hundred lines:
+Copy rather than retype; it is three calls instead of a few hundred
+lines:
 
 ```sh
-cp /workspace/skills/building-apps/references/chart-app.html /workspace/app/index.html
+cp /workspace/skills/building-apps/references/app.html      /workspace/app/index.html
+cp /workspace/skills/building-apps/references/app.jsx       /workspace/app/app.jsx
 cp /workspace/skills/building-apps/references/api-handler.py /workspace/app/api/summary.py
 ```
 
-Then edit them down to your data — rename the columns, drop what you
-don't need. Starting from the pair and cutting is consistently faster
-than building up from nothing, and it is where the non-obvious parts
-already live (empty results, numpy casts, relative urls, stable ids).
+Then **cut it down to your data** — rename the columns, delete the
+pieces you don't need. Starting from the set and cutting is consistently
+faster than building up from nothing, and it is where the non-obvious
+parts already live: empty results, null aggregates, numpy casts,
+relative urls, stable selectors, a themed chart, a testable dropdown.
 
-Want components instead of plain DOM? Copy `references/mui-app.html`
-AND `references/mui-app.jsx` — MUI with React and JSX, compiled in the
-browser, no build step. Pick ONE frontend, not both.
+There is one frontend stack here — MUI with React and JSX, compiled in
+the browser — so there is nothing to choose between. `app.html` is
+tiny: a `#root` div and one `<script src="vendor/jsx-loader.js">` tag.
+That tag compiles your JSX and resolves the imports, so write bare names
+(`react`, `@mui/material`, `house/theme`) exactly as in any React
+project — do NOT rewrite them as vendor paths.
 
-The html is tiny: a `#root` div and one `<script src="vendor/jsx-loader.js">`
-tag. That tag compiles your JSX and resolves the imports, so write bare
-names (`react`, `@mui/material`) exactly as in any React project — do
-NOT rewrite them as vendor paths.
+Plain HTML and DOM still work, and for a genuinely trivial page they are
+fine. But everything below assumes the reference set, and an app built
+out of raw DOM will not match the shell unless you theme it by hand from
+`vendor/theme.css`.
 
 ## Theming: use the house palette, don't pick colours
 
@@ -136,15 +143,21 @@ def get(req):
   float NaN with str. Use `sorted(df[col].dropna().unique())`.
 - Numpy types don't JSON-serialize: wrap with int()/float() or use
   `df.to_dict(orient="records")` after `.astype(object)` care.
-- NaN is not JSON either, and a response carrying one is REFUSED (500,
-  naming the path) — because a bare NaN would make the browser reject
-  the entire body and blank the page. An aggregate over an empty or
-  all-null selection is the usual source: `mean()` of nothing is NaN.
-  Send None instead: `float(x) if pd.notna(x) else None`. This bites a
-  NON-empty selection too — rows exist, the aggregated column is all
-  null — so an `if df.empty` guard alone does NOT cover it. Then render
-  the null frontend-side as a dash; `null.toLocaleString()` throws and
-  takes the whole render down with it.
+- NaN is not JSON, and NOTHING STOPS YOU SENDING ONE. The response goes
+  out as a 200 with a bare `NaN` in the body; the browser's `res.json()`
+  then throws on the whole body and the page goes blank. There is no
+  500, no traceback, and nothing in api.log — it reads as a frontend
+  bug, and you will debug the wrong half. Guard it yourself, per FIELD:
+  `float(x) if pd.notna(x) else None`.
+  - An aggregate over an empty or all-null selection is the usual
+    source: `mean()` of nothing is NaN. This bites a NON-empty
+    selection too — rows exist, the aggregated column is all null — so
+    an `if df.empty` guard alone does NOT cover it.
+  - String columns need the same guard. A null in an object column is
+    also a float NaN, so `{"name": row.name}` ships one just as easily
+    as a numeric mean does.
+  - Then render the null frontend-side as a dash;
+    `null.toLocaleString()` throws and takes the render down with it.
 - Error responses are JSON: `{"error": ...}` — your frontend's
   res.json() will parse them; check `res.ok` and show `data.error`.
 - A filter combination matching NO rows is a normal outcome, not an
@@ -155,28 +168,34 @@ def get(req):
 
 ## Frontend
 
-Plain HTML + DOM + fetch is the most reliable pattern — copy
-references/chart-app.html: dropdowns, a relative fetch, error and empty
-states, and `Plotly.react` to redraw in place (cheaper than newPlot per
-change, and it leaves no stale trace when the result is empty). For a
-component-based UI, copy references/mui-app.{html,jsx} instead.
+Copy `references/app.{html,jsx}`. Between them they cover the shapes
+that keep coming up: a relative fetch, error and empty states, filters
+that stay populated as the user narrows, and `Plotly.react` to redraw in
+place (cheaper than newPlot per change, and it leaves no stale trace
+when the result is empty).
 
-Its <script> tags load from `vendor/` — plotly and tailwind, served
-with your app from its own origin. That is why they work with no
-network. Don't rewrite them as CDN urls: those hosts may not resolve
-where this is deployed, and the failure looks like a broken page rather
-than a blocked request.
+Everything they load comes from `vendor/`, served with your app from its
+own origin. That is why it works with no network. Don't rewrite any of
+it as a CDN url: those hosts may not resolve where this is deployed, and
+the failure looks like a broken page rather than a blocked request.
 
 Give every control a stable `id` or `data-key`. test_app drives the page
 by selector, and positional guesses (`nth-child`, `:first-of-type`)
 break the moment you add a filter.
 
-Build elements that carry DATA as nodes — `new Option(v, v)`, or set
-`.value`/`.textContent` — never by interpolating values into
-`innerHTML`. One quote in a category name (`North "A"`) truncates the
-value attribute, the selection stops round-tripping, and the handler
-filters on something the user never picked — which reads as a backend
-bug and sends you debugging the wrong half.
+**Dropdowns need `SelectProps={{ native: true }}`.** MUI's default
+Select is a div plus a popover, not a `<select>` — so test_app's
+`{"select": ...}` action cannot drive it, and neither can `type`. Native
+renders a real `<select>` and keeps the page testable. If you do use the
+default, drive it with a click on the control followed by a click on the
+option.
+
+Let JSX render your data — `{row.category}` — rather than assembling
+markup as a string. React escapes values, so a category called
+`North "A"` renders as itself; the same value interpolated into
+`innerHTML` truncates an attribute, the selection stops round-tripping,
+and the handler filters on something the user never picked, which reads
+as a backend bug and sends you debugging the wrong half.
 
 ## Keep it editable — this is where turns get burned
 
@@ -185,11 +204,17 @@ costs you the rest of the session: every later change is a blind edit on
 a file you cannot see, and you end up spending more calls FINDING code
 than changing it.
 
-- **Split once it grows.** `index.html` holds the markup and
-  `<script src="app.js"></script>`; `app.js` holds the logic. Relative
-  src works exactly like relative fetch. A single-purpose `app.js` is
-  also small enough to rewrite wholesale when an edit gets hairy —
-  which a 900-line index.html never is.
+- **Split once it grows.** The reference pair already is this split:
+  `index.html` is a `#root` div and a script tag, `app.jsx` holds
+  everything that changes. That keeps the file you edit small enough to
+  rewrite wholesale when an edit gets hairy, which a 900-line
+  index.html never is.
+- **One .jsx file, though.** Only the entry named by `data-app` gets
+  compiled, so `import Chart from './chart.jsx'` does NOT work — the
+  browser fetches that file itself and chokes on the raw JSX. Keep your
+  components in `app.jsx` and use ordinary functions to organize them.
+  If it genuinely outgrows one file, split the plain-JavaScript parts
+  (fetch helpers, formatting) into a `.js` module and import that.
 - **Grow in verified steps.** Get one endpoint plus one rendered number
   working, THEN add charts and filters. A big-bang first draft moves all
   the debugging to the point where you have the least idea which part

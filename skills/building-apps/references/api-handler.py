@@ -31,6 +31,10 @@ DATA = "/workspace/app/data/records.parquet"
 # fraction of the full-frame cost, and it happens on every request.
 COLUMNS = ["category", "region", "year", "value"]
 
+# How many raw rows the table gets. A cap, not a page size — the point
+# is that a response is bounded no matter how the user filters.
+ROW_SAMPLE = 50
+
 
 def _frame():
     return pd.read_parquet(DATA, columns=COLUMNS)
@@ -74,15 +78,18 @@ def get(req):
             "total": 0,
             "mean_value": None,
             "chart": {"x": [], "y": []},
+            "rows": [],
         }
 
     by_year = df.groupby("year")["value"].sum().sort_index()
 
-    # NaN IS NOT JSON. A non-empty selection whose `value` column is all
-    # null still means NaN out of mean(), and a response carrying one is
-    # REFUSED (500) — so a valid selection 500s on data you didn't
-    # expect. pd.notna() is the guard; the same shape applies to any
-    # aggregate that can see an all-null column.
+    # NaN IS NOT JSON, and nothing stops you sending one: it goes out as
+    # a 200 with a bare `NaN` in the body, the browser's res.json()
+    # throws on the whole response, and the page blanks with no 500 and
+    # nothing in api.log to point at. A non-empty selection whose
+    # `value` column is all null still means NaN out of mean(), so this
+    # is a live path on real data, not a corner case. pd.notna() is the
+    # guard, and it belongs on every field that can be null.
     mean = df["value"].mean()
 
     return {
@@ -97,4 +104,28 @@ def get(req):
             "x": [int(y) for y in by_year.index],
             "y": [float(v) for v in by_year.values],
         },
+        # A CAPPED sample for the table. "Chart-ready" still holds:
+        # aggregate what you can server-side and send what the page
+        # renders. Shipping every row and reshaping in JS is slow to
+        # serialize, slow to parse, and puts the aggregation somewhere
+        # you cannot test it. Cast per field — a numpy scalar does not
+        # JSON-serialize and the handler 500s on the way out.
+        "rows": [
+            {
+                # A stable key the frontend can use for React keys and
+                # for test_app selectors. Positional indices break the
+                # moment the sample is sorted or filtered differently.
+                "id": int(row.Index),
+                # notna() on the STRING columns too, not just the
+                # numeric one. A null in an object column is a float
+                # NaN, and it serializes as bare `NaN` — which is not
+                # JSON, so res.json() throws in the browser and blanks
+                # the page. The guard is per FIELD, not per dtype.
+                "category": row.category if pd.notna(row.category) else None,
+                "region": row.region if pd.notna(row.region) else None,
+                "year": int(row.year),
+                "value": float(row.value) if pd.notna(row.value) else None,
+            }
+            for row in df.head(ROW_SAMPLE).itertuples()
+        ],
     }

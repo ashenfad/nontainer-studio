@@ -1,0 +1,37 @@
+<!doctype html>
+<!-- Reference frontend, half one of two. Copy this AND app.jsx:
+
+       cp .../references/app.html /workspace/app/index.html
+       cp .../references/app.jsx  /workspace/app/app.jsx
+
+     It pairs with api-handler.py. This file stays tiny on purpose —
+     everything that changes lives in app.jsx, which is small enough to
+     rewrite wholesale when an edit gets hairy. A 900-line index.html
+     never is.
+
+     Everything below is served WITH your app from its own origin, so it
+     works with no network at all. Don't swap any of it for a CDN url.
+
+     - theme.css   the shell's palette. The jsx-loader links this for
+                   you; it is here explicitly so the page still matches
+                   before the loader runs, and so any plain CSS you add
+                   can use var(--app-*) too.
+     - plotly      a classic script, so it must load BEFORE the module
+                   that draws with it. A <script src> in <head> does;
+                   `Plotly` is then a global in app.jsx.
+     - jsx-loader  compiles app.jsx in the browser and resolves the bare
+                   imports it writes ('react', '@mui/material',
+                   'house/theme'). That one tag is the whole build. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Explorer</title>
+  <link rel="stylesheet" href="vendor/theme.css" />
+  <script src="vendor/plotly.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="vendor/jsx-loader.js" data-app="app.jsx"></script>
+</body>
+</html>
