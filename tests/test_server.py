@@ -2,6 +2,7 @@
 lifecycle, preview/publish, time travel — exercised with a fake agent
 (no LLM, no key)."""
 
+import json
 import re
 import time
 from pathlib import Path
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from nontainer.apps import render_test_app
+from nontainer.apps import request as nt_request
 from starlette.testclient import TestClient
 
 from nontainer_studio import server
@@ -232,7 +234,7 @@ def test_new_sessions_seed_skills(studio):
     client.post("/api/sessions", json={"name": "s1"})
     files = client.get("/api/sessions/s1/files").json()["files"]
     assert "/workspace/skills/building-apps/SKILL.md" in files
-    assert "/workspace/skills/building-apps/references/chart-app.html" in files
+    assert "/workspace/skills/building-apps/references/app.jsx" in files
 
     # creation-only: a reseed must not clobber the session's copies
     session = registry.get("s1")
@@ -2337,31 +2339,69 @@ def test_csp_none_disables_it_on_both_halves(tmp_path, monkeypatch):
         registry.close()
 
 
-def test_the_mui_reference_app_actually_runs(studio):
-    """The reference files are what an agent COPIES, so they have to work
-    verbatim: import map resolving bare specifiers, JSX compiled in the
-    browser, a fetch into a real handler, and a dialog that opens. Every
-    failure found while building this stack was in exactly these seams
-    (CJS exports, a bare `react-dom` import, esbuild's require shim)."""
-    pytest.importorskip("playwright")
+REFERENCE_HANDLER = b"""
+ROWS = [
+    {"id": 1, "category": "a", "region": "north", "year": 2020, "value": 1.0},
+    {"id": 2, "category": "b", "region": "south", "year": 2021, "value": 3.0},
+]
 
+
+def get(req):
+    category = req.params.get("category") or ""
+    kept = [r for r in ROWS if not category or r["category"] == category]
+    return {
+        "options": {"category": ["a", "b"], "region": ["north", "south"]},
+        "total": len(kept),
+        "mean_value": (sum(r["value"] for r in kept) / len(kept)) if kept else None,
+        "chart": {"x": [r["year"] for r in kept], "y": [r["value"] for r in kept]},
+        "rows": kept,
+    }
+"""
+
+
+def _reference_app(studio):
+    """The reference set, copied verbatim into a session the way an agent
+    would, over a stand-in for api-handler.py that needs no parquet."""
     refs = Path(__file__).parent.parent / "skills" / "building-apps" / "references"
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     ws = registry.get("s1").ws
     ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", (refs / "mui-app.html").read_bytes())
-    ws.fs.write("/workspace/app/app.jsx", (refs / "mui-app.jsx").read_bytes())
-    ws.fs.write(
-        "/workspace/app/api/runs.py",
-        b'def get(req):\n    return {"runs": [{"id": 42, "status": "done"}]}\n',
-    )
+    ws.fs.write("/workspace/app/index.html", (refs / "app.html").read_bytes())
+    ws.fs.write("/workspace/app/app.jsx", (refs / "app.jsx").read_bytes())
+    ws.fs.write("/workspace/app/api/summary.py", REFERENCE_HANDLER)
     ws.checkpoint()
+    return registry.get("s1")
 
-    result = registry.get("s1").runtime.test_app(
+
+def test_the_reference_app_actually_runs(studio):
+    """The reference files are what an agent COPIES, so they have to work
+    verbatim: the import map resolving bare specifiers, JSX compiled in
+    the browser, a fetch into a real handler, a chart drawn, a filter
+    that refetches, and a dialog that opens. Every failure found while
+    building this stack was in exactly these seams (CJS exports, a bare
+    `react-dom` import, esbuild's require shim).
+
+    The filter step is the one that would otherwise rot silently: MUI's
+    default Select is a div plus a popover, which test_app's `select`
+    action cannot drive at all. The reference passes
+    `SelectProps={{ native: true }}` precisely so this works, and
+    nothing but driving it would notice if that were dropped."""
+    pytest.importorskip("playwright")
+    session = _reference_app(studio)
+
+    result = session.runtime.test_app(
         [
+            {"assert": "document.querySelectorAll('#rows tbody tr').length === 2"},
+            {"assert": "document.querySelector('#total').textContent === '2'"},
+            # Plotly drew into the ref'd Box, not into a detached node.
+            {"assert": "document.querySelector('#chart .plot-container') !== null"},
+            # A native <select>, so this drives the real control.
+            {"select": ["#f-category", "a"]},
             {"assert": "document.querySelectorAll('#rows tbody tr').length === 1"},
-            {"click": "#open-42"},
+            {"assert": "document.querySelector('#total').textContent === '1'"},
+            # ...and the dialog still binds the row it was opened from.
+            {"click": "#open-1"},
             {"assert": "document.querySelector('.MuiDialog-root') !== null"},
             {"eval": "document.querySelector('#note').value"},
         ]
@@ -2370,8 +2410,49 @@ def test_the_mui_reference_app_actually_runs(studio):
         pytest.skip(result.load_error)
 
     assert result.ok, render_test_app(result)
-    assert result.results[3].value == "'done'"  # fetched, rendered, and bound
+    assert result.results[-1].value == "'a'"  # fetched, rendered, and bound
     assert not result.rejected  # nothing reached for a CDN
+
+
+def test_the_reference_app_wears_the_shell_palette(studio):
+    """The bug this closes: the reference read --app-primary and
+    --app-color-scheme, and nothing in the stack set either — so the file
+    an agent copies quietly rendered stock Material purple on white.
+    Asserting the COMPUTED colour is the only check that would have
+    caught it; the source looked correct."""
+    pytest.importorskip("playwright")
+    session = _reference_app(studio)
+
+    result = session.runtime.test_app(
+        [
+            # The palette reached the page...
+            {
+                "assert": "getComputedStyle(document.documentElement)"
+                ".getPropertyValue('--app-primary').trim() === '#e94560'"
+            },
+            # ...and the theme built from it reached MUI. rgb(), because
+            # that is how a browser reports a resolved colour.
+            {
+                "assert": "getComputedStyle(document.querySelector('#reset'))"
+                ".color === 'rgb(233, 69, 96)'"
+            },
+            # CssBaseline painted the shell's background, not white.
+            {
+                "assert": "getComputedStyle(document.body)"
+                ".backgroundColor === 'rgb(26, 26, 46)'"
+            },
+            # And plotly is transparent rather than its default white
+            # paper, which on a dark page is the most visible mismatch
+            # there is.
+            {
+                "assert": "document.querySelector('#chart .main-svg')"
+                ".style.backgroundColor === 'rgba(0, 0, 0, 0)'"
+            },
+        ]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)
+    assert result.ok, render_test_app(result)
 
 
 def _jsx_app(ws, html: bytes, jsx: bytes):
@@ -2587,101 +2668,43 @@ def test_the_notes_name_both_theme_spellings(studio):
     assert "vendor/theme.css" in notes  # the plain-DOM one
 
 
-def test_the_themed_reference_app_picks_up_the_shell_palette(studio):
-    """The bug this closes: mui-app.jsx read --app-primary and
-    --app-color-scheme, and nothing in the stack set either — so the
-    reference an agent copies quietly rendered stock Material purple on
-    white. Asserting the COMPUTED colour is the only check that would
-    have caught it; the file looked correct."""
-    pytest.importorskip("playwright")
+def test_the_reference_handler_survives_nulls(studio):
+    """api-handler.py is a working file too, and its own subject is data
+    that breaks JSON. Nothing enforces this: a bare NaN goes out as a
+    200 and only fails in the browser, so the reference shipping one
+    would look fine from every angle except a rendered page.
 
+    The frame below is the shape that catches it — a null in a STRING
+    column, not just the numeric one. That is what the first draft of
+    the rows block got wrong."""
+    pytest.importorskip("pandas")
     refs = Path(__file__).parent.parent / "skills" / "building-apps" / "references"
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
-    ws = registry.get("s1").ws
+    session = registry.get("s1")
+    ws = session.ws
     ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", (refs / "mui-app.html").read_bytes())
-    ws.fs.write("/workspace/app/app.jsx", (refs / "mui-app.jsx").read_bytes())
-    ws.fs.write(
-        "/workspace/app/api/runs.py",
-        b'def get(req):\n    return {"runs": [{"id": 42, "status": "done"}]}\n',
+    ws.fs.makedirs("/workspace/app/data", exist_ok=True)
+    ws.run_python(
+        "import pandas as pd\n"
+        'pd.DataFrame({"category": ["a", "b", None],\n'
+        '              "region": ["north", None, "south"],\n'
+        '              "year": [2020, 2021, 2022],\n'
+        '              "value": [1.0, None, None]}\n'
+        ').to_parquet("/workspace/app/data/records.parquet")\n'
     )
-    ws.checkpoint()
+    ws.fs.write("/workspace/app/api/summary.py", (refs / "api-handler.py").read_bytes())
 
-    result = registry.get("s1").runtime.test_app(
-        [
-            # The stylesheet reached the page even though the html never
-            # mentions it — the loader prepends it.
-            {
-                "assert": "getComputedStyle(document.documentElement)"
-                ".getPropertyValue('--app-primary').trim() === '#e94560'"
-            },
-            # ...and the theme built from it actually reached MUI. rgb(),
-            # because that is how the browser reports a resolved colour.
-            {
-                "assert": "getComputedStyle(document.querySelector('#open-42'))"
-                ".color === 'rgb(233, 69, 96)'"
-            },
-            # CssBaseline painted the shell's background, not white.
-            {
-                "assert": "getComputedStyle(document.body)"
-                ".backgroundColor === 'rgb(26, 26, 46)'"
-            },
-        ]
-    )
-    if result.load_error and "unavailable" in result.load_error:
-        pytest.skip(result.load_error)
-    assert result.ok, render_test_app(result)
+    response = session.runtime.dispatch(nt_request("GET", "/api/summary"))
+    assert response.status == 200, response.text
 
+    # parse_constant, because Python's json.loads ACCEPTS bare NaN and
+    # the browser's JSON.parse does not. A plain json.loads here would
+    # sail straight past the very thing this test exists to catch.
+    def reject(constant):
+        raise AssertionError(f"response carries a bare {constant} — not JSON")
 
-def test_the_themed_chart_reference_actually_runs(studio):
-    """The plain-DOM reference, verified the same way as the MUI one.
-
-    The specific unknown worth pinning: chart-app.html colours itself
-    with Tailwind ARBITRARY-value classes (`bg-[var(--app-surface)]`).
-    Those are a JIT feature, and the vendored build is the play CDN — if
-    it ever stopped compiling them the page would render unstyled rather
-    than fail, which is the kind of break nobody notices until a human
-    looks at a screenshot."""
-    pytest.importorskip("playwright")
-
-    refs = Path(__file__).parent.parent / "skills" / "building-apps" / "references"
-    client, registry = studio
-    client.post("/api/sessions", json={"name": "s1"})
-    ws = registry.get("s1").ws
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", (refs / "chart-app.html").read_bytes())
-    ws.fs.write(
-        "/workspace/app/api/summary.py",
-        b"def get(req):\n"
-        b'    return {"total": 3, "mean_value": 1.5,\n'
-        b'            "options": {"category": ["a"], "region": ["north"]},\n'
-        b'            "chart": {"x": [2020, 2021], "y": [1.0, 2.0]}}\n',
-    )
-    ws.checkpoint()
-
-    result = registry.get("s1").runtime.test_app(
-        [
-            {"assert": "document.querySelector('#total').textContent === '3'"},
-            # Plotly drew, and drew onto the page's own background rather
-            # than its default white paper.
-            {"assert": "document.querySelector('#chart .plot-container') !== null"},
-            {
-                "assert": "document.querySelector('#chart .main-svg')"
-                ".style.backgroundColor === 'rgba(0, 0, 0, 0)'"
-            },
-            # The palette reached the page, and Tailwind compiled the
-            # arbitrary-value class that consumes it.
-            {
-                "assert": "getComputedStyle(document.body)"
-                ".backgroundColor === 'rgb(26, 26, 46)'"
-            },
-            {
-                "assert": "getComputedStyle(document.querySelector('#reset'))"
-                ".backgroundColor === 'rgb(22, 33, 62)'"
-            },
-        ]
-    )
-    if result.load_error and "unavailable" in result.load_error:
-        pytest.skip(result.load_error)
-    assert result.ok, render_test_app(result)
+    body = json.loads(response.text, parse_constant=reject)
+    assert body["rows"][2]["category"] is None
+    assert body["rows"][1]["region"] is None
+    assert body["rows"][1]["value"] is None

@@ -196,8 +196,10 @@ imports, so write ordinary React:
     import { Button, Dialog, Table } from '@mui/material';
 
 Import BARE names, exactly as in any React project — do NOT rewrite them
-as 'vendor/mui.min.js'. Copy references/mui-app.{html,jsx} for a working
-pair (fetch -> table -> dialog, theming, empty and error states).
+as 'vendor/mui.min.js'. Copy references/app.{html,jsx} + api-handler.py
+for a working app (filters -> fetch -> stats, chart, table, dialog) and
+cut it down; only the file named by data-app is compiled, so keep your
+components in that one .jsx.
 Theme: `import theme from 'house/theme'` gives you this shell's palette
 already built — wrap your tree in <ThemeProvider theme={theme}> with a
 <CssBaseline />. Do NOT call createTheme and pick your own colours; the
