@@ -1,0 +1,69 @@
+// Compile an agent's JSX in the browser, and keep its stack traces honest.
+//
+// This file is OURS (hand-written, not produced by fetch-appassets.sh).
+// It exists so the agent writes one <script> tag instead of reproducing a
+// transform incantation from the prompt -- the recipe lives here, where it
+// is tested, rather than in a paragraph a model paraphrases.
+//
+//   <script type="module" src="vendor/jsx-loader.js" data-app="app.jsx"></script>
+//
+// Three details are load-bearing, each verified against Chromium rather
+// than assumed:
+//
+// 1. INLINE injection, not a Blob. The obvious approach -- compile to a
+//    Blob and point a <script src> at it -- works during verification and
+//    is REFUSED once published, because the served CSP's script-src has
+//    no blob:. A refused script does not throw, so nothing in the page
+//    reports it. Inline is covered by 'unsafe-inline' and survives both.
+//
+// 2. //# sourceURL, so Error.stack names the agent's file instead of an
+//    anonymous injected script. (sourceMappingURL would NOT do this --
+//    that is consumed by devtools, not by V8's stack.)
+//
+// 3. sucrase, which preserves source positions natively, so the line in
+//    a stack trace is the line in the .jsx the agent wrote. test_app
+//    reads that line back and quotes it.
+//
+// 4. The AUTOMATIC jsx runtime, so an agent writes JSX without importing
+//    React -- which is both modern React style and what a model most
+//    often produces. The classic pragma would need React in scope, and
+//    injecting that import would collide with an agent that wrote its
+//    own. The import map in the page resolves react/jsx-runtime.
+//
+// Errors are reported to the page rather than only the console: a failed
+// compile otherwise leaves a blank page with nothing to act on.
+
+const tag = document.currentScript || document.querySelector("script[data-app]");
+const entry = (tag && tag.dataset.app) || "app.jsx";
+
+function report(message) {
+  console.error(message);
+  // Surface it where a human (and a screenshot) can see it too.
+  const box = document.createElement("pre");
+  box.id = "jsx-loader-error";
+  box.style.cssText =
+    "white-space:pre-wrap;color:#b3261e;background:#fcecea;padding:12px;" +
+    "margin:12px;border-radius:8px;font:13px/1.5 ui-monospace,monospace";
+  box.textContent = message;
+  (document.body || document.documentElement).prepend(box);
+}
+
+try {
+  const { transform } = await import("./sucrase.min.js");
+  const response = await fetch(entry);
+  if (!response.ok) {
+    throw new Error(`could not load ${entry} (HTTP ${response.status})`);
+  }
+  const { code } = transform(await response.text(), {
+    transforms: ["jsx"],
+    jsxRuntime: "automatic",
+    production: true,
+    filePath: entry,
+  });
+  const script = document.createElement("script");
+  script.type = "module";
+  script.textContent = `${code}\n//# sourceURL=${entry}`;
+  document.head.appendChild(script);
+} catch (error) {
+  report(`JSX compile failed in ${entry}\n\n${error && error.message}`);
+}
