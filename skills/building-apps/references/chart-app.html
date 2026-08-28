@@ -3,18 +3,24 @@
      Copy to /workspace/app/index.html; it pairs with api-handler.py.
      Plain DOM is the most reliable shape here.
 
-     The two <script> tags below load from vendor/ — served with your
-     app from its own origin, so they work with no network at all.
-     Don't swap them for CDN urls. -->
+     The tags below load from vendor/ — served with your app from its
+     own origin, so they work with no network at all. Don't swap them
+     for CDN urls.
+
+     theme.css is the shell's palette. Colours come from it via
+     var(--app-*) rather than from Tailwind's own scale: a page built
+     out of bg-white and text-gray-700 is a light-mode page, and it
+     looks like a different product from the shell embedding it. -->
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Explorer</title>
+  <link rel="stylesheet" href="vendor/theme.css" />
   <script src="vendor/tailwind.js"></script>
   <script src="vendor/plotly.min.js"></script>
 </head>
-<body class="bg-gray-50">
+<body>
   <main class="p-6 max-w-5xl mx-auto">
     <h1 class="text-2xl font-bold mb-4">Explorer</h1>
 
@@ -22,13 +28,16 @@
          page by selector, and positional guesses (nth-child) break the
          moment you add a filter. -->
     <div class="flex gap-3 mb-4">
-      <select id="f-category" data-key="category" class="border rounded px-2 py-1"></select>
-      <select id="f-region"   data-key="region"   class="border rounded px-2 py-1"></select>
-      <button id="reset" class="border rounded px-3 py-1 bg-white">Reset</button>
+      <select id="f-category" data-key="category"
+              class="rounded px-2 py-1 border-[var(--app-border)] bg-[var(--app-surface)]"></select>
+      <select id="f-region"   data-key="region"
+              class="rounded px-2 py-1 border-[var(--app-border)] bg-[var(--app-surface)]"></select>
+      <button id="reset"
+              class="rounded px-3 py-1 border border-[var(--app-border)] bg-[var(--app-surface)]">Reset</button>
     </div>
 
-    <p id="error" class="hidden mb-4 p-3 rounded bg-red-50 text-red-700"></p>
-    <p id="empty" class="hidden mb-4 p-3 rounded bg-yellow-50 text-yellow-800">
+    <p id="error" class="hidden mb-4 p-3 rounded text-[var(--app-error)]"></p>
+    <p id="empty" class="hidden mb-4 p-3 rounded text-[var(--app-warning)]">
       No rows match these filters.
     </p>
 
@@ -36,17 +45,33 @@
          chart's existence, never just static text — a page can look
          perfectly loaded while every fetch failed. -->
     <div class="flex gap-6 mb-4">
-      <div><div class="text-sm text-gray-500">Rows</div>
+      <div><div class="text-sm text-[var(--app-text-muted)]">Rows</div>
            <div id="total" class="text-2xl font-semibold">—</div></div>
-      <div><div class="text-sm text-gray-500">Mean value</div>
+      <div><div class="text-sm text-[var(--app-text-muted)]">Mean value</div>
            <div id="mean" class="text-2xl font-semibold">—</div></div>
     </div>
 
-    <div id="chart" class="bg-white rounded border" style="height:360px"></div>
+    <div id="chart" class="rounded border border-[var(--app-border)] bg-[var(--app-surface)]"
+         style="height:360px"></div>
   </main>
 
   <script>
     let optionsLoaded = false;
+
+    // Plotly draws on white paper unless told otherwise, so a chart on a
+    // dark page is a glaring white rectangle — the single most visible
+    // way an app stops matching the shell around it. Read the palette
+    // once and hand it to every plot.
+    const palette = getComputedStyle(document.documentElement);
+    const css = (name) => palette.getPropertyValue(name).trim();
+    const CHART_THEME = {
+      paper_bgcolor: 'rgba(0,0,0,0)',   // let the container's colour show
+      plot_bgcolor: 'rgba(0,0,0,0)',
+      font: { color: css('--app-text'), family: css('--app-font-body') },
+      colorway: [css('--app-primary'), css('--app-secondary'), css('--app-success')],
+      xaxis: { gridcolor: css('--app-border') },
+      yaxis: { gridcolor: css('--app-border') },
+    };
 
     // Build option NODES rather than interpolating data into innerHTML.
     // A value holding a quote (`North "A"`) would truncate the value
@@ -101,7 +126,11 @@
       Plotly.react(
         'chart',
         [{ x: data.chart.x, y: data.chart.y, type: 'bar' }],
-        { margin: { t: 20, r: 20, b: 40, l: 60 }, xaxis: { title: 'year' } },
+        {
+          ...CHART_THEME,
+          margin: { t: 20, r: 20, b: 40, l: 60 },
+          xaxis: { ...CHART_THEME.xaxis, title: 'year' },
+        },
         { displayModeBar: false, responsive: true },
       );
     }

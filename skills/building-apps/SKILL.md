@@ -44,6 +44,34 @@ tag. That tag compiles your JSX and resolves the imports, so write bare
 names (`react`, `@mui/material`) exactly as in any React project — do
 NOT rewrite them as vendor paths.
 
+## Theming: use the house palette, don't pick colours
+
+Apps built here are embedded in a shell that has its own look, so the
+palette is supplied rather than chosen:
+
+```jsx
+import theme from 'house/theme';       // already built — do not call createTheme
+<ThemeProvider theme={theme}><CssBaseline />…</ThemeProvider>
+```
+
+`CssBaseline` is what paints the background and text colour onto the
+page; without it you get themed components floating on default white.
+
+A plain-DOM page gets the same palette as CSS custom properties:
+
+```html
+<link rel="stylesheet" href="vendor/theme.css">
+```
+
+then `var(--app-primary)`, `--app-surface`, `--app-text`,
+`--app-text-muted`, `--app-border`, `--app-success`, `--app-error`. The
+jsx-loader links this for you, so a JSX app needs the tag only if it
+also has non-React styling to match.
+
+Reaching for `createTheme` and picking your own colours is the common
+mistake: it produces stock Material purple, which is recognisably not
+this product.
+
 ## A handler, whole
 
 ```python

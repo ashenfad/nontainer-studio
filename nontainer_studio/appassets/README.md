@@ -16,7 +16,9 @@ internet can still write an app that renders.
 | `react.min.js` | npm `react` + `react-dom`, bundled | `20ea3072f64662753e2b51521763e69ec0354e3b0f0957b3138f3446a783b6f5` |
 | `mui.min.js` | npm `@mui/material@6` + emotion, bundled | `51e357905679523efe86a0624935ffd55a1b41ac2a3ce9ec02cac4377686ddc9` |
 | `sucrase.min.js` | npm `sucrase@3`, bundled | `8bbf28da8aedb231f4315800f6b0d7310706ae4f1e6e4cdbca2311bbfb7a2913` |
-| `jsx-loader.js` | **ours** — hand-written, not generated | `1001e88e78f0590a13354f60b718cffdecd46c16fa5c4db97e434998e86bb3e0` |
+| `jsx-loader.js` | **ours** — hand-written, not generated | `3812b3d89c7bc68bc439b1f6f9f5756f447ccbb370a741d54a2366fc92c7e084` |
+| `theme.css` | **ours** — the shell's palette, app-facing | `46abd6279d31325886178ead73abce4d0c2ce39edbaa46fa6c8828ba0aa8361e` |
+| `theme.js` | **ours** — that palette as a MUI theme | `0eea80188f894e1d9ccc866ece555fdb1243634ee326b84c1127f76476199ac4` |
 
 All MIT licensed. ~6.0 MB total, of which plotly is 4.7 MB.
 
@@ -65,6 +67,22 @@ an app importing one of those broke at module instantiation while the
 function sat on the bundled React object. `gen-react-entry.mjs` reads
 the real modules instead, so the surface stays complete across upgrades
 (59 exports at React 19.2). A test asserts it.
+
+**The palette is copied, and a test keeps the copy honest.**
+`theme.css` restates `frontend/src/app.css`'s `:root` block under
+app-facing names (`--app-primary`, not `--accent`) so the shell can
+rename its internals without breaking every app an agent ever wrote. A
+copy is the cost of that indirection, and nothing would notice it going
+stale — an app with last quarter's accent colour still renders
+perfectly — so `test_the_app_palette_still_matches_the_shell` compares
+the two files directly. `theme.js` then *reads* those properties rather
+than restating them a third time, and a missing one falls back to
+stock MUI rather than to a hardcoded guess.
+
+**Fonts are stacks, not faces.** The shell loads Fraunces and Public
+Sans from Google Fonts, which an air-gapped deployment cannot reach, so
+`theme.css` names only families that resolve with no network. Vendoring
+the woff2s would close the gap — `_STATIC_TYPES` already serves them.
 
 ## After changing anything here
 

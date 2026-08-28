@@ -198,6 +198,12 @@ imports, so write ordinary React:
 Import BARE names, exactly as in any React project — do NOT rewrite them
 as 'vendor/mui.min.js'. Copy references/mui-app.{html,jsx} for a working
 pair (fetch -> table -> dialog, theming, empty and error states).
+Theme: `import theme from 'house/theme'` gives you this shell's palette
+already built — wrap your tree in <ThemeProvider theme={theme}> with a
+<CssBaseline />. Do NOT call createTheme and pick your own colours; the
+app should look like the page it is embedded in. A non-React page gets
+the same palette from <link rel="stylesheet" href="vendor/theme.css">,
+which defines --app-primary, --app-surface, --app-text and friends.
 Charts: <script src="vendor/plotly.min.js"></script>, then Plotly.react(
 el, data, layout). Plotly 3.x, the full build — every trace type,
 including tile-free scattergeo/choropleth for maps.
@@ -227,6 +233,14 @@ loader supplies it now (deferring to one the page declares), so the
 agent's whole obligation is a script tag and ordinary React imports.
 The 'do NOT rewrite them' line stays: it is the remaining edit that
 would break a working app, and it is cheap to say.
+
+The theme is NAMED here rather than left to the agent because a
+component library only buys a consistent look if every app reaches for
+the same palette. `createTheme` is what a model writes from memory, and
+what it picks is stock Material purple — recognisably not this shell.
+Two spellings for the two frontends, one palette underneath
+(appassets/theme.css), so a plain-DOM app and a React one cannot drift
+apart.
 
 __WS__, not a literal path: nontainer substitutes the workspace root
 into the notes AFTER splicing this block in, so the agent is told the
