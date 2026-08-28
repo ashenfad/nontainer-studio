@@ -35,10 +35,14 @@ don't need. Starting from the pair and cutting is consistently faster
 than building up from nothing, and it is where the non-obvious parts
 already live (empty results, numpy casts, relative urls, stable ids).
 
-Plain DOM is the only frontend shape documented here. There is no
-component-library reference right now — the tool description names what
-libraries you actually have, and everything else is unavailable rather
-than merely unmentioned.
+Want components instead of plain DOM? Copy `references/mui-app.html`
+AND `references/mui-app.jsx` — MUI with React and JSX, compiled in the
+browser, no build step. Pick ONE frontend, not both.
+
+The html is boilerplate: copy it rather than writing your own, because
+it carries the import map that makes `import { Button } from
+'@mui/material'` resolve. Write bare imports exactly as you would in any
+React project; do NOT rewrite them as vendor paths.
 
 ## A handler, whole
 
@@ -126,9 +130,10 @@ def get(req):
 Plain HTML + DOM + fetch is the most reliable pattern — copy
 references/chart-app.html: dropdowns, a relative fetch, error and empty
 states, and `Plotly.react` to redraw in place (cheaper than newPlot per
-change, and it leaves no stale trace when the result is empty).
+change, and it leaves no stale trace when the result is empty). For a
+component-based UI, copy references/mui-app.{html,jsx} instead.
 
-Its two <script> tags load from `vendor/` — plotly and tailwind, served
+Its <script> tags load from `vendor/` — plotly and tailwind, served
 with your app from its own origin. That is why they work with no
 network. Don't rewrite them as CDN urls: those hosts may not resolve
 where this is deployed, and the failure looks like a broken page rather

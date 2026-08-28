@@ -4,9 +4,11 @@ lifecycle, preview/publish, time travel — exercised with a fake agent
 
 import re
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from nontainer.apps import render_test_app
 from starlette.testclient import TestClient
 
 from nontainer_studio import server
@@ -2333,3 +2335,40 @@ def test_csp_none_disables_it_on_both_halves(tmp_path, monkeypatch):
             assert "content-security-policy" not in client.get(pub["url"]).headers
     finally:
         registry.close()
+
+
+def test_the_mui_reference_app_actually_runs(studio):
+    """The reference files are what an agent COPIES, so they have to work
+    verbatim: import map resolving bare specifiers, JSX compiled in the
+    browser, a fetch into a real handler, and a dialog that opens. Every
+    failure found while building this stack was in exactly these seams
+    (CJS exports, a bare `react-dom` import, esbuild's require shim)."""
+    pytest.importorskip("playwright")
+
+    refs = Path(__file__).parent.parent / "skills" / "building-apps" / "references"
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", (refs / "mui-app.html").read_bytes())
+    ws.fs.write("/workspace/app/app.jsx", (refs / "mui-app.jsx").read_bytes())
+    ws.fs.write(
+        "/workspace/app/api/runs.py",
+        b'def get(req):\n    return {"runs": [{"id": 42, "status": "done"}]}\n',
+    )
+    ws.checkpoint()
+
+    result = registry.get("s1").runtime.test_app(
+        [
+            {"assert": "document.querySelectorAll('#rows tbody tr').length === 1"},
+            {"click": "#open-42"},
+            {"assert": "document.querySelector('.MuiDialog-root') !== null"},
+            {"eval": "document.querySelector('#note').value"},
+        ]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)
+
+    assert result.ok, render_test_app(result)
+    assert result.results[3].value == "'done'"  # fetched, rendered, and bound
+    assert not result.rejected  # nothing reached for a CDN

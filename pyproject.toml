@@ -36,7 +36,10 @@ dependencies = [
     # it during verification. Studio overrides the policy
     # (NONTAINER_STUDIO_CSP), so before this it verified under one policy
     # and served under another.
-    "nontainer[agno,apps]>=0.3.5",
+    # 0.3.6 fixes an assert that stopped retrying under that policy --
+    # which broke every app that settles after a fetch, i.e. the shape
+    # of the MUI reference app below.
+    "nontainer[agno,apps]>=0.3.6",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",

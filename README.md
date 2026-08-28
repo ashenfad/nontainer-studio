@@ -85,11 +85,18 @@ concurrency).
 
 ### Works offline
 
-The libraries an agent's app uses — **plotly** and **tailwind** — are
-vendored into `nontainer_studio/appassets/` and served from the app's own
-origin at `vendor/`, so a chart renders with no internet at all. That
-matters for a locally-hosted model on an air-gapped machine, where a CDN
+The libraries an agent's app uses — **MUI** (with React and JSX),
+**plotly** and **tailwind** — are vendored into
+`nontainer_studio/appassets/` and served from the app's own origin at
+`vendor/`, so an app renders with no internet at all. That matters for a
+locally-hosted model on an air-gapped machine, where a CDN
 `<script src>` is a blank page.
+
+JSX is compiled in the browser (sucrase, 201 KB) rather than by a build
+step the agent would have to run — it writes `app.jsx`, and stack traces
+still point at its own lines. Components are MUI because that is where a
+model's training mass is: it writes `<Button variant="contained">` from
+memory.
 
 The bytes are committed, like the frontend build, so nothing is fetched at
 install or run time. They stay out of the workspace — no session, fork, or

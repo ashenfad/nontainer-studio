@@ -182,13 +182,27 @@ def app_assets_dir() -> Path:
 
 
 FRONTEND_NOTES = """\
+Components: MUI (Material UI) with React and JSX. Copy BOTH
+skills/building-apps/references/mui-app.html and mui-app.jsx into
+<root>/app (as index.html and app.jsx) and edit them down — the html is
+boilerplate you should not write from scratch, because it carries the
+import map that makes the imports below resolve.
+Then write ordinary React:
+
+    import { useState } from 'react';
+    import { Button, Dialog, Table } from '@mui/material';
+
+Import BARE names exactly as you would in any React project. Do not
+rewrite them as 'vendor/mui.min.js' — the import map already points them
+there, and a rewritten path is the thing most likely to break. There is
+no build step: app.jsx is compiled in the browser when the page loads.
 Charts: <script src="vendor/plotly.min.js"></script>, then Plotly.react(
 el, data, layout). Plotly 3.x, the full build — every trace type,
 including tile-free scattergeo/choropleth for maps.
 CSS: <script src="vendor/tailwind.js"></script> for tailwind utility
 classes (it compiles them in the browser; no build, no config file).
-Both are served WITH your app from its own origin, so they work with no
-network at all. Do not load them from a CDN.
+Everything above is served WITH your app from its own origin, so it works
+with no network at all. Do not load any of it from a CDN.
 """
 """What the agent is told it has. Replaces nontainer's default block,
 which names esm.sh and cdn.jsdelivr — instructions to fetch from the
@@ -197,10 +211,17 @@ known-good pattern exactly". Appending a correction underneath would
 have left the wrong instruction both first and more emphatic, which is
 why nontainer 0.3.4 made this block replaceable rather than additive.
 
-No components entry: the Preact reference is gone until the component
-library question is settled, and plain DOM is what the surrounding
-notes already call the most reliable choice. Better a documented gap
-than a CDN pointer that fails only where it matters."""
+MUI is the highlighted component pattern because that is where the
+training mass is: a model writes `<Button variant="contained">` from
+memory. The mechanically cheaper option (Material Web Components, 472KB
+and no transpiler) verified just as well in a spike, but a private
+component library extending MUI makes MUI a dependency regardless.
+
+The import-map instruction is the load-bearing sentence. Bare names only
+resolve because mui-app.html declares the map, and an agent that
+'helpfully' rewrites '@mui/material' to a vendor path is the failure
+seen most in spiking this — so the note says not to, in the imperative,
+next to the thing it applies to."""
 
 
 def _view_workers() -> int:

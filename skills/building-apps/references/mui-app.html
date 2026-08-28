@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- Reference frontend: MUI components, JSX, no build step.
+     Copy this AND mui-app.jsx to /workspace/app/; it pairs with
+     api-handler.py. Rename mui-app.jsx to app.jsx, or point data-app at
+     whatever you call it.
+
+     Everything below the <title> is boilerplate you should copy exactly.
+     The import map is what makes `import { Button } from '@mui/material'`
+     work -- an ES import needs a real path, and the map supplies it. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Runs</title>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "./vendor/react.min.js",
+      "react/jsx-runtime": "./vendor/react.min.js",
+      "react-dom": "./vendor/react.min.js",
+      "react-dom/client": "./vendor/react.min.js",
+      "@mui/material": "./vendor/mui.min.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- Compiles app.jsx in the browser and runs it. No build step, no
+       bundler; the loader is served with your app. -->
+  <script type="module" src="vendor/jsx-loader.js" data-app="app.jsx"></script>
+</body>
+</html>
