@@ -67,41 +67,62 @@ npm i --no-audit --no-fund --silent \
 # require internally AND guarantees a single React instance -- two
 # copies break hooks with an error that reads like the agent's fault.
 #
-# The import map then points every react-ish specifier at this one file,
-# so the agent's TRAINED spelling is literally correct:
-# `import { useState } from "react"`, `import { createRoot } from
-# "react-dom/client"`, and MUI's own internal imports all land here.
+# The import map (in appassets/jsx-loader.js) points every react-ish
+# specifier at this one file, so the agent's TRAINED spelling is
+# literally correct: `import { useState } from "react"`, `import {
+# createRoot } from "react-dom/client"`, and MUI's own internal imports
+# all land here.
 #
-# Exports are ENUMERATED, not `export *`: react and react-dom ship
-# CommonJS, and `export * from` a CJS module produces NO named bindings.
-# The first build of this was silently empty and the page failed with
-# "does not provide an export named 'jsx'". Reading through a namespace
-# (default ?? ns) works whether the package is CJS or ESM.
-cat > react.js <<'JS'
-import * as reactNs from 'react';
-import * as domNs from 'react-dom';
-import * as clientNs from 'react-dom/client';
-import * as jsxNs from 'react/jsx-runtime';
+# The export list is GENERATED, not written by hand. react and react-dom
+# ship CommonJS, and `export * from` a CJS module produces no named
+# bindings at all -- so the names have to come from somewhere. Hand-
+# listing them silently omitted React 19's `use`, `useActionState`,
+# `useOptimistic` and `useEffectEvent`, which an app would import
+# normally and fail on at module instantiation. Reading the real module
+# keeps the surface complete and current across upgrades.
+cat > gen-react-entry.mjs <<'JS'
+import { writeFileSync } from 'node:fs';
 
-const React = reactNs.default ?? reactNs;
-const ReactDOM = domNs.default ?? domNs;
-const client = clientNs.default ?? clientNs;
-const jsxRuntime = jsxNs.default ?? jsxNs;
+const load = async (spec) => {
+  const ns = await import(spec);
+  return ns.default ?? ns;
+};
+const [React, ReactDOM, client, jsxRuntime] = await Promise.all(
+  ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime'].map(load),
+);
 
-export default React;
-export const {
-  Children, Component, Fragment, Profiler, PureComponent, StrictMode,
-  Suspense, cloneElement, createContext, createElement, createRef,
-  forwardRef, isValidElement, lazy, memo, startTransition, useCallback,
-  useContext, useDebugValue, useDeferredValue, useEffect, useId,
-  useImperativeHandle, useInsertionEffect, useLayoutEffect, useMemo,
-  useReducer, useRef, useState, useSyncExternalStore, useTransition,
-  version,
-} = React;
-export const { createPortal, flushSync } = ReactDOM;
-export const { createRoot, hydrateRoot } = client;
-export const { jsx, jsxs } = jsxRuntime;
+const seen = new Set(['default']);
+// Public API only: React's internals are __-prefixed by convention, and
+// re-exporting them would put unstable names in an agent's reach.
+const pick = (obj) =>
+  Object.keys(obj)
+    .filter((k) => /^[A-Za-z_$][\w$]*$/.test(k) && !k.startsWith('__'))
+    .filter((k) => !seen.has(k) && seen.add(k));
+
+const block = (names, from) =>
+  names.length ? `export const { ${names.join(', ')} } = ${from};\n` : '';
+
+writeFileSync('react.js', [
+  "import * as reactNs from 'react';",
+  "import * as domNs from 'react-dom';",
+  "import * as clientNs from 'react-dom/client';",
+  "import * as jsxNs from 'react/jsx-runtime';",
+  'const React = reactNs.default ?? reactNs;',
+  'const ReactDOM = domNs.default ?? domNs;',
+  'const client = clientNs.default ?? clientNs;',
+  'const jsxRuntime = jsxNs.default ?? jsxNs;',
+  'export default React;',
+  // Order matters: first writer wins a name. react before react-dom so
+  // a shared name (`version`) means React's.
+  block(pick(React), 'React'),
+  block(pick(ReactDOM), 'ReactDOM'),
+  block(pick(client), 'client'),
+  block(pick(jsxRuntime), 'jsxRuntime'),
+].join('\n'));
+
+console.error(`  react entry: ${seen.size - 1} named exports`);
 JS
+node gen-react-entry.mjs
 
 echo "export * from '@mui/material';"                                 > mui.js
 echo "export { transform } from 'sucrase';"                           > sucrase.js

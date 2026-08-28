@@ -2450,3 +2450,56 @@ def test_a_page_that_declares_its_own_map_wins(studio):
     if result.load_error and "unavailable" in result.load_error:
         pytest.skip(result.load_error)
     assert result.ok, render_test_app(result)
+
+
+def test_the_vendored_react_exports_its_whole_public_surface():
+    """The export list is generated from the module, not written by
+    hand. Hand-listing silently omitted React 19's `use`,
+    `useActionState`, `useOptimistic` and `useEffectEvent` — an app
+    importing one of those failed at module instantiation, even though
+    the function was sitting on the bundled React object.
+
+    Static on purpose: it needs neither a browser nor node, so it guards
+    the bundle on every run and will fail the next time React adds an
+    API the generator does not pick up."""
+    import re
+
+    bundle = (
+        Path(__file__).parent.parent / "nontainer_studio" / "appassets" / "react.min.js"
+    ).read_text()
+    match = re.search(r"export\{([^}]*)\}", bundle)
+    assert match, "react.min.js exports nothing — `export *` from CJS again?"
+    names = {part.split(" as ")[-1].strip() for part in match.group(1).split(",")}
+
+    expected = {
+        # hooks a model reaches for, old and new
+        "useState",
+        "useEffect",
+        "useMemo",
+        "useRef",
+        "useReducer",
+        "use",
+        "useActionState",
+        "useOptimistic",
+        "useTransition",
+        # composition
+        "Fragment",
+        "StrictMode",
+        "Suspense",
+        "createContext",
+        "memo",
+        "forwardRef",
+        "lazy",
+        "startTransition",
+        # dom + the jsx runtime the loader compiles against
+        "createRoot",
+        "hydrateRoot",
+        "createPortal",
+        "flushSync",
+        "jsx",
+        "jsxs",
+    }
+    assert not (expected - names), f"missing from the bundle: {expected - names}"
+    # A hand-list drifts DOWN; this catches that shape without pinning a
+    # number that a React release would have to chase.
+    assert len(names) >= 50, f"only {len(names)} exports — did the generator run?"
