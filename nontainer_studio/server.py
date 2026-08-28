@@ -375,23 +375,6 @@ async def _run_turn(session: Any, message: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _csp_kwargs() -> dict:
-    """``NONTAINER_STUDIO_CSP``: override the served-HTML policy, or
-    ``"none"`` to drop it.
-
-    Left to the library by default, which derives the policy from
-    ``registry.apps.script_hosts`` — the same declaration test_app
-    enforces by interception, so verification and serving agree. Setting
-    this breaks that link on purpose: an explicit policy is used
-    verbatim, so it must carry the script hosts (and
-    ``'wasm-unsafe-eval'``, if any vendored library has a wasm core)
-    itself, or apps that verify green will fail once published."""
-    csp = os.getenv("NONTAINER_STUDIO_CSP")
-    if csp is None:
-        return {}  # library default, derived from the shared AppsConfig
-    return {"csp": None if csp.lower() == "none" else csp}
-
-
 def build_app(registry: Registry) -> Starlette:
     def with_session(handler):
         """Resolve the route's {name} to a Session or 404 — every
@@ -849,7 +832,7 @@ def build_app(registry: Registry) -> Starlette:
             # policy ("none" disables it entirely).
             Mount(
                 "/apps",
-                build_router(registry.resolve, config=registry.apps, **_csp_kwargs()),
+                build_router(registry.resolve, config=registry.apps),
             ),
             Mount("/static", StaticFiles(directory=STATIC)),
         ],

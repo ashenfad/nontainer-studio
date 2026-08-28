@@ -145,7 +145,30 @@ def apps_config() -> AppsConfig:
     return AppsConfig(
         static_assets={"vendor": app_assets_dir()},
         frontend_notes=FRONTEND_NOTES,
+        csp=_csp(),
     )
+
+
+def _csp() -> str | None:
+    """``NONTAINER_STUDIO_CSP``: override the app policy, or ``"none"``
+    to drop it. ``None`` leaves nontainer to derive one from
+    ``script_hosts``.
+
+    On the CONFIG, not on ``build_router``. Since nontainer 0.3.5
+    test_app sends this policy during verification, so a policy declared
+    only at the router would be one verification never sees — an app
+    could pass under the derived default and be served under this. That
+    is the divergence the single config exists to prevent, and it was
+    live here until 0.3.5 made the field available.
+
+    Setting it still breaks the link to ``script_hosts`` on purpose: an
+    explicit policy is used verbatim, so it must carry the script hosts
+    itself — and ``'wasm-unsafe-eval'`` if any vendored library has a
+    wasm core."""
+    csp = os.getenv("NONTAINER_STUDIO_CSP")
+    if csp is None:
+        return None  # derived from script_hosts
+    return "" if csp.lower() == "none" else csp
 
 
 def app_assets_dir() -> Path:
