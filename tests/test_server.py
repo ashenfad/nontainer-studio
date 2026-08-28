@@ -2130,3 +2130,57 @@ def test_failed_create_rolls_back_the_reservation(tmp_path, monkeypatch):
         assert registry.known() == set()  # reservation rolled back
     finally:
         registry.close()
+
+
+# -- one AppsConfig, two lifecycles -------------------------------------------
+
+
+def _custom_studio(tmp_path, apps):
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a: None, store=tmp_path, apps=apps
+    )
+    registry._build_agent = lambda *a, **k: FakeAgent()
+    return registry
+
+
+def test_one_appsconfig_reaches_authoring_and_serving(tmp_path):
+    """The declaration governs two lifecycles: authoring (test_app's
+    interception, the agent's tool description) and serving (the CSP a
+    published snapshot carries). Studio used to build one at each site
+    and let both fall through to defaults, so they agreed by luck — and
+    customizing either alone was an app that verifies green and breaks
+    published."""
+    from nontainer.apps import DEFAULT_SCRIPT_HOSTS, AppsConfig
+
+    apps = AppsConfig(script_hosts=(*DEFAULT_SCRIPT_HOSTS, "esm.corp.internal"))
+    registry = _custom_studio(tmp_path, apps)
+    try:
+        with TestClient(server.build_app(registry)) as client:
+            client.post("/api/sessions", json={"name": "s1"})
+            session = registry.get("s1")
+
+            # authoring: the runtime the agent's tools drive
+            assert session.runtime.config is apps
+
+            # serving: the published snapshot's CSP derives from the
+            # SAME script_hosts, not from a second, default config
+            _seed_app(session.ws)
+            pub = client.post("/api/sessions/s1/publish").json()
+            csp = client.get(pub["url"]).headers["content-security-policy"]
+            assert "https://esm.corp.internal" in csp
+    finally:
+        registry.close()
+
+
+def test_the_default_studio_still_serves_the_library_csp(studio):
+    """The shared object must not change the default policy — including
+    'wasm-unsafe-eval', which a vendored library with a wasm core needs
+    and which test_app cannot catch the absence of."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+    pub = client.post("/api/sessions/s1/publish").json()
+
+    csp = client.get(pub["url"]).headers["content-security-policy"]
+    assert "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'" in csp
+    assert "https://esm.sh" in csp
