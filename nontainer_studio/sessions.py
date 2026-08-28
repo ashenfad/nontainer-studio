@@ -43,7 +43,7 @@ from nontainer import (
     workspace,
 )
 from nontainer.adapters.agno import WorkspaceTools
-from nontainer.apps import AppRuntime, enable_apps, mint_token
+from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
 
 DEFAULT_STORE = Path.home() / ".nontainer-studio"
 
@@ -108,6 +108,31 @@ def _executor_factory() -> Callable[[], Any] | None:
     # Explicit: DudExecutor defaults to a VM now, and =dud means the
     # zero-isolation rung by deliberate choice (warned about at startup).
     return lambda: DudExecutor(backend="subprocess")
+
+
+def apps_config() -> AppsConfig:
+    """The ONE ``AppsConfig`` for this process.
+
+    It governs two lifecycles that must not disagree: **authoring**
+    (``enable_apps`` — test_app's request interception, the budgets a
+    handler runs under, and what the agent is told in its tool
+    description) and **serving** (``build_router`` — the CSP a published
+    snapshot carries, and which static assets exist there).
+
+    Studio used to build one at each site and let both fall through to
+    the library defaults, so they agreed by luck rather than by
+    construction. That is the shape apps.md's "one declaration, four
+    surfaces" rule exists to prevent: customize ``script_hosts`` on the
+    authoring side alone and an app verifies green under test_app, then
+    breaks published under a CSP that never heard about the change.
+    Nothing in nontainer forced the split — it is studio's discipline to
+    keep, so it is kept here, once.
+
+    Defaults today. This is the seam a vendored frontend stack
+    (``static_assets``) and a house component library (``apps_primer``)
+    will be declared on.
+    """
+    return AppsConfig()
 
 
 def _view_workers() -> int:
@@ -482,10 +507,15 @@ class Registry:
         model_factory: Callable[..., Any],
         store: Path | str | None = None,
         default_model: str | None = None,
+        apps: AppsConfig | None = None,
     ) -> None:
         self._model_factory = model_factory  # (spec) -> agno Model
         self._default_model = default_model
         self._store = Path(store) if store else DEFAULT_STORE
+        # Public: the router mounts alongside `resolve`, so the serving
+        # half reads the same object the authoring half was built with
+        # (see apps_config).
+        self.apps = apps or apps_config()
         self._sessions: dict[str, Session] = {}
         self._published: dict[str, Workspace] = {}  # token -> frozen snapshot
         self._lock = threading.Lock()
@@ -829,7 +859,9 @@ class Registry:
     ) -> Session:
         # Apps dispatch works on both executors (stage 3c dissolved the
         # LocalExecutor-only sandbox surface into exec_python(view=)).
-        runtime = enable_apps(ws)
+        # self.apps, not a fresh AppsConfig: the router serves published
+        # snapshots under this same declaration (see apps_config).
+        runtime = enable_apps(ws, self.apps)
         log_dir = self._store / "events"
         log_dir.mkdir(parents=True, exist_ok=True)
         return Session(
