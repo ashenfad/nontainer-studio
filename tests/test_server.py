@@ -2295,3 +2295,41 @@ Plotly.react('chart', [{x:[1,2,3], y:[2,4,8], type:'scatter'}], {})
     assert result.results[1].value == "plotly 3.7.0"  # the pinned version
     assert "249, 250, 251" in result.results[2].value  # tailwind compiled it
     assert not result.rejected  # nothing tried to reach a CDN
+
+
+def test_a_custom_csp_reaches_verification_not_just_serving(tmp_path, monkeypatch):
+    """NONTAINER_STUDIO_CSP used to be passed to build_router only, so
+    test_app verified under the DERIVED policy while the router served
+    this one. An app could pass verification and be refused published --
+    the divergence the single config exists to prevent."""
+    monkeypatch.setenv("NONTAINER_STUDIO_CSP", "default-src 'self'; script-src 'self'")
+    registry = _custom_studio(tmp_path, sessions_mod.apps_config())
+    try:
+        with TestClient(server.build_app(registry)) as client:
+            client.post("/api/sessions", json={"name": "s1"})
+            session = registry.get("s1")
+            _seed_app(session.ws)
+
+            # the authoring runtime -- what test_app enforces
+            assert session.runtime.config.csp == "default-src 'self'; script-src 'self'"
+
+            # ... and the served snapshot carries the same string
+            pub = client.post("/api/sessions/s1/publish").json()
+            served = client.get(pub["url"]).headers["content-security-policy"]
+            assert served == "default-src 'self'; script-src 'self'"
+    finally:
+        registry.close()
+
+
+def test_csp_none_disables_it_on_both_halves(tmp_path, monkeypatch):
+    monkeypatch.setenv("NONTAINER_STUDIO_CSP", "none")
+    registry = _custom_studio(tmp_path, sessions_mod.apps_config())
+    try:
+        with TestClient(server.build_app(registry)) as client:
+            client.post("/api/sessions", json={"name": "s1"})
+            _seed_app(registry.get("s1").ws)
+            assert registry.apps.csp == ""
+            pub = client.post("/api/sessions/s1/publish").json()
+            assert "content-security-policy" not in client.get(pub["url"]).headers
+    finally:
+        registry.close()

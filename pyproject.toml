@@ -32,7 +32,11 @@ dependencies = [
     # it must be able to say so INSTEAD of nontainer's default block —
     # which names esm.sh and cdn.jsdelivr, and says "copy this exactly".
     # Appending a correction under that would lose.
-    "nontainer[agno,apps]>=0.3.4",
+    # 0.3.5 moved the served CSP onto AppsConfig, and test_app now SENDS
+    # it during verification. Studio overrides the policy
+    # (NONTAINER_STUDIO_CSP), so before this it verified under one policy
+    # and served under another.
+    "nontainer[agno,apps]>=0.3.5",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",
