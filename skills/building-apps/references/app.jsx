@@ -175,10 +175,11 @@ function App() {
               <TableRow key={row.id} data-key={row.id}>
                 <TableCell>{row.category}</TableCell>
                 <TableCell>{row.region}</TableCell>
-                <TableCell>{row.year}</TableCell>
-                <TableCell align="right">
-                  {row.value === null ? "—" : row.value}
-                </TableCell>
+                {/* Any field can be null — the handler sends None for
+                    anything pandas calls missing — so render the dash
+                    rather than a blank cell. */}
+                <TableCell>{row.year ?? "—"}</TableCell>
+                <TableCell align="right">{row.value ?? "—"}</TableCell>
                 <TableCell>
                   <Button size="small" id={`open-${row.id}`} onClick={() => setSelected(row)}>
                     Details

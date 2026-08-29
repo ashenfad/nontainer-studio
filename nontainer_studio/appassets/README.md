@@ -17,10 +17,10 @@ internet can still write an app that renders.
 | `mui.min.js` | npm `@mui/material@6` + `@mui/x-data-grid@7` + emotion, bundled | `393f0429fb93ffbdd11009286e9e5402769aec92927a70847cd3b89bc98a9683` |
 | `icons.min.js` | npm `@mui/icons-material@6`, 66 icons, bundled | `9d090df59d2bae4fc88afe29ed6c701fe1246d4ddf60875781aff991c217ec43` |
 | `sucrase.min.js` | npm `sucrase@3`, bundled | `8bbf28da8aedb231f4315800f6b0d7310706ae4f1e6e4cdbca2311bbfb7a2913` |
-| `jsx-loader.js` | **ours** — hand-written, not generated | `69866129a485d084ad578aa48a13db63465fd40ccc867a63cf7dbfd9a5bf4b4a` |
+| `jsx-loader.js` | **ours** — hand-written, not generated | `12463452f042d1b365030dd20da68bc798c5bc17df8fe04baeafee72120b1f40` |
 | `mui-utils.js` | **ours** — subpath shim for the icon bundle | `752c227b022b40b2de39d925f56b32f9264dd964a7bd0399e54ca175114c21f9` |
 | `theme.css` | **ours** — the shell's palette, app-facing | `46abd6279d31325886178ead73abce4d0c2ce39edbaa46fa6c8828ba0aa8361e` |
-| `theme.js` | **ours** — that palette as a MUI theme | `0eea80188f894e1d9ccc866ece555fdb1243634ee326b84c1127f76476199ac4` |
+| `theme.js` | **ours** — that palette as a MUI theme | `09d0ff29e9a032e84dd4412d141fe8554f89e17248d36afed5bf3ae86bbb8e7d` |
 
 All MIT licensed. ~6.8 MB total, of which plotly is 4.7 MB.
 
@@ -114,8 +114,16 @@ copy is the cost of that indirection, and nothing would notice it going
 stale — an app with last quarter's accent colour still renders
 perfectly — so `test_the_app_palette_still_matches_the_shell` compares
 the two files directly. `theme.js` then *reads* those properties rather
-than restating them a third time, and a missing one falls back to
-stock MUI rather than to a hardcoded guess.
+than restating them a third time.
+
+**A missing property is omitted, not passed as `undefined`.** That is
+the difference between degrading to stock Material and taking the app
+down: `createTheme({palette: {primary: undefined}})` does not fall back,
+it throws *"Cannot read properties of undefined (reading 'type')"* from
+ten frames inside library code and the page renders nothing. `theme.js`
+therefore builds its palette by dropping absent entries, and exports
+`createHouseTheme(read)` so a test can drive that path through the real
+module rather than a copy of it.
 
 **Fonts are stacks, not faces.** The shell loads Fraunces and Public
 Sans from Google Fonts, which an air-gapped deployment cannot reach, so

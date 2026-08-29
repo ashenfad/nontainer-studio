@@ -2823,3 +2823,131 @@ createRoot(document.getElementById('root')).render(
     if result.load_error and "unavailable" in result.load_error:
         pytest.skip(result.load_error)
     assert result.ok, render_test_app(result)
+
+
+def test_the_reference_handler_survives_a_null_year(studio):
+    """`year` looks like a safe int right up until a sampled row is
+    missing one, and then int(NaN) raises and the whole summary 500s on
+    data that is merely incomplete.
+
+    The aggregate never showed it: groupby drops null keys silently, so
+    the chart renders fine while the table request dies. Worth its own
+    test because it fails DIFFERENTLY from the string columns — those
+    ship a bare NaN and blank the page; this one is a 500."""
+    pytest.importorskip("pandas")
+    refs = Path(__file__).parent.parent / "skills" / "building-apps" / "references"
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    ws = session.ws
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.makedirs("/workspace/app/data", exist_ok=True)
+    ws.run_python(
+        "import pandas as pd\n"
+        'pd.DataFrame({"category": ["a", "b"], "region": ["north", "south"],\n'
+        '              "year": [2020, None], "value": [1.0, 3.0]}\n'
+        ').to_parquet("/workspace/app/data/records.parquet")\n'
+    )
+    ws.fs.write("/workspace/app/api/summary.py", (refs / "api-handler.py").read_bytes())
+
+    response = session.runtime.dispatch(nt_request("GET", "/api/summary"))
+    assert response.status == 200, response.text
+    body = json.loads(response.text)
+    assert body["rows"][1]["year"] is None
+    assert body["rows"][0]["year"] == 2020  # a real year still casts to int
+
+
+def test_the_loader_does_not_mistake_another_stylesheet_for_the_house_one(studio):
+    """The skip-if-already-linked check matches the house stylesheet by
+    URL, not by the substring "theme.css". An app that links its own
+    `custom-theme.css` would otherwise never receive vendor/theme.css,
+    and the failure is SILENT: theme.js reads every --app-* property as
+    "" and quietly hands back a stock MUI theme."""
+    pytest.importorskip("playwright")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    session.ws.fs.makedirs("/workspace/app", exist_ok=True)
+    session.ws.fs.write("/workspace/app/custom-theme.css", b".mine { color: red }\n")
+    _jsx_app(
+        session.ws,
+        b"""<html><head>
+<link rel="stylesheet" href="custom-theme.css" />
+</head><body><div id="root"></div>
+<script type="module" src="vendor/jsx-loader.js" data-app="app.jsx"></script>
+</body></html>""",
+        b"""import { createRoot } from 'react-dom/client';
+import { Button, CssBaseline, ThemeProvider } from '@mui/material';
+import theme from 'house/theme';
+createRoot(document.getElementById('root')).render(
+  <ThemeProvider theme={theme}><CssBaseline />
+    <Button id="b">hi</Button>
+  </ThemeProvider>);
+""",
+    )
+    result = session.runtime.test_app(
+        [
+            # both stylesheets present: the app's own AND ours
+            {
+                "assert": """document.querySelectorAll(
+                    "link[href$='theme.css']").length === 2"""
+            },
+            {
+                "assert": "getComputedStyle(document.documentElement)"
+                ".getPropertyValue('--app-primary').trim() === '#e94560'"
+            },
+            # stock MUI would be rgb(144, 202, 249) here
+            {
+                "assert": "getComputedStyle(document.querySelector('#b'))"
+                ".color === 'rgb(233, 69, 96)'"
+            },
+        ]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)
+    assert result.ok, render_test_app(result)
+
+
+def test_the_house_theme_survives_a_missing_stylesheet(studio):
+    """Missing colours should cost the house look, not the app.
+
+    createTheme does NOT treat an explicit `undefined` as "use your
+    default" — it throws "Cannot read properties of undefined (reading
+    'type')" from inside library code and renders nothing. So theme.js
+    omits absent properties rather than passing them, and this drives
+    that path through the real module: a reader that finds nothing is
+    exactly what an app gets when theme.css never arrived."""
+    pytest.importorskip("playwright")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _jsx_app(
+        session.ws,
+        b"""<html><body><div id="root"></div>
+<script type="module" src="vendor/jsx-loader.js" data-app="app.jsx"></script>
+</body></html>""",
+        b"""import { createRoot } from 'react-dom/client';
+import { Button, CssBaseline, ThemeProvider } from '@mui/material';
+import { createHouseTheme } from 'house/theme';
+
+const bare = createHouseTheme(() => undefined);
+createRoot(document.getElementById('root')).render(
+  <ThemeProvider theme={bare}><CssBaseline />
+    <Button id="b">hi</Button>
+  </ThemeProvider>);
+""",
+    )
+    result = session.runtime.test_app(
+        [
+            {"assert": "document.querySelector('#b') !== null"},
+            # Stock MUI dark primary, i.e. it really did fall back
+            # rather than somehow still finding our palette.
+            {
+                "assert": "getComputedStyle(document.querySelector('#b'))"
+                ".color === 'rgb(144, 202, 249)'"
+            },
+        ]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)
+    assert result.ok, render_test_app(result)
