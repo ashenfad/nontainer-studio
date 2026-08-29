@@ -327,9 +327,11 @@ def _stub_anthropic(monkeypatch, capabilities, calls=None):
 def _clear_thinking_cache():
     from nontainer_studio import providers
 
-    providers._THINKING_CACHE.clear()
+    for store in (providers._THINKING_CACHE, providers._thinking_failed_at):
+        store.clear()
     yield
-    providers._THINKING_CACHE.clear()
+    for store in (providers._THINKING_CACHE, providers._thinking_failed_at):
+        store.clear()
 
 
 def test_adaptive_models_get_adaptive_and_effort(monkeypatch):
@@ -403,3 +405,44 @@ def test_the_capability_lookup_is_cached(monkeypatch):
         _anthropic_thinking("claude-sonnet-5")
     _anthropic_thinking("claude-opus-5")
     assert calls == ["claude-sonnet-5", "claude-opus-5"]
+
+
+def test_a_failed_lookup_is_not_cached_as_an_answer(monkeypatch):
+    """The P1 from PR #11 review. The fallback is a GUESS, and for an
+    adaptive-only model like the default claude-sonnet-5 it is the WRONG
+    guess — so caching it turns one DNS blip into a studio that 400s on
+    every turn until the process restarts. Exactly the failure the
+    fallback exists to prevent, arrived at the long way round."""
+    from nontainer_studio import providers
+    from nontainer_studio.providers import _anthropic_thinking
+
+    calls: list[str] = []
+    _stub_anthropic(monkeypatch, RuntimeError("dns blip"), calls)
+    assert _anthropic_thinking("claude-sonnet-5") == {
+        "thinking": {"type": "enabled", "budget_tokens": 4096}
+    }
+    assert "claude-sonnet-5" not in providers._THINKING_CACHE
+
+    # ...and once the endpoint recovers (past the retry TTL) the real
+    # shape is picked up without a restart.
+    monkeypatch.setattr(providers, "_META_RETRY_SECONDS", 0.0)
+    _stub_anthropic(
+        monkeypatch, _caps(enabled=False, adaptive=True, effort=True), calls
+    )
+    assert _anthropic_thinking("claude-sonnet-5") == {
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "medium"},
+    }
+    assert len(calls) == 2  # it really did ask again
+
+
+def test_a_failed_lookup_is_not_retried_on_every_call(monkeypatch):
+    """The other half of the TTL: a genuinely offline box must not pay
+    the lookup on every model construction."""
+    from nontainer_studio.providers import _anthropic_thinking
+
+    calls: list[str] = []
+    _stub_anthropic(monkeypatch, RuntimeError("offline"), calls)
+    for _ in range(4):
+        _anthropic_thinking("claude-sonnet-5")
+    assert calls == ["claude-sonnet-5"]
