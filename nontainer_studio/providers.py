@@ -376,6 +376,60 @@ def _split_openrouter_tag(model: str) -> tuple[str, dict | None]:
     return base, routing
 
 
+# Anthropic's thinking parameter comes in two INCOMPATIBLE shapes, and
+# which one a model takes is not derivable from its name:
+#
+#   enabled   thinking={"type": "enabled", "budget_tokens": N}
+#   adaptive  thinking={"type": "adaptive"} + output_config={"effort": …}
+#
+# Queried from the models API rather than guessed, because the split
+# does not follow the version numbers. As of 2026-08: opus-5/sonnet-5/
+# fable-5 AND opus-4-7/opus-4-8 reject `enabled`; sonnet-4-6/opus-4-6
+# take either; opus-4-5 takes only `enabled`; haiku-4-5 and sonnet-4-5
+# support no effort at all. Any prefix rule short enough to write down
+# gets at least one of those wrong, and the failure is a hard 400 at the
+# first turn — '"thinking.type.enabled" is not supported for this model'.
+_THINKING_CACHE: dict[str, dict[str, Any]] = {}
+
+# The analogue of the 4096-token budget this used to send: enough to
+# reason, not enough to stall a chat turn. NONTAINER_STUDIO_EFFORT
+# overrides ("low" | "medium" | "high" | "xhigh" | "max").
+_DEFAULT_EFFORT = "medium"
+
+
+def _anthropic_thinking(model_id: str) -> dict[str, Any]:
+    """The thinking/output_config kwargs this model actually accepts.
+
+    Falls back to the legacy `enabled` shape when the capability lookup
+    fails (no network, an id the API doesn't know, an SDK too old to
+    report capabilities): that is what every pre-adaptive model wants,
+    and it keeps a metadata call from being able to break model
+    construction outright."""
+    if model_id in _THINKING_CACHE:
+        return _THINKING_CACHE[model_id]
+
+    legacy: dict[str, Any] = {"thinking": {"type": "enabled", "budget_tokens": 4096}}
+    try:
+        import anthropic
+
+        caps = anthropic.Anthropic().models.retrieve(model_id).capabilities
+        types = caps.thinking.types
+        if types.adaptive.supported:
+            kwargs: dict[str, Any] = {"thinking": {"type": "adaptive"}}
+            if caps.effort.supported:
+                effort = os.getenv("NONTAINER_STUDIO_EFFORT") or _DEFAULT_EFFORT
+                kwargs["output_config"] = {"effort": effort}
+        elif types.enabled.supported:
+            kwargs = legacy
+        else:
+            kwargs = {}  # a model with no extended thinking at all
+    except Exception:
+        kwargs = legacy
+
+    _THINKING_CACHE[model_id] = kwargs
+    return kwargs
+
+
 def build_model(spec: str | None = None) -> Any:
     """spec -> a constructed agno Model (None = server default), with
     the transient-failure policy applied (see ``_with_retries``)."""
@@ -435,12 +489,10 @@ def _construct_model(spec: str | None = None) -> Any:
         from agno.models.anthropic import Claude
 
         # native extended thinking, streamed into the transcript's
-        # thinking blocks (budget must stay under max_tokens)
-        return Claude(
-            id=model,
-            thinking={"type": "enabled", "budget_tokens": 4096},
-            max_tokens=16384,
-        )
+        # thinking blocks. The parameter SHAPE is per-model and looked
+        # up, not assumed (see _anthropic_thinking); with the legacy
+        # shape the budget must stay under max_tokens.
+        return Claude(id=model, max_tokens=16384, **_anthropic_thinking(model))
     if provider == "openai":
         # gpt-5.6 rejects tools + reasoning on chat-completions (same
         # restriction we hit via OpenRouter) — ride the Responses API,
