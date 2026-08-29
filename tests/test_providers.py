@@ -282,3 +282,124 @@ def test_streamed_reasoning_fragments_merge_into_whole_blocks():
     assert details[0]["text"] == "let me think"
     assert details[0]["signature"] == "sig-abc"
     assert details[1]["text"] == "second block"
+
+
+# -- Anthropic's two thinking shapes ------------------------------------------
+
+
+class _Support:
+    def __init__(self, supported: bool):
+        self.supported = supported
+
+
+def _caps(*, enabled: bool, adaptive: bool, effort: bool):
+    """A stand-in for models.retrieve(...).capabilities."""
+    thinking = type(
+        "T",
+        (),
+        {
+            "types": type(
+                "Ty", (), {"enabled": _Support(enabled), "adaptive": _Support(adaptive)}
+            )()
+        },
+    )()
+    return type("C", (), {"thinking": thinking, "effort": _Support(effort)})()
+
+
+def _stub_anthropic(monkeypatch, capabilities, calls=None):
+    import anthropic
+
+    class _Models:
+        def retrieve(self, model_id):
+            if calls is not None:
+                calls.append(model_id)
+            if isinstance(capabilities, Exception):
+                raise capabilities
+            return type("M", (), {"capabilities": capabilities})()
+
+    class _Client:
+        models = _Models()
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda *a, **k: _Client())
+
+
+@pytest.fixture(autouse=True)
+def _clear_thinking_cache():
+    from nontainer_studio import providers
+
+    providers._THINKING_CACHE.clear()
+    yield
+    providers._THINKING_CACHE.clear()
+
+
+def test_adaptive_models_get_adaptive_and_effort(monkeypatch):
+    """The bug: every Anthropic model was sent
+    thinking={"type": "enabled"}, which claude-sonnet-5 rejects with a
+    hard 400 on the first turn."""
+    from nontainer_studio.providers import _anthropic_thinking
+
+    _stub_anthropic(monkeypatch, _caps(enabled=False, adaptive=True, effort=True))
+    assert _anthropic_thinking("claude-sonnet-5") == {
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "medium"},
+    }
+
+
+def test_legacy_models_keep_the_budget_shape(monkeypatch):
+    """claude-opus-4-5 and haiku-4-5 support only `enabled`, so this
+    cannot simply be swapped for adaptive everywhere."""
+    from nontainer_studio.providers import _anthropic_thinking
+
+    _stub_anthropic(monkeypatch, _caps(enabled=True, adaptive=False, effort=False))
+    assert _anthropic_thinking("claude-haiku-4-5") == {
+        "thinking": {"type": "enabled", "budget_tokens": 4096}
+    }
+
+
+def test_adaptive_without_effort_omits_output_config(monkeypatch):
+    from nontainer_studio.providers import _anthropic_thinking
+
+    _stub_anthropic(monkeypatch, _caps(enabled=False, adaptive=True, effort=False))
+    assert _anthropic_thinking("m") == {"thinking": {"type": "adaptive"}}
+
+
+def test_a_model_without_thinking_gets_none(monkeypatch):
+    from nontainer_studio.providers import _anthropic_thinking
+
+    _stub_anthropic(monkeypatch, _caps(enabled=False, adaptive=False, effort=False))
+    assert _anthropic_thinking("m") == {}
+
+
+def test_a_failed_lookup_cannot_break_model_construction(monkeypatch):
+    """The lookup is a network call on the construction path. If it
+    could raise, an Anthropic outage or an offline box would stop the
+    studio starting a session at all — a strictly worse failure than
+    the one this fixes."""
+    from nontainer_studio.providers import _anthropic_thinking
+
+    _stub_anthropic(monkeypatch, RuntimeError("no network"))
+    assert _anthropic_thinking("claude-sonnet-5") == {
+        "thinking": {"type": "enabled", "budget_tokens": 4096}
+    }
+
+
+def test_effort_is_overridable(monkeypatch):
+    from nontainer_studio.providers import _anthropic_thinking
+
+    monkeypatch.setenv("NONTAINER_STUDIO_EFFORT", "high")
+    _stub_anthropic(monkeypatch, _caps(enabled=False, adaptive=True, effort=True))
+    assert _anthropic_thinking("m")["output_config"] == {"effort": "high"}
+
+
+def test_the_capability_lookup_is_cached(monkeypatch):
+    """One metadata call per model id, not one per turn."""
+    from nontainer_studio.providers import _anthropic_thinking
+
+    calls: list[str] = []
+    _stub_anthropic(
+        monkeypatch, _caps(enabled=False, adaptive=True, effort=True), calls
+    )
+    for _ in range(3):
+        _anthropic_thinking("claude-sonnet-5")
+    _anthropic_thinking("claude-opus-5")
+    assert calls == ["claude-sonnet-5", "claude-opus-5"]
