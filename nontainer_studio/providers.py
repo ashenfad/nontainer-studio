@@ -389,7 +389,8 @@ def _split_openrouter_tag(model: str) -> tuple[str, dict | None]:
 # support no effort at all. Any prefix rule short enough to write down
 # gets at least one of those wrong, and the failure is a hard 400 at the
 # first turn — '"thinking.type.enabled" is not supported for this model'.
-_THINKING_CACHE: dict[str, dict[str, Any]] = {}
+_THINKING_CACHE: dict[str, dict[str, Any]] = {}  # ANSWERS, never guesses
+_thinking_failed_at: dict[str, float] = {}  # model id -> last failure
 
 # The analogue of the 4096-token budget this used to send: enough to
 # reason, not enough to stall a chat turn. NONTAINER_STUDIO_EFFORT
@@ -404,15 +405,34 @@ def _anthropic_thinking(model_id: str) -> dict[str, Any]:
     fails (no network, an id the API doesn't know, an SDK too old to
     report capabilities): that is what every pre-adaptive model wants,
     and it keeps a metadata call from being able to break model
-    construction outright."""
+    construction outright.
+
+    The fallback is a GUESS, so it is never cached as an answer — only
+    successful lookups land in ``_THINKING_CACHE``. Caching it would
+    turn one DNS blip into a permanently 400ing studio: sonnet-5 is
+    adaptive-only, so the guess is wrong for it, and nothing would retry
+    until the process restarted. Failures instead get the same TTL
+    ``_openrouter_model_meta`` uses, for the same reason — retry soon,
+    but don't re-stall on every call from an offline box."""
     if model_id in _THINKING_CACHE:
         return _THINKING_CACHE[model_id]
 
+    import time
+
+    now = time.monotonic()
     legacy: dict[str, Any] = {"thinking": {"type": "enabled", "budget_tokens": 4096}}
+    failed_at = _thinking_failed_at.get(model_id)
+    if failed_at is not None and now - failed_at < _META_RETRY_SECONDS:
+        return legacy
+
     try:
         import anthropic
 
-        caps = anthropic.Anthropic().models.retrieve(model_id).capabilities
+        # Bounded: this sits on the model-construction path, so an
+        # unreachable endpoint must fail fast rather than hold up a
+        # session behind the SDK's default timeout and retries.
+        client = anthropic.Anthropic(timeout=10.0, max_retries=1)
+        caps = client.models.retrieve(model_id).capabilities
         types = caps.thinking.types
         if types.adaptive.supported:
             kwargs: dict[str, Any] = {"thinking": {"type": "adaptive"}}
@@ -424,9 +444,11 @@ def _anthropic_thinking(model_id: str) -> dict[str, Any]:
         else:
             kwargs = {}  # a model with no extended thinking at all
     except Exception:
-        kwargs = legacy
+        _thinking_failed_at[model_id] = now
+        return legacy
 
     _THINKING_CACHE[model_id] = kwargs
+    _thinking_failed_at.pop(model_id, None)
     return kwargs
 
 
