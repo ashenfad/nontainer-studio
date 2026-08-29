@@ -40,6 +40,25 @@ def _frame():
     return pd.read_parquet(DATA, columns=COLUMNS)
 
 
+def _cell(value, cast=None):
+    """One pandas value, made safe to put in a JSON response.
+
+    EVERY nullable field needs this, which is why it is a function
+    rather than a `pd.notna(...) else None` repeated per field — writing
+    it out four times is how you end up guarding three. A miss fails two
+    different ways, neither of them here:
+
+    - a null in a STRING column is a float NaN, and it serializes as
+      bare `NaN`. That is not JSON, so res.json() throws in the browser
+      and the page blanks with no 500 and nothing in api.log.
+    - a null under int()/float() raises instead, and the whole request
+      500s on data that is merely incomplete.
+    """
+    if pd.isna(value):
+        return None
+    return cast(value) if cast else value
+
+
 def get(req):
     df = _frame()
 
@@ -115,16 +134,16 @@ def get(req):
                 # A stable key the frontend can use for React keys and
                 # for test_app selectors. Positional indices break the
                 # moment the sample is sorted or filtered differently.
+                # The index is the one field that cannot be null.
                 "id": int(row.Index),
-                # notna() on the STRING columns too, not just the
-                # numeric one. A null in an object column is a float
-                # NaN, and it serializes as bare `NaN` — which is not
-                # JSON, so res.json() throws in the browser and blanks
-                # the page. The guard is per FIELD, not per dtype.
-                "category": row.category if pd.notna(row.category) else None,
-                "region": row.region if pd.notna(row.region) else None,
-                "year": int(row.year),
-                "value": float(row.value) if pd.notna(row.value) else None,
+                # Everything else goes through _cell — including `year`,
+                # which looks like a safe int right up until a row in
+                # the sample is missing one. The aggregate above never
+                # showed it: groupby drops null keys silently.
+                "category": _cell(row.category),
+                "region": _cell(row.region),
+                "year": _cell(row.year, int),
+                "value": _cell(row.value, float),
             }
             for row in df.head(ROW_SAMPLE).itertuples()
         ],

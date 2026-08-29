@@ -26,50 +26,75 @@
 //    before it injects the app, so the properties are resolvable by the
 //    time this module evaluates.
 //
-// A missing property yields `undefined` and MUI falls back to its own
-// default. That is deliberate: a hardcoded fallback here would be a
-// third copy of the palette, and a wrong-but-confident one is worse
-// than stock Material.
+// A missing property is OMITTED, never passed as undefined. This is the
+// difference between degrading to stock Material and taking the app
+// down: createTheme({palette: {primary: undefined}}) does NOT fall back
+// -- it throws "Cannot read properties of undefined (reading 'type')"
+// from ten frames inside library code, and the page renders nothing.
+// Verified, after an earlier version of this file claimed the opposite.
+//
+// It matters because the stylesheet is not guaranteed: a page can be
+// served from an embedder whose asset dir lacks it, or link something
+// else the loader mistakes for it. Missing colours should cost the
+// house look, not the app.
 
 import { createTheme } from "./mui.min.js";
 
 const root = getComputedStyle(document.documentElement);
 
-function css(name) {
-  const value = root.getPropertyValue(name).trim();
-  return value || undefined;
+/** Read one custom property, or undefined when it is absent/empty. */
+function cssVar(name) {
+  return root.getPropertyValue(name).trim() || undefined;
 }
 
-function main(name) {
-  const value = css(name);
-  return value ? { main: value } : undefined;
+/** Copy only the defined entries; undefined if nothing survives. */
+function compact(entries) {
+  const out = {};
+  for (const [key, value] of Object.entries(entries)) {
+    if (value !== undefined) out[key] = value;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
-export const theme = createTheme({
-  palette: {
-    mode: css("--app-color-scheme") === "light" ? "light" : "dark",
-    primary: main("--app-primary"),
-    secondary: main("--app-secondary"),
-    success: main("--app-success"),
-    warning: main("--app-warning"),
-    error: main("--app-error"),
-    background: {
-      default: css("--app-background"),
-      paper: css("--app-surface"),
-    },
-    text: {
-      primary: css("--app-text"),
-      secondary: css("--app-text-muted"),
-    },
-    divider: css("--app-border"),
-  },
-  typography: {
-    fontFamily: css("--app-font-body"),
-    // Buttons shouting in caps is the single most recognisable "this is
-    // stock Material" tell, and the shell does not do it.
-    button: { textTransform: "none" },
-  },
-  shape: { borderRadius: 8 },
-});
+/**
+ * Build the house theme from a property reader. Exported so the
+ * degradation path is testable through this module rather than through
+ * a copy of it: `createHouseTheme(() => undefined)` is what an app gets
+ * when theme.css never arrived, and it must still render.
+ */
+export function createHouseTheme(read = cssVar) {
+  const swatch = (name) => {
+    const value = read(name);
+    return value ? { main: value } : undefined;
+  };
+  return createTheme({
+    palette: compact({
+      mode: read("--app-color-scheme") === "light" ? "light" : "dark",
+      primary: swatch("--app-primary"),
+      secondary: swatch("--app-secondary"),
+      success: swatch("--app-success"),
+      warning: swatch("--app-warning"),
+      error: swatch("--app-error"),
+      background: compact({
+        default: read("--app-background"),
+        paper: read("--app-surface"),
+      }),
+      text: compact({
+        primary: read("--app-text"),
+        secondary: read("--app-text-muted"),
+      }),
+      divider: read("--app-border"),
+    }),
+    typography: compact({
+      fontFamily: read("--app-font-body"),
+      // Buttons shouting in caps is the single most recognisable "this
+      // is stock Material" tell, and the shell does not do it.
+      button: { textTransform: "none" },
+    }),
+    shape: { borderRadius: 8 },
+  });
+}
+
+export const theme = createHouseTheme();
 
 export default theme;

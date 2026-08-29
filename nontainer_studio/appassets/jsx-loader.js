@@ -90,7 +90,13 @@ if (!document.querySelector('script[type="importmap"]')) {
 // stock Material. Resolve on error too: a missing theme.css should cost
 // the palette, not the whole app.
 function themeStylesheet() {
-  if (document.querySelector('link[rel="stylesheet"][href*="theme.css"]')) {
+  // $= (ends-with), NOT *= (contains). A substring match treats an app's
+  // own `custom-theme.css` as the house stylesheet and skips loading
+  // this one -- and the failure is silent, because theme.js then reads
+  // every --app-* property as "" and degrades to stock MUI. Ends-with
+  // still accepts both spellings a page might use ("vendor/theme.css",
+  // "./vendor/theme.css") and any prefix the app is served under.
+  if (document.querySelector('link[rel="stylesheet"][href$="vendor/theme.css"]')) {
     return Promise.resolve(); // the page linked it itself; parsing awaited it
   }
   return new Promise((resolve) => {
