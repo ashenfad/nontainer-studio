@@ -79,6 +79,46 @@ Reaching for `createTheme` and picking your own colours is the common
 mistake: it produces stock Material purple, which is recognisably not
 this product.
 
+## What's in the MUI bundle
+
+All 462 components of `@mui/material`, plus:
+
+**`@mui/x-data-grid`** — `import { DataGrid } from '@mui/x-data-grid'`.
+Worth reaching for over `<Table>` whenever you'd otherwise hand-write
+sorting, filtering or pagination; it does all three from a `columns` and
+`rows` prop. Give it `getRowId` when your rows aren't keyed on `id`.
+
+**A curated icon set.** Import from the BARE package name:
+
+```jsx
+import { Delete, Search, ExpandMore } from '@mui/icons-material';
+```
+
+Not `import DeleteIcon from '@mui/icons-material/Delete'` — that
+per-file path does NOT resolve here, and it fails with *"Failed to
+resolve module specifier"*, whose advice to use a relative path is
+wrong and will send you rewriting a correct import.
+
+These 66 names exist. Nothing else does — the full package is 4.3 MB
+for ~2,100 icons, so it is curated down to what apps actually use. A
+name outside this list fails with *"does not provide an export named
+…"*, so check here rather than guessing:
+
+```
+Add ArrowBack ArrowDownward ArrowForward ArrowUpward BarChart
+CalendarToday Cancel Check CheckCircle ChevronLeft ChevronRight Clear
+Close Code ContentCopy Delete Description Download Edit Error
+ExpandLess ExpandMore Favorite FavoriteBorder FilterList Folder
+Fullscreen Help Home Info InsertChart InsertDriveFile Link Menu
+MoreHoriz MoreVert OpenInNew Pause People Person PieChart PlayArrow
+Print Refresh Save Schedule Search Settings Share ShowChart SkipNext
+SkipPrevious Sort Star StarBorder Stop TableChart Terminal Timeline
+TrendingDown TrendingUp Upload Visibility VisibilityOff Warning
+```
+
+There is no `@mui/lab`. For anything else the bundle lacks, plain HTML
+and CSS are always available — don't try to load a package from a CDN.
+
 ## A handler, whole
 
 ```python

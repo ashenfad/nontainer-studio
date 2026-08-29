@@ -200,6 +200,12 @@ as 'vendor/mui.min.js'. Copy references/app.{html,jsx} + api-handler.py
 for a working app (filters -> fetch -> stats, chart, table, dialog) and
 cut it down; only the file named by data-app is compiled, so keep your
 components in that one .jsx.
+Also here: `import { DataGrid } from '@mui/x-data-grid'` (sorting,
+filtering and pagination without writing them), and a CURATED set of
+Material icons — `import { Delete, Search } from '@mui/icons-material'`.
+Icons come from that BARE package name, never a per-file path
+('@mui/icons-material/Delete' does NOT resolve), and only the ~66 names
+the building-apps skill lists exist. There is no '@mui/lab'.
 Theme: `import theme from 'house/theme'` gives you this shell's palette
 already built — wrap your tree in <ThemeProvider theme={theme}> with a
 <CssBaseline />. Do NOT call createTheme and pick your own colours; the

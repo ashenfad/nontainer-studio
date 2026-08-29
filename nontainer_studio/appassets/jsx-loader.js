@@ -52,6 +52,17 @@ const VENDOR_IMPORTS = {
   "react-dom": "./vendor/react.min.js",
   "react-dom/client": "./vendor/react.min.js",
   "@mui/material": "./vendor/mui.min.js",
+  // The data grid rides in the SAME bundle: it needs ~30 @mui/material
+  // subpaths whose modules export a default, which a single barrel
+  // cannot answer, and giving it its own copy of MUI would give it its
+  // own theme context — a grid quietly ignoring the house theme while
+  // everything around it honours it.
+  "@mui/x-data-grid": "./vendor/mui.min.js",
+  // A CURATED icon set (see the skill for the names), not the 4.3 MB
+  // package. Its one MUI dependency is answered by the shim below so
+  // there stays a single MUI instance.
+  "@mui/icons-material": "./vendor/icons.min.js",
+  "@mui/material/utils": "./vendor/mui-utils.js",
   // The shell's palette as a ready-made MUI theme. Namespaced rather
   // than bare so it reads as house-supplied at the import site, and so
   // the namespace has room for whatever else the house ships later.

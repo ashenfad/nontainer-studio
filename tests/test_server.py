@@ -2642,8 +2642,10 @@ def test_the_app_palette_still_matches_the_shell():
 
 
 def test_theme_assets_serve_to_preview_and_publish(studio):
-    """Both spellings are real files on both lifecycles: the module a
-    React app imports and the stylesheet a plain-DOM one links."""
+    """Every file the import map points at is real on BOTH lifecycles.
+    A map entry naming a file that only exists in preview would verify
+    green and 404 once published — the split this config exists to
+    close."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     ws = registry.get("s1").ws
@@ -2651,11 +2653,18 @@ def test_theme_assets_serve_to_preview_and_publish(studio):
     ws.fs.write("/workspace/app/index.html", b"<h1>hi</h1>")
     ws.checkpoint()
 
-    for path in ("vendor/theme.css", "vendor/theme.js"):
+    mapped = (
+        "vendor/theme.css",
+        "vendor/theme.js",
+        "vendor/icons.min.js",
+        "vendor/mui-utils.js",
+        "vendor/mui.min.js",
+    )
+    for path in mapped:
         assert client.get(f"/preview/s1/{path}").status_code == 200, path
 
     pub = client.post("/api/sessions/s1/publish").json()
-    for path in ("vendor/theme.css", "vendor/theme.js"):
+    for path in mapped:
         assert client.get(f"{pub['url']}{path}").status_code == 200, path
 
 
@@ -2708,3 +2717,109 @@ def test_the_reference_handler_survives_nulls(studio):
     assert body["rows"][2]["category"] is None
     assert body["rows"][1]["region"] is None
     assert body["rows"][1]["value"] is None
+
+
+# -- the MUI bundle's declared surface ----------------------------------------
+
+
+def _module_exports(path: Path) -> set[str]:
+    names: set[str] = set()
+    for group in re.findall(r"export\{([^}]*)\}", path.read_text()):
+        for part in group.split(","):
+            names.add(part.split(" as ")[-1].strip())
+    return names
+
+
+def test_the_skill_lists_exactly_the_icons_that_exist():
+    """Curating the icon set is what keeps it at 14 KB instead of 4.3 MB,
+    and the cost is that a name outside the set fails. So the list is
+    part of the contract: the skill prints it, and an agent picks from
+    it rather than from memory. A list that drifts from the bundle is
+    worse than no list — it would send the agent at a name that isn't
+    there, with the skill's own authority behind it."""
+    root = Path(__file__).parent.parent
+    bundled = _module_exports(root / "nontainer_studio" / "appassets" / "icons.min.js")
+    skill = (root / "skills" / "building-apps" / "SKILL.md").read_text()
+
+    block = re.search(r"```\n(Add ArrowBack.*?)\n```", skill, re.S)
+    assert block, "the icon manifest is gone from SKILL.md"
+    listed = set(block.group(1).split())
+
+    assert listed == bundled, (
+        f"only in the skill: {sorted(listed - bundled)}; "
+        f"only in the bundle: {sorted(bundled - listed)}"
+    )
+
+
+def test_the_icon_bundle_needs_only_what_the_import_map_answers():
+    """icons.min.js is built with @mui/material/utils external so there
+    stays ONE MUI instance. If an icons upgrade started importing a
+    second subpath, the import map would not resolve it and every app
+    using an icon would die on a specifier error — after verifying
+    green here, because nothing else looks at this seam."""
+    assets = Path(__file__).parent.parent / "nontainer_studio" / "appassets"
+    needed = set(
+        re.findall(r'from"([^"./][^"]*)"', (assets / "icons.min.js").read_text())
+    )
+    loader = (assets / "jsx-loader.js").read_text()
+    answered = set(re.findall(r'"([^"]+)":\s*"\./vendor/', loader))
+    # react/jsx-runtime is in the map; @mui/material/utils must be too.
+    assert needed <= answered, f"unmapped specifiers: {sorted(needed - answered)}"
+    assert "@mui/material/utils" in needed  # the shim is load-bearing, not vestigial
+
+
+def test_the_grid_shares_one_mui_instance(studio):
+    """The reason the grid is in mui.min.js rather than its own bundle.
+    A second copy of MUI carries a second @mui/private-theming context,
+    so <ThemeProvider> would theme everything EXCEPT the grid — which
+    looks like a styling bug, not a bundling one. Asserting a themed
+    colour inside the grid is what distinguishes the two."""
+    pytest.importorskip("playwright")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _jsx_app(
+        session.ws,
+        b"""<html><body><div id="root"></div>
+<script type="module" src="vendor/jsx-loader.js" data-app="app.jsx"></script>
+</body></html>""",
+        b"""import { createRoot } from 'react-dom/client';
+import { Box, CssBaseline, ThemeProvider } from '@mui/material';
+import { DataGrid } from '@mui/x-data-grid';
+import { Delete, Search } from '@mui/icons-material';
+import theme from 'house/theme';
+
+const rows = [{ id: 1, name: 'a' }, { id: 2, name: 'b' }];
+const columns = [{ field: 'name', headerName: 'name', width: 120 }];
+
+createRoot(document.getElementById('root')).render(
+  <ThemeProvider theme={theme}>
+    <CssBaseline />
+    <Box id="icons"><Delete /><Search /></Box>
+    <Box sx={{ height: 300 }}><DataGrid rows={rows} columns={columns} /></Box>
+  </ThemeProvider>,
+);
+""",
+    )
+    result = session.runtime.test_app(
+        [
+            {"assert": "document.querySelectorAll('#icons svg').length === 2"},
+            {"assert": "document.querySelectorAll('.MuiDataGrid-row').length === 2"},
+            # The grid resolved OUR theme rather than a default of its
+            # own. Both values are chosen because stock MUI disagrees:
+            # its dark text.primary is #fff (ours is --app-text) and its
+            # shape.borderRadius is 4 (ours is 8). A second MUI instance
+            # would render legibly here and fail both.
+            {
+                "assert": "getComputedStyle(document.querySelector('.MuiDataGrid-root'))"
+                ".color === 'rgb(224, 224, 224)'"
+            },
+            {
+                "assert": "getComputedStyle(document.querySelector('.MuiDataGrid-root'))"
+                ".borderRadius === '8px'"
+            },
+        ]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)
+    assert result.ok, render_test_app(result)
