@@ -9,6 +9,7 @@
     // lives only on callouts, and a stat's story lives in its sublabel.
     // Fetch-and-render mirrors DataTable.svelte.
     import { renderMarkdown } from './markdown.js'
+    import { isCardItem } from './sniff.js'
 
     let { url } = $props()
 
@@ -32,7 +33,21 @@
 
     // Only the well-formed shape renders; a missing/empty items list is a
     // near-miss materialization we degrade to nothing rather than an error box.
-    const items = $derived(Array.isArray(cards?.items) ? cards.items : [])
+    //
+    // The un-enveloped forms exist for artifacts written before
+    // nontainer 0.4.1, which rendered a lone tagged callout as raw
+    // .json. Their path (and so their suffix-derived kind) is fixed in
+    // the commit, so the rescue has to happen here on content --
+    // Artifact.svelte only routes them in once `looksLikeCards` agrees.
+    const items = $derived(
+        Array.isArray(cards?.items)
+            ? cards.items
+            : Array.isArray(cards)
+              ? cards
+              : isCardItem(cards)
+                ? [cards]
+                : [],
+    )
 
     // Big standalone values get thousands-commas but keep proportional
     // figures (no tabular-nums) — agent-supplied strings pass through as-is.

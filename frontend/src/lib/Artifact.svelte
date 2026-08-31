@@ -6,7 +6,7 @@
     import PlotlyChart from './PlotlyChart.svelte'
     import DataTable from './DataTable.svelte'
     import Cards from './Cards.svelte'
-    import { looksLikePlotly } from './sniff.js'
+    import { looksLikeCards, looksLikePlotly } from './sniff.js'
 
     let { session, path, name = '' } = $props()
 
@@ -64,6 +64,10 @@
         <div class="loading">…</div>
     {:else if looksLikePlotly(text)}
         <PlotlyChart {url} />
+    {:else if looksLikeCards(text)}
+        <!-- a lone callout written before nontainer 0.4.1: the file
+             kept its .json path, so only the content can say what it is -->
+        <Cards {url} />
     {:else}
         <details class="artifact-text" open>
             <summary>{name || path.split('/').pop()}</summary>
