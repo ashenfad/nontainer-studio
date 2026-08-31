@@ -39,7 +39,13 @@ dependencies = [
     # 0.3.6 fixes an assert that stopped retrying under that policy --
     # which broke every app that settles after a fetch, i.e. the shape
     # of the MUI reference app below.
-    "nontainer[agno,apps]>=0.3.6",
+    # 0.4.0 materializes rich `ui` values in run_python itself rather
+    # than in the agno adapter, so an artifact is written on every rung
+    # and `ui["chart"]` reads back as an ArtifactPath. Studio reads the
+    # `[ui artifacts: ...]` note rather than the namespace, so the
+    # breaking half does not reach it -- but the VM rung needs the
+    # guest-side hook layered in (see _vm_config).
+    "nontainer[agno,apps]>=0.4.0",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",
@@ -86,7 +92,13 @@ dud = [
     # DIRECTLY, so nontainer's own floor never reaches this extra.
     # 0.2.1 brought the guest workspace mounted AT /workspace — the
     # same absolute paths the local sandbox teaches.
-    "dud>=0.3.0; python_version >= '3.11'",
+    # 0.4.0 moved rich-value flattening out of the guest and into a
+    # host-named `outputs_hook`, which nontainer 0.4 supplies. Raised
+    # here as well as there BECAUSE studio depends on dud directly:
+    # nontainer's own floor is on `nontainer[dud]`, which studio does
+    # not install, so nothing else would stop a resolver handing this
+    # extra a 0.3.x dud that the hook cannot reach.
+    "dud>=0.4.0; python_version >= '3.11'",
 ]
 
 [project.scripts]

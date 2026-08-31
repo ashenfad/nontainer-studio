@@ -316,8 +316,22 @@ def _vm_config() -> dict[str, Any]:
     """
     import importlib.metadata as _md
 
+    # `nontainer` is here for one reason: dud resolves `outputs_hook`
+    # as an ordinary import INSIDE the guest, and the hook is
+    # `nontainer.dud_outputs:flatten`. Without it in the image a rich
+    # `ui` value never becomes an artifact on this rung -- and it fails
+    # silently, because a `ui` dict holding a DataFrame is simply
+    # unrepresentable and gets dropped whole. Cheap: 7 pure-python
+    # wheels, ~2 MB, against an image that already carries pandas.
+    #
+    # Pinned to the HOST's version like the rest, and for a sharper
+    # reason here: the guest hook and the host executor agree on a wire
+    # shape (the artifact claim), so a guest running a different
+    # nontainer than the host is a contract skew, not just a version
+    # drift. Note that an EDITABLE host checkout ahead of PyPI cannot be
+    # matched -- the guest gets the published build of that version.
     packages = []
-    for name in ("numpy", "pandas", "pyarrow", "matplotlib", "plotly"):
+    for name in ("nontainer", "numpy", "pandas", "pyarrow", "matplotlib", "plotly"):
         try:
             packages.append(f"{name}=={_md.version(name)}")
         except _md.PackageNotFoundError:
