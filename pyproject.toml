@@ -45,7 +45,12 @@ dependencies = [
     # `[ui artifacts: ...]` note rather than the namespace, so the
     # breaking half does not reach it -- but the VM rung needs the
     # guest-side hook layered in (see _vm_config).
-    "nontainer[agno,apps]>=0.4.0",
+    # 0.4.1 renders a LONE callout as a card row. Studio is where that
+    # surfaced: an agent wrote one caveat as a single tagged dict
+    # instead of a one-item list, and it rendered as raw JSON with no
+    # note explaining why. The floor moves so a studio install cannot
+    # reproduce it.
+    "nontainer[agno,apps]>=0.4.1",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",
