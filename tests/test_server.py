@@ -977,8 +977,6 @@ def test_the_conversation_survives_a_restart(scripted, tmp_path):
     reborn.close()
 
 
-
-
 def test_fork_inherits_files_conversation_and_a_copy_of_the_db(scripted):
     """One kvgit operation carries files, cache, cwd and the agent's
     memory; the transcript is copied so the human reads what the agent
@@ -3104,3 +3102,41 @@ createRoot(document.getElementById('root')).render(
     if result.load_error and "unavailable" in result.load_error:
         pytest.skip(result.load_error)
     assert result.ok, render_test_app(result)
+
+
+def test_fork_holds_the_turn_lock_and_lets_go_after(scripted):
+    """The busy check is a reservation, not a snapshot: the session's
+    turn lock is held for the whole fork, so a chat request that arrives
+    mid-fork waits rather than committing under it."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _run(client, "s1", _script("/workspace/a.txt", "A", "wrote a"))
+
+    seen = {}
+    original = sessions_mod.fork_session
+
+    def spying_fork(ws, name, **kw):
+        seen["locked_during_fork"] = session.turn_lock.locked()
+        return original(ws, name, **kw)
+
+    sessions_mod.fork_session = spying_fork
+    try:
+        child = registry.fork(session)
+    finally:
+        sessions_mod.fork_session = original
+    assert seen["locked_during_fork"] is True
+    assert not session.busy
+    assert not child.busy
+
+
+def test_python_config_drops_the_isolation_knob_on_a_dud_rung(tmp_path, monkeypatch):
+    """The knob is the in-process sandbox's; a dud rung either exceeds
+    it (a VM) or refuses it (subprocess), so the studio does not ask."""
+    monkeypatch.setenv("NONTAINER_STUDIO_ISOLATION", "process")
+    db = sessions_mod.Db(tmp_path / "dbs" / "x.sqlite")
+    assert sessions_mod.Registry._python_config(db).isolation == "process"
+    monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "dud")
+    assert sessions_mod.Registry._python_config(db).isolation == "none"
+    monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "dud-vm")
+    assert sessions_mod.Registry._python_config(db).isolation == "none"
