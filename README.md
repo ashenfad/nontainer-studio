@@ -9,7 +9,9 @@ you can rewind, fork, or publish.
   hit `edit`: the files, the agent's memory, and the transcript rewind
   together, and the revised prompt runs from there — everything below
   is replaced, and no post-rewind gaslighting where the agent remembers
-  work the files no longer show.
+  work the files no longer show. They rewind together because they are
+  one thing: the conversation lives in the same versioned branch as the
+  files, so the rewind is a single `restore`.
 - **Background sessions.** Turns run server-side, decoupled from the
   browser. Switch sessions, reload, or close the tab mid-turn; the work
   continues and the rail dots show what's running (pulsing) and what
@@ -22,8 +24,12 @@ you can rewind, fork, or publish.
 - **Rich replies.** The agent can drop plots, tables, images, and HTML
   into its answers via `ui = {...}` — rendered inline, themed by the
   shell.
-- **Fork = a new universe.** Branch a session from any checkpoint:
-  O(1) workspace fork, copied app db, fresh conversation.
+- **Fork = a new universe.** Branch a session in one O(1) kvgit
+  operation that carries the files, the cache, the cwd **and** the
+  conversation. `inherit` (the rail's ⑂) opens the child exactly where
+  the parent stands — same transcript, same memory, its own universe
+  from there; `fresh` keeps the files and starts the chat over. The app
+  db is copied either way, since live state has no history.
 
 Demo, not product: single-user, localhost, no auth.
 
@@ -156,7 +162,13 @@ Three kinds of state, on purpose:
 |---|---|---|---|---|
 | **workspace** (files, cache, cwd) | kvgit branch per session | rewinds | branches (O(1)) | frozen snapshot |
 | **app `db`** (live SQLite host object) | file per session | untouched — external state has no history | copied | **shared** — frozen code, live state |
-| **conversation** | agno db + jsonl transcript | agent memory rewinds in sync; an `edit` trims the visible transcript too, a history-tab restore keeps its record | fresh chat | — |
+| **conversation** | agno's session in the same kvgit branch (+ a jsonl transcript) | rewinds with the files — one `restore`, not two writes that can disagree; an `edit` trims the visible transcript too | `inherit` or `fresh` | — |
+
+agno's cross-session tables — user memories, metrics — sit at
+`store/agno` and never version: a memory spans conversations, so it
+must not rewind with any one branch. `store/chat.sqlite` is the
+pre-branch chat store; it is read once, to move an older session's
+conversation into its workspace, and otherwise unused.
 
 ### a2ui egress
 
