@@ -527,6 +527,19 @@ class Db:
             self._c.executemany(sql, rows)
             self._c.commit()
 
+    def copy_to(self, path: str | Path) -> None:
+        """A consistent copy of the whole database at ``path``, through
+        SQLite's backup API under this store's lock. A plain file copy
+        could read pages mid-commit: app handlers write here outside
+        any turn, so nothing else serializes them with a fork."""
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            dst = sqlite3.connect(str(path))
+            try:
+                self._c.backup(dst)
+            finally:
+                dst.close()
+
     def query(self, sql: str, params: tuple = ()) -> list:
         """A read (SELECT); returns a list of row tuples."""
         with self._lock:
@@ -1011,6 +1024,11 @@ class Registry:
         isolation = os.getenv("NONTAINER_STUDIO_ISOLATION", "process")
         if isolation not in ("none", "process", "kernel"):
             isolation = "process"
+        # The knob belongs to the in-process sandbox. On a dud rung it
+        # has no meaning: a VM already exceeds any level, and the
+        # subprocess rung refuses an ask for containment it cannot give.
+        if os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower() in ("dud", "dud-vm"):
+            isolation = "none"
         return PythonConfig(
             modules=modules,
             host_objects={"db": db},
@@ -1262,62 +1280,68 @@ class Registry:
             raise ValueError(
                 f"conversation must be 'inherit' or 'fresh': {conversation!r}"
             )
-        if session.busy:
+        # Reserve the session for the whole fork: a snapshot check would
+        # let a chat request take the turn lock a moment later and land
+        # a tool commit under the fork — new files with the parent's old
+        # memory, the half-turn state this guard exists to prevent.
+        if not session.turn_lock.acquire(blocking=False):
             raise RuntimeError("can't fork while a turn is running")
-        if session.ws.dirty:
-            raise RuntimeError("can't fork mid-turn: the workspace has staged changes")
-
-        with self._lock:
-            name = self._mint_name()
-            self._record(name, session.model)
         try:
-            child_ws = fork_session(session.ws, name, conversation=conversation)
-            # The fork inherits the PARENT's python config, and with it
-            # the parent's `db` host object. Let it go and build the
-            # child's own handle over the copied file below — two
-            # universes sharing one app db is the state this copy exists
-            # to prevent.
-            child_ws.close()
-            src = self._store / "dbs" / f"{session.name}.sqlite"
-            dst = self._store / "dbs" / f"{name}.sqlite"
-            if src.exists():
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(src, dst)
-            db = Db(dst)
-            ws = workspace(
-                name,
-                store=self._store,
-                python=self._python_config(db),
-                **_ws_kwargs(),
-            )
+            if session.ws.dirty:
+                raise RuntimeError(
+                    "can't fork mid-turn: the workspace has staged changes"
+                )
             with self._lock:
-                self._opening[name] = ws
-                try:
-                    child = self._assemble(name, ws, db, session.model)
-                    # The visible transcript must match the memory the
-                    # child inherited, or the human reads a blank page
-                    # over an agent that remembers everything.
-                    if (
-                        conversation == "inherit"
-                        and session.log_path is not None
-                        and child.log_path is not None
-                        and session.log_path.exists()
-                    ):
-                        shutil.copyfile(session.log_path, child.log_path)
-                    loaded = self._load_events(child.log_path)
-                    child.events.extend(loaded)
-                    child.next_seq = (loaded[-1]["seq"] + 1) if loaded else 0
-                    child.flush_idx = len(child.events)  # loaded = on disk
-                    self._sessions[name] = child
-                finally:
-                    self._opening.pop(name, None)
-            return child
-        except BaseException:
-            # A reserved name whose fork failed would sit in the rail
-            # forever, 500ing on every click — same rollback as create.
-            with self._lock:
-                self._unrecord(name)
-            raise
+                name = self._mint_name()
+                self._record(name, session.model)
+            try:
+                child_ws = fork_session(session.ws, name, conversation=conversation)
+                # The fork inherits the PARENT's python config, and with it
+                # the parent's `db` host object. Let it go and build the
+                # child's own handle over the copied file below — two
+                # universes sharing one app db is the state this copy exists
+                # to prevent.
+                child_ws.close()
+                dst = self._store / "dbs" / f"{name}.sqlite"
+                session.db.copy_to(dst)
+                db = Db(dst)
+                ws = workspace(
+                    name,
+                    store=self._store,
+                    python=self._python_config(db),
+                    **_ws_kwargs(),
+                )
+                with self._lock:
+                    self._opening[name] = ws
+                    try:
+                        child = self._assemble(name, ws, db, session.model)
+                        # The visible transcript must match the memory the
+                        # child inherited, or the human reads a blank page
+                        # over an agent that remembers everything.
+                        if (
+                            conversation == "inherit"
+                            and session.log_path is not None
+                            and child.log_path is not None
+                            and session.log_path.exists()
+                        ):
+                            shutil.copyfile(session.log_path, child.log_path)
+                        loaded = self._load_events(child.log_path)
+                        child.events.extend(loaded)
+                        child.next_seq = (loaded[-1]["seq"] + 1) if loaded else 0
+                        child.flush_idx = len(child.events)  # loaded = on disk
+                        self._sessions[name] = child
+                    finally:
+                        self._opening.pop(name, None)
+                return child
+            except BaseException:
+                # A reserved name whose fork failed would sit in the rail
+                # forever, 500ing on every click — same rollback as create.
+                with self._lock:
+                    self._unrecord(name)
+                raise
+
+        finally:
+            session.turn_lock.release()
 
     # -- delete: remove a session's whole universe ---------------------------
 
