@@ -6,7 +6,7 @@
 
     const DEFAULT_TITLE = 'New session' // mirrors the server's fallback
 
-    let { active, onSwitch, onCreate, onDelete } = $props()
+    let { active, onSwitch, onCreate, onDelete, onFork } = $props()
 
     let armed = $state(null) // session name whose delete is one tap away
     let renaming = $state(null) // session name being retitled
@@ -61,6 +61,12 @@
         onDelete(s.name)
     }
 
+    function fork(s, e) {
+        e.stopPropagation()
+        armed = null
+        onFork(s.name)
+    }
+
     function status(s) {
         // server busy is the truth for background sessions (they hold
         // no event stream); the foreground runtime is fresher between
@@ -111,6 +117,14 @@
                         <span class="name" title="{s.title} (double-click to rename)"
                             >{s.title}</span
                         >
+                    </button>
+                    <button
+                        class="fork"
+                        title="fork {s.title} — same files and conversation, its own universe from here"
+                        aria-label="fork {s.title}"
+                        onclick={(e) => fork(s, e)}
+                    >
+                        ⑂
                     </button>
                     <button
                         class="delete"
@@ -197,6 +211,25 @@
     }
     .row:hover .item {
         color: var(--text);
+    }
+    .fork {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        font-size: 0.95rem;
+        line-height: 1;
+        padding: 0.25rem 0.2rem;
+        border-radius: 5px;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 0.15s;
+        flex-shrink: 0;
+    }
+    .row:hover .fork {
+        opacity: 1;
+    }
+    .fork:hover {
+        color: var(--accent);
     }
     .delete {
         background: none;
