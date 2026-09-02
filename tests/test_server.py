@@ -977,6 +977,55 @@ def test_the_conversation_survives_a_restart(scripted, tmp_path):
     reborn.close()
 
 
+def test_a_legacy_chat_store_is_adopted_into_the_branch(tmp_path):
+    """Studio used to keep every conversation in one store-wide agno db
+    beside the workspaces. The first open of such a session imports it
+    into the branch and carries on from there; the legacy store is the
+    copy of record and is never written or removed."""
+    from agno.db.base import SessionType
+    from agno.db.json import JsonDb
+    from agno.models.message import Message
+    from agno.run.agent import RunOutput
+    from agno.session import AgentSession
+
+    from nontainer_studio.dummy import DummyModel
+
+    JsonDb(db_path=str(tmp_path / "chat")).upsert_session(
+        AgentSession(
+            session_id="s1",
+            runs=[
+                RunOutput(
+                    run_id="legacy-1",
+                    # agno only deserializes a run dict that names its
+                    # component, so a hand-built record needs one too
+                    agent_id="studio",
+                    content="we decided on parquet",
+                    messages=[
+                        Message(role="user", content="what did we decide?"),
+                        Message(role="assistant", content="we decided on parquet"),
+                    ],
+                )
+            ],
+        )
+    )
+
+    registry = sessions_mod.Registry(
+        model_factory=lambda spec=None: DummyModel(), store=tmp_path
+    )
+    with TestClient(server.build_app(registry)) as client:
+        client.post("/api/sessions", json={"name": "s1"})
+        assert _run_ids(registry, "s1") == ["legacy-1"]
+        _run(client, "s1", _script("/workspace/a.txt", "A", "wrote a"))
+        assert _run_ids(registry, "s1")[0] == "legacy-1"
+        assert len(_run_ids(registry, "s1")) == 2
+    registry.close()
+
+    kept = JsonDb(db_path=str(tmp_path / "chat")).get_session(
+        session_id="s1", session_type=SessionType.AGENT
+    )
+    assert [run.run_id for run in kept.runs] == ["legacy-1"]
+
+
 def test_edit_validations(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})

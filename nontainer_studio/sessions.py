@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import secrets
@@ -46,8 +47,10 @@ from nontainer import (
     workspace,
 )
 from nontainer.adapters.agno import WorkspaceTools
-from nontainer.adapters.agno_db import KvgitStoreDb
+from nontainer.adapters.agno_db import KvgitSessionDb, KvgitStoreDb
 from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
+
+log = logging.getLogger(__name__)
 
 DEFAULT_STORE = Path.home() / ".nontainer-studio"
 
@@ -890,6 +893,7 @@ class Registry:
                 # or add them; a reseed would clobber that).
                 if not ws.fs.isdir(f"{ws.root}/skills"):
                     self._seed_skills(ws)
+                self._adopt_legacy_chat(name, ws)
                 session = self._assemble(name, ws, db, model)
                 loaded = self._load_events(session.log_path)
                 session.events.extend(loaded)
@@ -900,6 +904,68 @@ class Registry:
                 self._opening.pop(name, None)
             self._record(name, model)
             return session
+
+    def _adopt_legacy_chat(self, name: str, ws: Workspace) -> None:
+        """Move a conversation from the pre-branch chat store into the
+        branch, once, the first time such a session is opened.
+
+        Studio used to keep every session's chat in one store-wide agno
+        db beside the workspaces. Those conversations are real work, and
+        a session whose memory stayed behind would answer from a blank
+        history over files full of context. ``seed`` imports the whole
+        session in one commit and refuses a branch that already holds
+        runs, so this is safe to attempt on every open.
+
+        The legacy store is never written or deleted: it is the copy of
+        record if the import ever needs redoing.
+        """
+        if self.db.get_session(name) is not None:
+            return
+        legacy = self._legacy_chat_db()
+        if legacy is None:
+            return
+        try:
+            from agno.db.base import SessionType
+
+            record = legacy.get_session(session_id=name, session_type=SessionType.AGENT)
+            if record is None or not record.runs:
+                return
+            KvgitSessionDb(ws, db_path=str(self._store / "agno")).seed(record)
+        except Exception as e:
+            # A conversation that won't import must never cost the
+            # session its workspace: open with an empty memory and say
+            # why, rather than 500 on every click forever.
+            log.warning("could not adopt %s's legacy conversation: %s", name, e)
+            return
+        log.info(
+            "adopted %s's conversation (%d runs) from the legacy chat store "
+            "into its workspace branch",
+            name,
+            len(record.runs),
+        )
+
+    def _legacy_chat_db(self) -> Any:
+        """The store-wide chat db studio wrote before the conversation
+        moved into the branch, or None when there is none to read.
+
+        Both shapes it could have been left in: sqlite where agno's
+        SqliteDb was importable (it needs sqlalchemy), the JSON
+        directory otherwise. Opened read-only in spirit — nothing here
+        ever writes to it."""
+        sqlite_path = self._store / "chat.sqlite"
+        if sqlite_path.exists():
+            try:
+                from agno.db.sqlite import SqliteDb
+
+                return SqliteDb(db_file=str(sqlite_path))
+            except ImportError:
+                pass
+        json_path = self._store / "chat"
+        if json_path.is_dir():
+            from agno.db.json import JsonDb
+
+            return JsonDb(db_path=str(json_path))
+        return None
 
     @staticmethod
     def _seed_skills(ws: Workspace) -> None:
