@@ -7,6 +7,7 @@
         createSession,
         dropRuntime,
         ensureSession,
+        forkSession,
         getRuntime,
         loadCatalog,
         rail,
@@ -107,6 +108,23 @@
         switchTo(await createSession())
     }
 
+    // Fork carries the files AND the conversation, so the child opens
+    // exactly where the parent stands — switching to it is the whole
+    // point of the action.
+    async function forkAndSwitch(name) {
+        try {
+            switchTo(await forkSession(name))
+        } catch (e) {
+            // Report where the human is looking. A fork refused because
+            // a turn is in flight is the common case, and silence would
+            // read as a dead button.
+            getRuntime(active)?.messages.push({
+                role: 'error',
+                text: `fork failed: ${e.message}`,
+            })
+        }
+    }
+
     async function deleteSession(name) {
         try {
             await api(`/api/sessions/${name}`, undefined, 'DELETE')
@@ -161,6 +179,7 @@
                 {active}
                 onSwitch={switchTo}
                 onCreate={createAndSwitch}
+                onFork={forkAndSwitch}
                 onDelete={deleteSession}
             />
         {/if}

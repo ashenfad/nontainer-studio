@@ -118,6 +118,18 @@ export async function renameSession(name, title) {
     await refreshSessions()
 }
 
+/** Branch a session into a new one. The workspace fork is O(1) and
+ * carries the conversation with the files, so `conversation: 'inherit'`
+ * (the default) opens the child where the parent stands — same
+ * transcript, same memory, its own universe from here on. 'fresh' keeps
+ * the files and starts the chat over. Returns the minted name. */
+export async function forkSession(name, conversation = 'inherit') {
+    const child = await api(`/api/sessions/${name}/fork`, { conversation })
+    await refreshSessions()
+    getRuntime(child.name).markOpen()
+    return child.name
+}
+
 /** Mint a new session. The SERVER names it (a slug like sleepy-meerkat):
  * identity is never typed, so the agent is free to title it later.
  * Returns the minted name — the caller switches to it. */

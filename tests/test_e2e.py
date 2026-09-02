@@ -508,6 +508,40 @@ def test_delete_session_from_rail(page, server):
     )
 
 
+def test_fork_from_the_rail_switches_to_the_child(page, server):
+    """The fork action branches the whole universe and the shell moves
+    to it: the child carries the parent's files AND the transcript that
+    describes them, under its own minted slug."""
+    page.goto(f"{server}/?session=e2e-fork")
+    _send(
+        page,
+        '!tool file_write {"path": "/workspace/forked.txt", "content": "kept"}\n'
+        "!text wrote the note.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "wrote the note", timeout=15000
+    )
+    _title(server, "e2e-fork", "fork parent")
+
+    row = page.locator(".row", has_text="fork parent")
+    row.hover()
+    row.locator(".fork").click()
+
+    # the shell switched to the minted child, whose transcript is the
+    # parent's (the memory it inherited says the same thing)
+    expect(page).to_have_url(re.compile(r"\?session=[a-z]+(-[a-z]+)+$"), timeout=10000)
+    child = page.url.split("session=")[-1]
+    assert child != "e2e-fork"
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "wrote the note", timeout=10000
+    )
+    with urllib.request.urlopen(
+        f"{server}/api/sessions/{child}/files", timeout=10
+    ) as r:
+        files = json.load(r)["files"]
+    assert "/workspace/forked.txt" in files
+
+
 def test_agent_titles_the_session_from_the_rail_default(page, server):
     """The whole stage-3 path for real: the model calls recommend_title,
     the studio tool writes the title, and the rail row stops reading
