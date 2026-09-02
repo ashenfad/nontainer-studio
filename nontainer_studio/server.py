@@ -13,6 +13,7 @@ import json
 import mimetypes
 import os
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 from urllib.parse import quote
@@ -663,6 +664,39 @@ def build_app(registry: Registry) -> Starlette:
         return Response(data, media_type=media or "application/octet-stream")
 
     @with_session
+    async def fork(request: Any, session: Any) -> JSONResponse:
+        """Branch this session into a new one: files, cache, cwd and —
+        unless the body says `"conversation": "fresh"` — the agent's
+        memory and the visible transcript, all in one kvgit operation.
+        The app db is copied, since live state has no history.
+
+        409 while a turn is in flight or the workspace holds staged
+        changes: a fork of half a turn would be a state no checkpoint
+        ever held."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        conversation = (body.get("conversation") or "inherit").strip()
+        if conversation not in ("inherit", "fresh"):
+            return JSONResponse(
+                {"error": "conversation must be 'inherit' or 'fresh'"}, status_code=400
+            )
+        try:
+            child = await anyio.to_thread.run_sync(
+                partial(registry.fork, session, conversation=conversation)
+            )
+        except RuntimeError as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+        return JSONResponse(
+            {
+                "ok": True,
+                "name": child.name,
+                "title": registry.title_of(child.name),
+            }
+        )
+
+    @with_session
     async def delete_session(request: Any, session: Any) -> JSONResponse:
         if session.busy:
             return JSONResponse(
@@ -819,6 +853,7 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions/{name}/app", app_exists, methods=["GET"]),
             Route("/api/sessions/{name}/file", file_raw, methods=["GET"]),
             Route("/api/sessions/{name}/publish", publish, methods=["POST"]),
+            Route("/api/sessions/{name}/fork", fork, methods=["POST"]),
             # after every real /api route: absolute-path fetches from
             # preview'd apps get a CORS-readable teaching 404
             Route("/api/{path:path}", api_fallback, methods=preview_verbs),
