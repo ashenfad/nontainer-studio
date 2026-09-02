@@ -166,9 +166,9 @@ Three kinds of state, on purpose:
 
 agno's cross-session tables — user memories, metrics — sit at
 `store/agno` and never version: a memory spans conversations, so it
-must not rewind with any one branch. `store/chat.sqlite` is the
-pre-branch chat store; it is read once, to move an older session's
-conversation into its workspace, and otherwise unused.
+must not rewind with any one branch. Conversations from before the
+move into the branch (the old `store/chat.sqlite`) are not carried
+over; those sessions keep their files and start with an empty memory.
 
 ### a2ui egress
 
