@@ -50,17 +50,13 @@ dependencies = [
     # instead of a one-item list, and it rendered as raw JSON with no
     # note explaining why. The floor moves so a studio install cannot
     # reproduce it.
-    # 0.5.1 brings the agno session db (KvgitStoreDb), fork_session, and
-    # seed -- the conversation stored in the branch with the files.
-    "nontainer[agno,apps]>=0.5.1",
+    # 0.5.0 brings the agno session db (KvgitStoreDb) and fork_session --
+    # the conversation stored in the branch with the files.
+    "nontainer[agno,apps]>=0.5.0",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",
     "uvicorn>=0.30",
-    # agno's SqliteDb requires sqlalchemy; it is what the pre-branch chat
-    # store was written with, and reading one is how those conversations
-    # move into their workspace
-    "sqlalchemy>=2",
     # the agent's data stack — nontainer presets grant these
     # opportunistically; the studio wants them out of the box
     "numpy",
