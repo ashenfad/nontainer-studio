@@ -1026,6 +1026,81 @@ def test_a_legacy_chat_store_is_adopted_into_the_branch(tmp_path):
     assert [run.run_id for run in kept.runs] == ["legacy-1"]
 
 
+# -- fork: branch the whole universe ----------------------------------------------
+
+
+def test_fork_inherits_files_conversation_and_a_copy_of_the_db(scripted):
+    """One kvgit operation carries files, cache, cwd and the agent's
+    memory; the transcript is copied so the human reads what the agent
+    remembers; the app db is copied because live state has no history."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    parent = registry.get("s1")
+    _run(client, "s1", _script("/workspace/a.txt", "A", "wrote a"))
+    parent.db.execute("CREATE TABLE IF NOT EXISTS notes (t TEXT)")
+    parent.db.execute("INSERT INTO notes VALUES (?)", ("parent",))
+
+    r = client.post("/api/sessions/s1/fork", json={"conversation": "inherit"})
+    assert r.status_code == 200
+    name = r.json()["name"]
+    assert name != "s1"
+    child = registry.get(name)
+
+    assert child.ws.fs.read("/workspace/a.txt") == b"A"
+    assert _run_ids(registry, name) == _run_ids(registry, "s1")
+    assert registry.db.get_session(name).session_id == name
+    assert [e["type"] for e in child.events] == [e["type"] for e in parent.events]
+
+    assert child.db.query("SELECT t FROM notes") == [("parent",)]
+    child.db.execute("INSERT INTO notes VALUES (?)", ("child",))
+    assert parent.db.query("SELECT t FROM notes") == [("parent",)]
+
+    # the parent kept its own universe, whole
+    assert parent.ws.fs.read("/workspace/a.txt") == b"A"
+    assert registry.db.get_session("s1").session_id == "s1"
+    assert {row["name"] for row in registry.list()} == {"s1", name}
+
+
+def test_fork_fresh_keeps_the_files_and_drops_the_chat(scripted):
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    _run(client, "s1", _script("/workspace/a.txt", "A", "wrote a"))
+
+    r = client.post("/api/sessions/s1/fork", json={"conversation": "fresh"})
+    assert r.status_code == 200
+    child = registry.get(r.json()["name"])
+    assert child.ws.fs.read("/workspace/a.txt") == b"A"
+    assert _run_ids(registry, child.name) == []
+    assert child.events == []
+    # and the fork is a working session, not a husk
+    _run(client, child.name, _script("/workspace/b.txt", "B", "wrote b"))
+    assert len(_run_ids(registry, child.name)) == 1
+
+
+def test_fork_refuses_a_turn_in_flight_a_dirty_workspace_and_a_bad_mode(scripted):
+    """kvgit refuses to fork a branch with staged changes, and a fork of
+    half a turn would be a state no checkpoint ever held."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    session.ws.fs.write("/workspace/staged.txt", b"mid-turn")
+    assert session.ws.dirty
+    assert client.post("/api/sessions/s1/fork", json={}).status_code == 409
+    session.ws.checkpoint()
+
+    session.turn_lock.acquire()
+    try:
+        assert client.post("/api/sessions/s1/fork", json={}).status_code == 409
+    finally:
+        session.turn_lock.release()
+
+    r = client.post("/api/sessions/s1/fork", json={"conversation": "sideways"})
+    assert r.status_code == 400
+    # nothing was minted by either refusal
+    assert [row["name"] for row in registry.list()] == ["s1"]
+
+
 def test_edit_validations(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})

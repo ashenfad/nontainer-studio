@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import sys
 import threading
@@ -47,7 +48,7 @@ from nontainer import (
     workspace,
 )
 from nontainer.adapters.agno import WorkspaceTools
-from nontainer.adapters.agno_db import KvgitSessionDb, KvgitStoreDb
+from nontainer.adapters.agno_db import KvgitSessionDb, KvgitStoreDb, fork_session
 from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
 
 log = logging.getLogger(__name__)
@@ -1298,6 +1299,88 @@ class Registry:
             delay_between_retries=2,
             exponential_backoff=True,
         )
+
+    # -- fork: branch the whole universe --------------------------------------
+
+    def fork(self, session: Session, *, conversation: str = "inherit") -> Session:
+        """Branch a session into a new one under a minted slug.
+
+        One kvgit operation carries the files, the cache, the cwd AND
+        the conversation, because all four live in the branch — so the
+        child opens where the parent stands rather than reconstructing
+        it. ``conversation="inherit"`` keeps the agent's memory (the
+        same chat, over its own files from here on) and copies the
+        visible transcript to match it; ``"fresh"`` drops both, giving a
+        clean chat over the forked files.
+
+        The app db is COPIED, not shared: it is live external state with
+        no history, so the two universes must not write over each other.
+
+        Forking is a between-turns verb. A turn in flight owns the
+        workspace, and kvgit refuses to fork a branch with staged
+        changes — a fork of half a turn would be a state no checkpoint
+        ever held.
+        """
+        if conversation not in ("inherit", "fresh"):
+            raise ValueError(
+                f"conversation must be 'inherit' or 'fresh': {conversation!r}"
+            )
+        if session.busy:
+            raise RuntimeError("can't fork while a turn is running")
+        if session.ws.dirty:
+            raise RuntimeError("can't fork mid-turn: the workspace has staged changes")
+
+        with self._lock:
+            name = self._mint_name()
+            self._record(name, session.model)
+        try:
+            child_ws = fork_session(session.ws, name, conversation=conversation)
+            # The fork inherits the PARENT's python config, and with it
+            # the parent's `db` host object. Let it go and build the
+            # child's own handle over the copied file below — two
+            # universes sharing one app db is the state this copy exists
+            # to prevent.
+            child_ws.close()
+            src = self._store / "dbs" / f"{session.name}.sqlite"
+            dst = self._store / "dbs" / f"{name}.sqlite"
+            if src.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dst)
+            db = Db(dst)
+            ws = workspace(
+                name,
+                store=self._store,
+                python=self._python_config(db),
+                **_ws_kwargs(),
+            )
+            with self._lock:
+                self._opening[name] = ws
+                try:
+                    child = self._assemble(name, ws, db, session.model)
+                    # The visible transcript must match the memory the
+                    # child inherited, or the human reads a blank page
+                    # over an agent that remembers everything.
+                    if (
+                        conversation == "inherit"
+                        and session.log_path is not None
+                        and child.log_path is not None
+                        and session.log_path.exists()
+                    ):
+                        shutil.copyfile(session.log_path, child.log_path)
+                    loaded = self._load_events(child.log_path)
+                    child.events.extend(loaded)
+                    child.next_seq = (loaded[-1]["seq"] + 1) if loaded else 0
+                    child.flush_idx = len(child.events)  # loaded = on disk
+                    self._sessions[name] = child
+                finally:
+                    self._opening.pop(name, None)
+            return child
+        except BaseException:
+            # A reserved name whose fork failed would sit in the rail
+            # forever, 500ing on every click — same rollback as create.
+            with self._lock:
+                self._unrecord(name)
+            raise
 
     # -- delete: remove a session's whole universe ---------------------------
 
