@@ -9,13 +9,16 @@ Ownership model, on display:
   state that survives publish and never time-travels. Fresh per
   session, shared with published snapshots (a view of the same
   universe), untouched by rewinds.
-- CONVERSATION + event log: durable but session-scoped — agno persists
-  chat (SqliteDb when sqlalchemy is installed, JsonDb otherwise) keyed
-  by session_id, and the transcript event log appends to a jsonl per
-  session. Rewinds are SYNCHRONIZED: the agent's memory (agno runs)
-  rewinds with the workspace. An EDIT (rewind_to_event) trims the
-  visible transcript too — via an appended `truncate` event, never by
-  mutating the log.
+- CONVERSATION: durable and versioned WITH the files — agno's session
+  lives in the session's own kvgit branch (one ``KvgitStoreDb`` over
+  the store, a branch per session), so a turn's files, cache, cwd and
+  the agent's memory land in ONE commit and one ``ws.restore`` rewinds
+  all four. agno's cross-session tables (memories, metrics) live at
+  ``store/agno`` and never version — world state, not session state.
+- EVENT LOG: durable but session-scoped — the transcript appends to a
+  jsonl per session. An EDIT (rewind_to_event) trims the visible
+  transcript too, via an appended `truncate` event, never by mutating
+  the log.
 """
 
 from __future__ import annotations
@@ -43,6 +46,7 @@ from nontainer import (
     workspace,
 )
 from nontainer.adapters.agno import WorkspaceTools
+from nontainer.adapters.agno_db import KvgitStoreDb
 from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
 
 DEFAULT_STORE = Path.home() / ".nontainer-studio"
@@ -653,7 +657,45 @@ class Registry:
         self.apps = apps or apps_config()
         self._sessions: dict[str, Session] = {}
         self._published: dict[str, Workspace] = {}  # token -> frozen snapshot
-        self._lock = threading.Lock()
+        # Workspaces mid-construction, by name. ``workspace_for`` has to
+        # answer for a session that does not exist yet: building its
+        # agent constructs the toolkit, which asks the db whether it owns
+        # the workspace, and the db asks back through here.
+        self._opening: dict[str, Workspace] = {}
+        # Reentrant: ``workspace_for`` may be called while ``open`` holds
+        # this, from the same thread, on the way through _build_agent.
+        self._lock = threading.RLock()
+        # ONE agno db for the whole store: a branch per session, so the
+        # conversation is versioned with the files it produced. The
+        # store path is the same one the workspaces are built with (the
+        # db finds the kvgit store under it); ``store/agno`` holds the
+        # cross-session tables agno keeps outside a session — memories,
+        # metrics — which must not rewind with any one branch.
+        self.db = KvgitStoreDb(
+            self._store,
+            open=self.workspace_for,
+            db_path=str(self._store / "agno"),
+        )
+
+    def workspace_for(self, name: str) -> Workspace:
+        """The LIVE workspace for a session — the store db's ``open``.
+
+        Live, not merely equivalent: the db writes the conversation
+        through this object and commits the turn on it, so a second
+        Workspace over the same branch would split one turn across two
+        staging buffers. An open session hands back its own; a session
+        being opened right now hands back the workspace already built
+        for it (the toolkit asks during construction, before the
+        session exists); anything else opens.
+        """
+        with self._lock:
+            session = self._sessions.get(name)
+            if session is not None:
+                return session.ws
+            opening = self._opening.get(name)
+            if opening is not None:
+                return opening
+        return self.open(name).ws
 
     def list(self) -> list[dict]:
         """Open sessions plus manifest names from prior runs — the
@@ -831,24 +873,31 @@ class Registry:
                 python=self._python_config(db),
                 **_ws_kwargs(),
             )
-            # <root>/ui exists from the start: agents predictably
-            # savefig into it directly (instead of assigning objects to
-            # `ui`), and VFS open honors real-fs semantics — no parent,
-            # no write. Forgive the near-miss.
-            if not ws.fs.isdir(f"{ws.root}/ui"):
-                ws.fs.makedirs(f"{ws.root}/ui", exist_ok=True)
-                ws.checkpoint(info={"tool": "init"})
-            # Seed skills once, at session CREATION — after that they
-            # are the session's own versioned state (agents may edit or
-            # add them; a reseed would clobber that).
-            if not ws.fs.isdir(f"{ws.root}/skills"):
-                self._seed_skills(ws)
-            session = self._assemble(name, ws, db, model)
-            loaded = self._load_events(session.log_path)
-            session.events.extend(loaded)
-            session.next_seq = (loaded[-1]["seq"] + 1) if loaded else 0
-            session.flush_idx = len(session.events)  # loaded = on disk
-            self._sessions[name] = session
+            # Published before anything can ask: _build_agent constructs
+            # the toolkit, which checks that the store db owns this
+            # workspace, and the db answers by calling workspace_for.
+            self._opening[name] = ws
+            try:
+                # <root>/ui exists from the start: agents predictably
+                # savefig into it directly (instead of assigning objects
+                # to `ui`), and VFS open honors real-fs semantics — no
+                # parent, no write. Forgive the near-miss.
+                if not ws.fs.isdir(f"{ws.root}/ui"):
+                    ws.fs.makedirs(f"{ws.root}/ui", exist_ok=True)
+                    ws.checkpoint(info={"tool": "init"})
+                # Seed skills once, at session CREATION — after that they
+                # are the session's own versioned state (agents may edit
+                # or add them; a reseed would clobber that).
+                if not ws.fs.isdir(f"{ws.root}/skills"):
+                    self._seed_skills(ws)
+                session = self._assemble(name, ws, db, model)
+                loaded = self._load_events(session.log_path)
+                session.events.extend(loaded)
+                session.next_seq = (loaded[-1]["seq"] + 1) if loaded else 0
+                session.flush_idx = len(session.events)  # loaded = on disk
+                self._sessions[name] = session
+            finally:
+                self._opening.pop(name, None)
             self._record(name, model)
             return session
 
@@ -1029,19 +1078,6 @@ class Registry:
             e.setdefault("seq", i)
         return _compact(events)[-MAX_EVENTS:]
 
-    def _chat_db(self) -> Any:
-        """agno's durable chat store: sqlite when sqlalchemy is
-        installed (agno's SqliteDb requires it), JsonDb otherwise —
-        opportunistic, like the data-stack grants."""
-        try:
-            from agno.db.sqlite import SqliteDb
-
-            return SqliteDb(db_file=str(self._store / "chat.sqlite"))
-        except ImportError:
-            from agno.db.json import JsonDb
-
-            return JsonDb(db_path=str(self._store / "chat"))
-
     def _title_tool(self, name: str) -> Callable:
         """The agent's handle on the session list.
 
@@ -1125,6 +1161,15 @@ class Registry:
             ws,
             apps=runtime,
             python_primer=DB_PRIMER,
+            # The conversation commits with the files. Naming the db
+            # here is what stands the toolkit's own turn hook down:
+            # agno runs post hooks BEFORE it persists the run, so a
+            # hook-driven commit would carry the turn's files without
+            # its memory. The db commits at the persist instead, and
+            # the checkpoint mode stays per mutating call — this is the
+            # turn's trailing commit, so the head stamped on the next
+            # `user` event includes the conversation.
+            session_db=self.db,
             # text-only models must not receive screenshot media — the
             # call AFTER an image-bearing tool result 400s ("no
             # endpoints support image input"), losing the turn. Model
@@ -1156,10 +1201,13 @@ class Registry:
             # product the human is looking at (preview, artifacts,
             # checkpoints, publish)
             instructions=STUDIO_PRIMER,
-            # Durable chat, keyed by the session name: after a server
-            # restart the agent still remembers the conversation (and
-            # the jsonl event log restores the visible transcript).
-            db=self._chat_db(),
+            # Durable chat, keyed by the session name and stored in that
+            # session's own workspace branch: after a server restart the
+            # agent still remembers the conversation (and the jsonl
+            # event log restores the visible transcript), and a rewind
+            # of the files is a rewind of the memory — one restore, not
+            # two writes that can disagree.
+            db=self.db,
             session_id=name,
             add_history_to_context=True,
             markdown=True,
@@ -1194,6 +1242,15 @@ class Registry:
         their branches and tokens go too). Caller ensures not busy."""
         name = session.name
         doomed = {name}
+        # Before the session leaves the registry: the db reaches the
+        # conversation through workspace_for, which would otherwise
+        # reopen the session it is being asked to erase. Best-effort —
+        # the branch deletion below takes the conversation with it
+        # either way, and nothing may block a delete.
+        try:
+            self.db.delete_session(name)
+        except Exception:
+            pass
         with self._lock:
             self._sessions.pop(name, None)
             manifest = self._manifest()
@@ -1212,7 +1269,6 @@ class Registry:
             manifest["titles"].pop(name, None)
             manifest["created"].pop(name, None)
             self._save_manifest(manifest)
-        self._wipe_chat(session)
         close_runtime = getattr(session.runtime, "close", None)
         if callable(close_runtime):  # reap dispatch workers
             close_runtime()
@@ -1221,18 +1277,6 @@ class Registry:
         self._delete_branches(doomed)
         (self._store / "dbs" / f"{name}.sqlite").unlink(missing_ok=True)
         (self._store / "events" / f"{name}.jsonl").unlink(missing_ok=True)
-
-    @staticmethod
-    def _wipe_chat(session: Session) -> None:
-        """Drop the agno session record (best-effort: fakes and
-        JsonDb quirks must never block a delete)."""
-        db = getattr(session.agent, "db", None)
-        if db is None:
-            return
-        try:
-            db.delete_session(session_id=session.name)
-        except Exception:
-            pass
 
     def _delete_branches(self, names: set[str]) -> None:
         """Remove the session's kvgit branches — the workspace branch
@@ -1264,12 +1308,15 @@ class Registry:
 
     def rewind_to_event(self, session: Session, seq: int) -> None:
         """The rewind half of an EDIT: restore the workspace to the
-        user event's pre-turn head and truncate agent memory to the
-        turns before it in the transcript. Position in the event log
-        (not commit order) decides what survives — commit order can't
-        tell a no-file-change turn from its predecessor (same head),
-        the transcript can. The caller emits the `truncate` event and
+        user event's pre-turn head. That one call is the whole rewind —
+        the agent's memory lives in the same branch as the files, so the
+        turns after that head are unsaid by the same restore that
+        unwrites their files. The caller emits the `truncate` event and
         starts the new turn.
+
+        The head, not commit order, is the anchor: the `user` event
+        stamps the workspace as it stood before its turn ran, which is
+        exactly the state the edited prompt should run from.
 
         The agent's title rewinds too — it named the session from a
         conversation that is being unsaid."""
@@ -1277,16 +1324,12 @@ class Registry:
         head = event.get("head") if event else None
         if event is None or event.get("type") != "user" or not head:
             raise ValueError(f"event {seq} is not an editable user message")
-        last_kept_run_id = None
         surviving_title = None
         prior = [e for e in session.events if e["seq"] < seq]
         for _, ev in self._visible(prior):
-            if ev.get("type") == "done":
-                last_kept_run_id = ev.get("run_id") or last_kept_run_id
-            elif ev.get("type") == "title":
+            if ev.get("type") == "title":
                 surviving_title = ev.get("title") or surviving_title
         session.ws.restore(head)
-        self._truncate_chat(session, last_kept_run_id)
         # Best-effort within the event window: revert to the last title
         # the agent gave BEFORE the cut. None surviving is ambiguous —
         # never titled, or titled so long ago the event front-trimmed out
@@ -1313,35 +1356,6 @@ class Registry:
             else:
                 visible.append((event.get("seq", 0), event))
         return visible
-
-    @staticmethod
-    def _truncate_chat(session: Session, last_kept_run_id: str | None) -> None:
-        """Slice the agno session's runs after the last kept turn.
-        agno has turn structure (runs ARE turns) but no rewind verb —
-        get_session -> slice -> upsert_session composes one."""
-        db = getattr(session.agent, "db", None)
-        if db is None:  # e.g. test fakes without chat storage
-            return
-        from agno.db.base import SessionType
-
-        record = db.get_session(session_id=session.name, session_type=SessionType.AGENT)
-        if record is None or not record.runs:
-            return
-        if last_kept_run_id is None:
-            record.runs = []
-        else:
-            index = next(
-                (
-                    i
-                    for i, run in enumerate(record.runs)
-                    if getattr(run, "run_id", None) == last_kept_run_id
-                ),
-                None,
-            )
-            if index is None:
-                return  # unknown mapping: leave memory alone, never corrupt
-            record.runs = record.runs[: index + 1]
-        db.upsert_session(record)
 
     # -- publish: a VIEW of the same universe ------------------------------
 

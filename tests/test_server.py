@@ -789,113 +789,192 @@ def _user_seqs(session) -> list[int]:
     return [e["seq"] for e in session.events if e["type"] == "user"]
 
 
-def test_edit_rewinds_truncates_and_reruns(studio):
-    """Editing an earlier prompt rewinds files + agent memory to just
-    before that turn, marks the transcript cut with a `truncate` event
-    (the log stays append-only), and runs the edited message fresh."""
-    client, registry = studio
+@pytest.fixture
+def scripted(tmp_path):
+    """A registry over the REAL stack: agno's run loop, WorkspaceTools,
+    the workspace and the store db all execute — only the LLM is faked,
+    by directives riding in the user message (see dummy.py). The chat
+    lives in the branch now, so nothing short of a real agent can show
+    that a rewind takes the files and the memory together."""
+    from nontainer_studio.dummy import DummyModel
+
+    registry = sessions_mod.Registry(
+        model_factory=lambda spec=None: DummyModel(), store=tmp_path
+    )
+    with TestClient(server.build_app(registry)) as client:
+        yield client, registry
+    registry.close()
+
+
+def _script(path: str, content: str, reply: str) -> str:
+    """One scripted turn: write a file, then say so."""
+    return f"!tool file_write {json.dumps({'path': path, 'content': content})}\n!text {reply}"
+
+
+def _run(client, session: str, message: str) -> list[dict]:
+    """Run a turn and wait for ITS done, not a previous turn's."""
+    r = client.post(f"/api/sessions/{session}/chat", json={"message": message})
+    assert r.status_code == 200, r.text
+    return _collect_until_done(client, session, since=r.json()["since"])
+
+
+def _edit(client, session: str, seq: int, message: str):
+    r = client.post(
+        f"/api/sessions/{session}/edit", json={"seq": seq, "message": message}
+    )
+    if r.status_code == 200:
+        _collect_until_done(client, session, since=r.json()["since"])
+    return r
+
+
+def _run_ids(registry, name: str) -> list[str]:
+    """The agent's memory, as the branch holds it."""
+    record = registry.db.get_session(name)
+    return [run.run_id for run in (record.runs or [])] if record is not None else []
+
+
+def test_edit_rewinds_files_and_memory_in_one_restore(scripted):
+    """Editing an earlier prompt restores the workspace to that turn's
+    pre-turn head — and the conversation lives in the same branch, so
+    that ONE call unwrites the turn's file and unsays its run. The
+    transcript cut is an appended `truncate` event; the log stays
+    append-only."""
+    client, registry = scripted
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    chat_db = FakeChatDb()
-    session.agent.db = chat_db
 
-    _turn(client, "s1", "one")
-    session.ws.write_file("a.txt", "A")
-    _turn(client, "s1", "two")
-    session.ws.write_file("b.txt", "B")
-    chat_db.record = SimpleNamespace(
-        runs=[SimpleNamespace(run_id="run-1"), SimpleNamespace(run_id="run-2")]
-    )
+    _run(client, "s1", _script("/workspace/a.txt", "A", "wrote a"))
+    _run(client, "s1", _script("/workspace/b.txt", "B", "wrote b"))
+    before = _run_ids(registry, "s1")
+    assert len(before) == 2
 
     seq = _user_seqs(session)[1]
-    r = client.post(
-        "/api/sessions/s1/edit", json={"seq": seq, "message": "two, but better"}
+    assert (
+        _edit(
+            client, "s1", seq, _script("/workspace/c.txt", "C", "wrote c")
+        ).status_code
+        == 200
     )
-    assert r.status_code == 200
-    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
 
-    # files rewound to the edited turn's pre-turn head
-    assert session.ws.fs.exists("a.txt") and not session.ws.fs.exists("b.txt")
-    # agent memory: turn two forgotten — even though it changed no
-    # files (commit order can't see that; the transcript can)
-    assert [run.run_id for run in chat_db.record.runs] == ["run-1"]
-    # the log: ... truncate{to:seq}, then the fresh turn
+    assert session.ws.fs.read("/workspace/a.txt") == b"A"
+    assert not session.ws.fs.exists("/workspace/b.txt")
+    assert session.ws.fs.read("/workspace/c.txt") == b"C"
+
+    after = _run_ids(registry, "s1")
+    assert after[0] == before[0]  # the kept turn is the same run
+    assert before[1] not in after  # the rewound one is gone
+    assert len(after) == 2  # and the rerun landed in its place
+
     kinds = [e["type"] for e in session.events]
     cut = kinds.index("truncate")
     assert session.events[cut]["to"] == seq
     assert kinds[cut + 1] == "user"
-    assert session.events[cut + 1]["text"] == "two, but better"
-    assert session.agent.seen[-1] == "two, but better"
 
 
-def test_edit_unknown_mapping_leaves_memory_alone(studio):
-    """A kept turn whose run_id isn't in the agno record (drift) must
-    never corrupt memory — leave it rather than guess."""
-    client, registry = studio
+def test_edit_the_first_message_leaves_nothing_behind(scripted):
+    """Nothing precedes the first turn, so its pre-turn head is the
+    empty conversation over the seeded workspace."""
+    client, registry = scripted
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    chat_db = FakeChatDb()
-    session.agent.db = chat_db
-    _turn(client, "s1", "one")
-    _turn(client, "s1", "two")
-    chat_db.record = SimpleNamespace(runs=[SimpleNamespace(run_id="mystery")])
-
-    seq = _user_seqs(session)[1]  # keeps turn one, whose run_id is unknown
-    r = client.post("/api/sessions/s1/edit", json={"seq": seq, "message": "redo"})
-    assert r.status_code == 200
-    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
-    assert [r.run_id for r in chat_db.record.runs] == ["mystery"]
-
-
-def test_edit_first_message_clears_memory(studio):
-    client, registry = studio
-    client.post("/api/sessions", json={"name": "s1"})
-    session = registry.get("s1")
-    chat_db = FakeChatDb()
-    session.agent.db = chat_db
-    _turn(client, "s1", "one")
-    chat_db.record = SimpleNamespace(runs=[SimpleNamespace(run_id="run-1")])
+    _run(client, "s1", _script("/workspace/a.txt", "A", "wrote a"))
+    before = _run_ids(registry, "s1")
 
     seq = _user_seqs(session)[0]
-    r = client.post("/api/sessions/s1/edit", json={"seq": seq, "message": "redo"})
-    assert r.status_code == 200
-    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
-    assert chat_db.record.runs == []  # nothing precedes the first turn
+    assert (
+        _edit(
+            client, "s1", seq, _script("/workspace/z.txt", "Z", "wrote z")
+        ).status_code
+        == 200
+    )
+
+    assert not session.ws.fs.exists("/workspace/a.txt")
+    assert session.ws.fs.read("/workspace/z.txt") == b"Z"
+    after = _run_ids(registry, "s1")
+    assert len(after) == 1 and after != before
 
 
-def test_edit_after_edit_respects_the_projection(studio):
-    """A second edit must reason about the transcript AS PROJECTED:
-    done events behind an earlier cut refer to runs that no longer
-    exist in agent memory, and matching one would corrupt the rewind."""
-    client, registry = studio
+def test_a_second_edit_rewinds_to_its_own_anchor(scripted):
+    """Every user event carries the head its own turn began from, so
+    editing a REPLACEMENT prompt rewinds to where that turn started —
+    not to the state of the turn it replaced."""
+    client, registry = scripted
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    chat_db = FakeChatDb()
-    session.agent.db = chat_db
 
-    _turn(client, "s1", "one")  # run-1
-    _turn(client, "s1", "two")  # run-2
-    chat_db.record = SimpleNamespace(
-        runs=[SimpleNamespace(run_id="run-1"), SimpleNamespace(run_id="run-2")]
-    )
+    _run(client, "s1", _script("/workspace/a.txt", "A", "wrote a"))
+    _run(client, "s1", _script("/workspace/b.txt", "B", "wrote b"))
+    kept = _run_ids(registry, "s1")[0]
+
     first_cut = _user_seqs(session)[1]
-    r = client.post(
-        "/api/sessions/s1/edit", json={"seq": first_cut, "message": "two v2"}
+    assert (
+        _edit(
+            client, "s1", first_cut, _script("/workspace/v2.txt", "2", "wrote v2")
+        ).status_code
+        == 200
     )
-    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
-    # agno would have appended the fresh turn's run (run-3)
-    chat_db.record.runs.append(SimpleNamespace(run_id="run-3"))
-
-    # edit the REPLACEMENT prompt: the kept prefix is just turn one —
-    # a raw (unprojected) scan would land on stale run-2 instead
     second_cut = _user_seqs(session)[-1]
     assert second_cut > first_cut
-    r = client.post(
-        "/api/sessions/s1/edit", json={"seq": second_cut, "message": "two v3"}
+    assert (
+        _edit(
+            client, "s1", second_cut, _script("/workspace/v3.txt", "3", "wrote v3")
+        ).status_code
+        == 200
     )
-    assert r.status_code == 200
-    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
-    assert [run.run_id for run in chat_db.record.runs] == ["run-1"]
+
+    assert session.ws.fs.read("/workspace/a.txt") == b"A"
+    for gone in ("b.txt", "v2.txt"):
+        assert not session.ws.fs.exists(f"/workspace/{gone}")
+    assert session.ws.fs.read("/workspace/v3.txt") == b"3"
+    after = _run_ids(registry, "s1")
+    assert len(after) == 2 and after[0] == kept
+
+
+def test_a_repaired_run_persists_through_the_store_db(scripted):
+    """``repair_aborted_run`` rewrites a stored run in place (agno's
+    history builder skips error/cancelled runs, so the turn's real work
+    would vanish from memory). Over the branch db that is a re-upsert of
+    a run the branch already holds — allowed, and committed."""
+    from agno.db.base import SessionType
+    from agno.run.base import RunStatus
+
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _run(client, "s1", _script("/workspace/a.txt", "A", "wrote a"))
+
+    record = registry.db.get_session(session_id="s1", session_type=SessionType.AGENT)
+    run_id = record.runs[-1].run_id
+    record.runs[-1].status = RunStatus.error
+    registry.db.upsert_session(record)
+
+    sessions_mod.repair_aborted_run(session, run_id, "credit balance too low")
+
+    stored = registry.db.get_session(session_id="s1", session_type=SessionType.AGENT)
+    repaired = stored.runs[-1]
+    assert repaired.run_id == run_id
+    assert repaired.status == RunStatus.completed
+    assert "credit balance too low" in repaired.messages[-1].content
+
+
+def test_the_conversation_survives_a_restart(scripted, tmp_path):
+    """No handoff: the conversation is in the branch, so a registry
+    rebuilt over the same store reads it back with the files."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    _run(client, "s1", _script("/workspace/a.txt", "A", "wrote a"))
+    ids = _run_ids(registry, "s1")
+    assert ids
+    registry.close()
+
+    from nontainer_studio.dummy import DummyModel
+
+    reborn = sessions_mod.Registry(
+        model_factory=lambda spec=None: DummyModel(), store=tmp_path
+    )
+    assert _run_ids(reborn, "s1") == ids
+    assert reborn.open("s1").ws.fs.read("/workspace/a.txt") == b"A"
+    reborn.close()
 
 
 def test_edit_validations(studio):
