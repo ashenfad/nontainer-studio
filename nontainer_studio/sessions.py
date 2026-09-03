@@ -50,6 +50,7 @@ from nontainer import (
 from nontainer.adapters.agno import WorkspaceTools
 from nontainer.adapters.agno_db import KvgitStoreDb, fork_session
 from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
+from nontainer.errors import SessionIdError
 
 log = logging.getLogger(__name__)
 
@@ -689,11 +690,13 @@ class Registry:
         # (see apps_config).
         self.apps = apps or apps_config()
         self._sessions: dict[str, Session] = {}
-        # (token, version) -> the frozen workspace serving it. Keyed by
-        # BOTH because an app's URL can be repointed at another version
-        # (see set_current) and the snapshots are otherwise identical
-        # objects to hand out.
-        self._published: dict[tuple[str, str], Workspace] = {}
+        # token -> (version, the frozen workspace serving it). The
+        # VERSION rides along because an app's URL can be repointed
+        # (see set_current) and a stale snapshot is indistinguishable
+        # from a fresh one; it is also what keeps `resolve` off the
+        # disk on the hot path — one dict lookup per served request,
+        # the manifest read only on a miss.
+        self._published: dict[str, tuple[str, Workspace]] = {}
         # token -> the app's own db handle, shared by every version of
         # that app: the versions are different code over one live state.
         self._app_dbs: dict[str, Db] = {}
@@ -908,6 +911,13 @@ class Registry:
 
     def open(self, name: str) -> Session:
         """Create-or-return. Raises SessionIdError for bad names."""
+        if name == APP_BRANCH:
+            # A valid session id, and the one branch a session must not
+            # be: published apps are served through it (see resolve), so
+            # a session here would share a branch with every publication
+            # on the store. Minting can't produce it — the guard is for
+            # a name that came in over the API.
+            raise SessionIdError(f"{APP_BRANCH!r} is reserved for published apps")
         with self._lock:
             existing = self._sessions.get(name)
             if existing is not None:
@@ -1808,20 +1818,20 @@ class Registry:
         kvgit handle and its own executor, so the parent is scaffolding,
         not part of what serves.
         """
-        entry = self._manifest()["apps"].get(token)
-        if entry is None:
-            return None
-        version = entry.get("current")
-        info = (entry.get("versions") or {}).get(version)
-        if info is None:
-            return None
-        snapshot = self._published.get((token, version))
-        if snapshot is not None:
-            return snapshot
+        served = self._published.get(token)
+        if served is not None:
+            return served[1]
         with self._lock:
-            snapshot = self._published.get((token, version))
-            if snapshot is not None:
-                return snapshot
+            served = self._published.get(token)
+            if served is not None:
+                return served[1]
+            entry = self._manifest()["apps"].get(token)
+            if entry is None:
+                return None
+            version = entry.get("current")
+            info = (entry.get("versions") or {}).get(version)
+            if info is None:
+                return None
             parent = workspace(
                 APP_BRANCH,
                 store=self._store,
@@ -1832,19 +1842,21 @@ class Registry:
                 snapshot = parent.at_tag(info["tag"], scope="store")
             finally:
                 parent.close()
-            self._published[(token, version)] = snapshot
+            self._published[token] = (version, snapshot)
             return snapshot
 
     def _drop_snapshots(self, token: str, version: str | None = None) -> None:
-        """Close cached frozen workspaces for an app — all of them, or
-        one version's. Caller holds ``_lock``."""
-        doomed = [
-            key
-            for key in self._published
-            if key[0] == token and (version is None or key[1] == version)
-        ]
-        for key in doomed:
-            self._published.pop(key).close()
+        """Forget an app's cached snapshot — unconditionally, or only if
+        it is serving ``version``. The next request rebuilds it from the
+        manifest. Caller holds ``_lock``.
+
+        A request already dispatching on that workspace keeps its
+        reference; closing it under one would be the race, so this
+        drops and closes only what the router will not hand out again."""
+        served = self._published.get(token)
+        if served is None or (version is not None and served[0] != version):
+            return
+        self._published.pop(token)[1].close()
 
     # -- the registry of apps ----------------------------------------------
 
@@ -2092,7 +2104,7 @@ class Registry:
                 session.ws.close()
                 session.db.close()
             self._sessions.clear()
-            for snapshot in self._published.values():
+            for _, snapshot in self._published.values():
                 snapshot.close()
             self._published.clear()
             for db in self._app_dbs.values():
