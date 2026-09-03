@@ -532,15 +532,11 @@ def test_publish_tags_the_store_scope_and_marks_the_transcript(scripted, tmp_pat
 
 def test_a_served_version_is_frozen_code_over_a_live_db(studio):
     """The split the whole model rests on. A handler's write to the
-    workspace never lands — the cache refuses outright, and a file write
-    is discarded: nothing reaches the store, but under process isolation
-    the handler is not told, because the worker pushed its writes at
-    close and a garbage-collected close swallowed the read-only refusal.
-    That is a sandtrap bug, fixed upstream by refusing at open; once the
-    studio's sandtrap floor moves past the fix, the file-writing POST
-    below becomes a 500 like the cache one and this assertion tightens
-    to say so. The app db is the other half: writes there work, which is
-    the point of the app owning one.
+    workspace never lands and is refused loudly — the cache and the
+    filesystem alike, under process isolation too, where the worker
+    refuses a write to a read-only filesystem at open rather than
+    losing it at a garbage-collected close. The app db is the other
+    half: writes there work, which is the point of the app owning one.
     """
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
@@ -568,7 +564,7 @@ def test_a_served_version_is_frozen_code_over_a_live_db(studio):
     pub = _publish(client, "s1")
 
     assert client.post(f"{pub['url']}api/counter").status_code == 500
-    client.post(f"{pub['url']}api/note")
+    assert client.post(f"{pub['url']}api/note").status_code == 500
     assert client.get(f"{pub['url']}scribble.txt").status_code == 404
     snapshot = registry.resolve(pub["token"])
     assert snapshot.frozen
