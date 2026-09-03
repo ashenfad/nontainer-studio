@@ -52,6 +52,11 @@ dependencies = [
     # reproduce it.
     # 0.5.0 brings the agno session db (KvgitStoreDb) and fork_session --
     # the conversation stored in the branch with the files.
+    #
+    # The publish workflow needs the TAGS api (ws.tag/at_tag/changed_since
+    # and the store scope), which ships in the next nontainer release --
+    # the floor moves to it then; until then this repo builds against the
+    # sibling checkout below.
     "nontainer[agno,apps]>=0.5.0",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
