@@ -364,6 +364,14 @@ def test_busy_session_409s_chat(studio):
         session.turn_lock.release()
 
 
+def test_the_app_branch_name_is_reserved(studio):
+    """`_apps` is the branch published apps are served through, so it
+    cannot also be a session — the two would share a branch."""
+    client, registry = studio
+    r = client.post("/api/sessions", json={"name": "_apps"})
+    assert r.status_code == 400 and "reserved" in r.json()["error"]
+
+
 def test_bad_session_name_400(studio):
     client, _ = studio
     assert client.post("/api/sessions", json={"name": "../evil"}).status_code == 400
@@ -2645,7 +2653,7 @@ def test_executor_factory_plumbed_on_open_and_resolve(tmp_path, monkeypatch):
         token = published["token"]
         # drop the cached snapshot so resolve takes the cold path — the
         # lazy manifest reopen a restart would take
-        registry._published.pop((token, published["version"]), None)
+        registry._published.pop(token, None)
         snapshot = registry.resolve(token)
         assert snapshot is not None
         assert isinstance(snapshot._executor, MarkedExecutor)
