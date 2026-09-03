@@ -26,6 +26,7 @@ from nontainer.apps import request as make_request
 from nontainer.apps.contract import filter_headers
 from nontainer.errors import SessionIdError
 from starlette.applications import Starlette
+from starlette.datastructures import Headers
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
@@ -34,6 +35,64 @@ from .sessions import Registry, _clean_title, repair_aborted_run
 
 STATIC = Path(__file__).parent / "static"
 MAX_UPLOAD = 50_000_000  # upload bodies buffer in memory; cap them
+
+HTTP_VERBS = ["GET", "POST", "PUT", "DELETE", "PATCH"]
+
+
+def cors_for_apps(app: Any) -> Any:
+    """Wrap the published-app router so a sandboxed iframe can read it.
+
+    Same reason the live preview route sets these headers: the preview
+    iframe is sandboxed WITHOUT ``allow-same-origin``, so it is an
+    OPAQUE origin and every request it makes — the jsx loader fetching
+    ``app.jsx``, the app's own ``fetch('api/x')`` — is cross-origin.
+    Without the header the browser hides the response from the page and
+    reports a CORS error; the same URL in a top-level tab works, which
+    is what makes this failure so confusing to meet. ``build_router``
+    sends no CORS headers and its response-header allowlist strips any
+    a handler sets, so the header has to be added out here, around the
+    mount, rather than by the app or by nontainer.
+
+    The threat framing, since ``*`` on a serving origin deserves one: a
+    published app is behind a capability token, and the header lets any
+    page that ALREADY HOLDS that URL read the app's responses from a
+    foreign origin. That is what embedding a published app anywhere —
+    our own sandboxed preview included — requires, and it grants
+    nothing the URL did not already grant: without the token there is
+    no request to read the answer to. What it must not become is
+    ``allow-same-origin`` on the iframe, which would hand the app the
+    studio's origin and with it the session API. That stays off.
+    """
+    from starlette.datastructures import MutableHeaders
+
+    async def wrapped(scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await app(scope, receive, send)
+            return
+        if scope["method"] == "OPTIONS":
+            # Preflight: build_router routes only the real verbs, so an
+            # unanswered OPTIONS 405s and the browser blocks the request
+            # it was asking about, whatever headers the answer carried.
+            asked = Headers(scope=scope).get("access-control-request-headers", "*")
+            await Response(
+                status_code=204,
+                headers={
+                    "access-control-allow-origin": "*",
+                    "access-control-allow-methods": ", ".join(HTTP_VERBS),
+                    "access-control-allow-headers": asked,
+                    "access-control-max-age": "600",
+                },
+            )(scope, receive, send)
+            return
+
+        async def with_header(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["access-control-allow-origin"] = "*"
+            await send(message)
+
+        await app(scope, receive, with_header)
+
+    return wrapped
 
 
 # ---------------------------------------------------------------------------
@@ -997,7 +1056,7 @@ def build_app(registry: Registry) -> Starlette:
         finally:
             registry.close()
 
-    verbs = ["GET", "POST", "PUT", "DELETE", "PATCH"]
+    verbs = HTTP_VERBS
     preview_verbs = verbs + ["OPTIONS"]
     return Starlette(
         routes=[
@@ -1047,7 +1106,7 @@ def build_app(registry: Registry) -> Starlette:
             # policy ("none" disables it entirely).
             Mount(
                 "/apps",
-                build_router(registry.resolve, config=registry.apps),
+                cors_for_apps(build_router(registry.resolve, config=registry.apps)),
             ),
             Mount("/static", StaticFiles(directory=STATIC)),
         ],
