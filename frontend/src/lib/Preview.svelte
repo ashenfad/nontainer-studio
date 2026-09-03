@@ -49,6 +49,12 @@
         rt.loadApps()
     })
 
+    // unpublishing the last app leaves nothing to show: fall back to
+    // live rather than the "no app yet" empty state over a live app
+    $effect(() => {
+        if (!app && mode === 'published') mode = 'live'
+    })
+
     function startPublish() {
         draft = nextVersion(app)
         error = null

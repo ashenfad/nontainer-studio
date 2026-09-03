@@ -939,10 +939,13 @@ def build_app(registry: Registry) -> Starlette:
                 registry.restore_to_publish, session, seq
             )
         except ValueError as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-        finally:
             session.turn_lock.release()
+            return JSONResponse({"error": str(e)}, status_code=400)
+        # the cut goes out before the lock does: a chat request that
+        # won the lock in between would land its `user` event above the
+        # truncate that was meant to precede it
         await session.emit({"type": "truncate", "to": cut})
+        session.turn_lock.release()
         return JSONResponse({"ok": True, "since": session.next_seq})
 
     async def api_fallback(request: Any) -> Response:

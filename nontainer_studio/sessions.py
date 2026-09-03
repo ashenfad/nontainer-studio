@@ -2087,6 +2087,11 @@ class Registry:
         pre-turn head. Returns the seq the transcript is cut AFTER: the
         marker survives its own restore, since the version it names is
         still there and is still what you came back to.
+
+        The commit is always reachable, however far the branch has
+        wandered since — a tag is a garbage-collection root, so
+        publishing is what keeps that state alive even after an edit
+        rewound past it.
         """
         event = next((e for e in session.events if e.get("seq") == seq), None)
         head = event.get("head") if event else None
