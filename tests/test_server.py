@@ -533,10 +533,14 @@ def test_publish_tags_the_store_scope_and_marks_the_transcript(scripted, tmp_pat
 def test_a_served_version_is_frozen_code_over_a_live_db(studio):
     """The split the whole model rests on. A handler's write to the
     workspace never lands — the cache refuses outright, and a file write
-    is discarded (under process isolation the sandbox absorbs nothing,
-    so the handler is not told; nothing reaches the store either way).
-    The app db is the other half: writes there work, which is the point
-    of the app owning one.
+    is discarded: nothing reaches the store, but under process isolation
+    the handler is not told, because the worker pushed its writes at
+    close and a garbage-collected close swallowed the read-only refusal.
+    That is a sandtrap bug, fixed upstream by refusing at open; once the
+    studio's sandtrap floor moves past the fix, the file-writing POST
+    below becomes a 500 like the cache one and this assertion tightens
+    to say so. The app db is the other half: writes there work, which is
+    the point of the app owning one.
     """
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
@@ -862,13 +866,23 @@ def test_branch_from_a_version_opens_where_it_was_published(scripted):
     pub = _publish(client, "s1")
     _run(client, "s1", _script("/workspace/app/index.html", "two", "made two"))
 
+    # the origin is READ, not moved — staged work and all
+    origin = registry.get("s1")
+    head = origin.ws.head
+    origin.ws.fs.write("/workspace/scratch.txt", b"mid-thought")
+    assert origin.ws.dirty
+
     r = client.post(f"/api/apps/{pub['token']}/versions/v1/branch")
     assert r.status_code == 200, r.text
     child = registry.get(r.json()["name"])
     assert child.ws.fs.read("/workspace/app/index.html") == b"one"
     assert len(_run_ids(registry, child.name)) == 1
-    # the parent is untouched by the branch
-    assert registry.get("s1").ws.fs.read("/workspace/app/index.html") == b"two"
+    assert not child.ws.fs.exists("/workspace/scratch.txt")
+    # nothing about the origin moved: not its head, not its staged work
+    assert origin.ws.head == head
+    assert origin.ws.dirty
+    assert origin.ws.fs.read("/workspace/app/index.html") == b"two"
+    origin.ws.discard()  # so the delete below isn't testing a dirty branch
 
     client.delete("/api/sessions/s1")
     gone = client.post(f"/api/apps/{pub['token']}/versions/v1/branch")
