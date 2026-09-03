@@ -191,7 +191,7 @@
 {#if panel}
     <PublishedPanel
         apps={rt.apps}
-        onChanged={() => rt.loadApps()}
+        onChanged={() => rt.syncApps()}
         {onSwitch}
         onClose={() => (panel = false)}
     />

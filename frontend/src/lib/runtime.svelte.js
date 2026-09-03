@@ -468,13 +468,22 @@ export class SessionRuntime {
         }
     }
 
+    /** after anything that CHANGES an app, not merely reads one: the
+     * session's own list and the rail's store-wide one are two
+     * projections of the same rows, and a caller that refreshes one
+     * leaves the other showing stale counts — or a clickable row for an
+     * app that no longer exists — until the next poll. */
+    async syncApps() {
+        await Promise.all([this.loadApps(), refreshApps()])
+    }
+
     /** publish a version. `name` names it (blank = the server's vN),
      * `app` picks the lineage ('new' starts one; absent extends the
      * session's most recent). The marker arrives on the event feed, so
      * nothing here touches the transcript. */
     async publish(body = {}) {
         const made = await api(`/api/sessions/${this.name}/publish`, body)
-        await Promise.all([this.loadApps(), refreshApps()])
+        await this.syncApps()
         return made
     }
 

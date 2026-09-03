@@ -117,6 +117,15 @@
         })()
     })
 
+    // The app view lives in the side pane, which the human may have
+    // collapsed (the preference persists). Selecting a Published row is
+    // a request to SEE the app, so reveal the pane with it — otherwise
+    // the row highlights and nothing appears.
+    function openApp(token) {
+        activeApp = token
+        showSide = true
+    }
+
     function switchTo(name) {
         history.replaceState(null, '', `?session=${encodeURIComponent(name)}`)
         activeApp = null // the side pane goes back to this session's own
@@ -201,7 +210,7 @@
                 onCreate={createAndSwitch}
                 onFork={forkAndSwitch}
                 onDelete={deleteSession}
-                onOpenApp={(token) => (activeApp = token)}
+                onOpenApp={openApp}
             />
         {/if}
         {#if bootstrapError}

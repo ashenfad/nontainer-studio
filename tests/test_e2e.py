@@ -378,6 +378,7 @@ def test_publish_a_version_and_toggle_between_live_and_published(page, server):
     app's own URL in the pane beside the live one — which then diverge,
     because that is the point of publishing."""
     page.goto(f"{server}/?session=e2e-publish")
+    _title(server, "e2e-publish", "Toggle app")
     _send(
         page,
         '!tool file_write {"path": "/workspace/app/index.html", "content": '
@@ -429,6 +430,21 @@ def test_publish_a_version_and_toggle_between_live_and_published(page, server):
         "button", name="make current"
     ).click()
     expect(page.locator(".panel li.current")).to_contain_text("v1", timeout=10000)
+    # the rail reads a store-wide list, the modal a per-session one —
+    # both are projections of the row that just changed, so the rail
+    # must not wait for its 4s poll to say so (hence the tight bound)
+    rail_row = page.locator(".app-row", has_text="Toggle app")
+    expect(rail_row).to_contain_text("v1 · 2 versions", timeout=2500)
+
+    # ...and the same for a removal: v2 is no longer current, so it can go
+    page.locator(".panel li", has_text="v2").get_by_role(
+        "button", name="delete"
+    ).click()
+    page.locator(".panel li", has_text="v2").get_by_role(
+        "button", name="really delete"
+    ).click()
+    expect(rail_row).to_contain_text("v1 · 1 version ", timeout=2500)
+
     page.get_by_role("button", name="close").click()
     expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
 
@@ -502,6 +518,11 @@ def test_the_rail_lists_apps_whose_session_is_gone(page, server):
     _delete(server, "e2e-rail-app")
     # the app survives its session, and the row says the origin is gone
     expect(row).to_contain_text("session deleted", timeout=15000)
+
+    # the side pane may be collapsed — selecting an app is a request to
+    # SEE it, so the row has to reveal the pane, not just highlight
+    page.get_by_role("button", name="toggle preview panel").click()
+    expect(page.locator("iframe[title='app preview']")).to_have_count(0)
 
     row.click()
     served = page.frame_locator("iframe[title='published app']")
