@@ -216,7 +216,7 @@
                                 {/each}
                             </div>
                             {#if tab === 'preview'}
-                                <Preview {rt} />
+                                <Preview {rt} onSwitch={switchTo} />
                             {:else}
                                 <FilesTab {rt} />
                             {/if}

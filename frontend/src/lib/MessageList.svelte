@@ -67,6 +67,22 @@
         node.focus()
         node.selectionStart = node.selectionEnd = node.value.length
     }
+
+    // A publish marker is an anchor, like a user message: restoring to
+    // one rewinds the files and the agent's memory to where that
+    // version was tagged and cuts everything after it. Armed on the
+    // first tap, like the rail's delete — it unsays turns.
+    let armedRestore = $state(null)
+
+    function restore(msg) {
+        if (armedRestore !== msg.seq) {
+            armedRestore = msg.seq
+            setTimeout(() => armedRestore === msg.seq && (armedRestore = null), 3000)
+            return
+        }
+        armedRestore = null
+        rt.restoreTo(msg.seq)
+    }
 </script>
 
 <div class="log" bind:this={scroller}>
@@ -145,6 +161,22 @@
             {/if}
         {:else if msg.role === 'agent'}
             <AgentMessage {msg} session={rt.name} />
+        {:else if msg.role === 'publish'}
+            <div class="publish">
+                <span>published <strong>{msg.version}</strong></span>
+                <a href={msg.url} target="_blank" rel="noopener">open ↗</a>
+                {#if msg.seq != null && !rt.busy}
+                    <button
+                        class="restore"
+                        class:armed={armedRestore === msg.seq}
+                        title="rewind the files and the agent's memory to this publish, dropping everything after it"
+                        onclick={() => restore(msg)}
+                        >{armedRestore === msg.seq
+                            ? 'really restore'
+                            : 'restore to this publish'}</button
+                    >
+                {/if}
+            </div>
         {:else if msg.role === 'notice'}
             <div class="notice">{msg.text}</div>
         {:else if msg.role === 'error'}
@@ -305,6 +337,43 @@
         border-radius: 999px;
         padding: 0.2rem 0.8rem;
         margin: 0.3rem 0;
+    }
+    .publish {
+        align-self: center;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        color: var(--text-muted);
+        font-size: 0.72rem;
+        background: color-mix(in srgb, var(--success) 10%, transparent);
+        border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
+        border-radius: 999px;
+        padding: 0.2rem 0.8rem;
+        margin: 0.3rem 0;
+    }
+    .publish strong {
+        color: var(--text);
+    }
+    .publish a {
+        color: var(--success);
+        text-decoration: none;
+    }
+    .publish a:hover {
+        text-decoration: underline;
+    }
+    .publish .restore {
+        background: none;
+        border: 1px solid var(--border);
+        color: var(--text-muted);
+        border-radius: 999px;
+        font-size: 0.66rem;
+        padding: 0.02rem 0.45rem;
+        cursor: pointer;
+    }
+    .publish .restore:hover,
+    .publish .restore.armed {
+        color: var(--text);
+        border-color: var(--text-muted);
     }
     .error {
         color: var(--error);
