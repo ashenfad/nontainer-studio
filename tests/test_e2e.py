@@ -367,6 +367,51 @@ def test_preview_serves_the_agents_app(page, server):
     expect(frame.locator("#marker")).to_have_text("hi from the app", timeout=15000)
 
 
+def test_publish_a_version_and_toggle_between_live_and_published(page, server):
+    """The whole publish loop through the browser: publish names a
+    version, the transcript gets its marker, and the toggle puts the
+    app's own URL in the pane beside the live one — which then diverge,
+    because that is the point of publishing."""
+    page.goto(f"{server}/?session=e2e-publish")
+    _send(
+        page,
+        '!tool file_write {"path": "/workspace/app/index.html", "content": '
+        '"<html><body><h1 id=marker>version one</h1></body></html>"}\n'
+        "!text App is up.",
+    )
+    frame = page.frame_locator("iframe[title='app preview']")
+    expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
+
+    # the control mints the version name and leaves it editable
+    page.get_by_role("button", name="publish", exact=True).click()
+    expect(page.locator("input[aria-label='version name']")).to_have_value("v1")
+    page.get_by_role("button", name="publish", exact=True).click()
+
+    # the transcript gets a landmark, and the pane switches to the app
+    expect(page.locator(".publish")).to_contain_text("published", timeout=15000)
+    expect(page.locator(".publish")).to_contain_text("v1")
+    expect(page.locator(".seg.on")).to_have_text("published", timeout=10000)
+    expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
+
+    # the session keeps moving; the published app doesn't
+    _send(
+        page,
+        '!tool file_write {"path": "/workspace/app/index.html", "content": '
+        '"<html><body><h1 id=marker>version two</h1></body></html>"}\n'
+        "!text Changed it.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Changed it.", timeout=20000
+    )
+    expect(page.locator(".badge")).to_contain_text(
+        "1 app file changed since v1", timeout=15000
+    )
+    expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
+
+    page.get_by_role("button", name="live", exact=True).click()
+    expect(frame.locator("#marker")).to_have_text("version two", timeout=20000)
+
+
 def test_tool_steps_render_by_type(page, server):
     """The activity drill-down renders per tool: terminal commands as
     a prompt block, file edits as a computed line diff."""

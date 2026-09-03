@@ -14,6 +14,10 @@
 //   {type:'artifact', name, path, kind} — a ui = {...} artifact the turn
 //                                      produced; server-harvested from the
 //                                      tool result's [ui artifacts: ...] note
+//   {type:'publish', token, version, title, url, head, tree}
+//                                    — a version of an app was published:
+//                                      a transcript LANDMARK, and an anchor
+//                                      the session can be restored to
 //   {type:'notice', text}            — uploads, ...
 //   {type:'error',  message}
 //   {type:'done',   run_id, head}    — turn boundary
@@ -157,6 +161,10 @@ export class SessionRuntime {
     lastError = $state(null)
     /** latest model-call context size: {input_tokens, cached_tokens} */
     usage = $state(null)
+    /** this session's published apps, most recently published first
+     * (GET /api/sessions/{name}/apps) — each with its versions and how
+     * far the live workspace has moved since the one being served */
+    apps = $state([])
 
     foreground = false // set via setForeground; gates the SSE stream
     cursor = 0
@@ -297,6 +305,20 @@ export class SessionRuntime {
             )
             if (at !== -1) this.messages.splice(at)
             this.version++
+        } else if (ev.type === 'publish') {
+            // a landmark, not a notice: it names a version that still
+            // exists, so it stays openable and stays restorable
+            this.messages.push({
+                role: 'publish',
+                token: ev.token,
+                version: ev.version,
+                title: ev.title,
+                url: ev.url,
+                head: ev.head,
+                seq: ev.cursor ?? null,
+            })
+            this.version++
+            this.loadApps()
         } else if (ev.type === 'usage') {
             this.usage = {
                 input_tokens: ev.input_tokens,
@@ -418,4 +440,42 @@ export class SessionRuntime {
         }
     }
 
+    // -- apps: publications of this session ----------------------------------
+
+    /** refresh the session's apps. Swallows failures on purpose: this
+     * runs off every version tick, and a blip must not replace a good
+     * list with an empty one. */
+    async loadApps() {
+        try {
+            const data = await api(`/api/sessions/${this.name}/apps`)
+            this.apps = data.apps
+        } catch {
+            /* keep what we had */
+        }
+    }
+
+    /** publish a version. `name` names it (blank = the server's vN),
+     * `app` picks the lineage ('new' starts one; absent extends the
+     * session's most recent). The marker arrives on the event feed, so
+     * nothing here touches the transcript. */
+    async publish(body = {}) {
+        const published = await api(`/api/sessions/${this.name}/publish`, body)
+        await this.loadApps()
+        return published
+    }
+
+    /** restore to one of this session's own publishes: files, agent
+     * memory and title go back to where that version was tagged, and
+     * the transcript is cut after the marker (which survives). */
+    async restoreTo(seq) {
+        if (this.busy) return false
+        try {
+            await api(`/api/sessions/${this.name}/restore`, { seq })
+            this.version++
+            return true
+        } catch (e) {
+            this.messages.push({ role: 'error', text: e.message })
+            return false
+        }
+    }
 }
