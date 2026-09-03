@@ -410,27 +410,462 @@ def test_publish_freezes_a_snapshot(studio):
     assert client.get(f"{pub['url']}api/count").json() == {"n": 1}
 
 
-def test_published_app_shares_live_db(studio):
-    """Frozen code, live state: the published snapshot's handlers call
-    the SAME db as the authoring session (the fork carries host_objects,
-    and the worker reaches the real one over the RPC bridge)."""
+NAMES_HANDLER = (
+    b"def get(req):\n"
+    b'    db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")\n'
+    b"    return {'names': [r[0] for r in db.query('SELECT v FROM t')]}\n"
+)
+
+
+def _seed_db_app(session):
+    """An app whose only content is a handler reading the app db."""
+    session.ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    session.ws.fs.write("/workspace/app/api/names.py", NAMES_HANDLER)
+    session.ws.checkpoint()
+
+
+def test_published_app_owns_its_db_from_its_first_version(studio):
+    """The app db is COPIED at the first publish and belongs to the app
+    from then on: the session's later writes don't reach it, and the
+    app's users' writes don't reach the session."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_db_app(session)
+    session.db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
+    session.db.execute("INSERT INTO t VALUES ('at-publish')")
+
+    pub = client.post("/api/sessions/s1/publish").json()
+    assert pub["version"] == "v1" and pub["url"] == f"/apps/{pub['token']}/"
+    # the copy carries the state the session had when it published
+    assert client.get(f"{pub['url']}api/names").json() == {"names": ["at-publish"]}
+
+    session.db.execute("INSERT INTO t VALUES ('after-publish')")
+    # ...and stops there: the two universes no longer write over each other
+    assert client.get(f"{pub['url']}api/names").json() == {"names": ["at-publish"]}
+    assert (registry._store / "dbs" / "apps" / f"{pub['token']}.sqlite").exists()
+
+
+def test_a_second_version_keeps_the_apps_db(studio):
+    """Versions are code; the db is the app's. A row written into the
+    app db between publishes is still there under v2, and the session's
+    own db never saw it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_db_app(session)
+    pub = client.post("/api/sessions/s1/publish").json()
+    assert client.get(f"{pub['url']}api/names").json() == {"names": []}
+
+    app_db = sessions_mod.Db(
+        registry._store / "dbs" / "apps" / f"{pub['token']}.sqlite"
+    )
+    app_db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
+    app_db.execute("INSERT INTO t VALUES ('a user typed this')")
+    app_db.close()
+
+    session.ws.fs.write("/workspace/app/index.html", b"<h1>v2</h1>")
+    session.ws.checkpoint()
+    v2 = client.post("/api/sessions/s1/publish", json={}).json()
+    assert v2["token"] == pub["token"] and v2["version"] == "v2"
+
+    # same URL, new code, the SAME db
+    assert client.get(v2["url"]).text == "<h1>v2</h1>"
+    assert client.get(f"{v2['url']}api/names").json() == {
+        "names": ["a user typed this"]
+    }
+    # the session's own db is untouched by all of it
+    assert session.db.query("SELECT name FROM sqlite_master WHERE name='t'") == []
+
+
+# -- apps: versions, the app's db, the registry ---------------------------------
+
+
+def _store_tags(store) -> dict:
+    """Every tag in the kvgit store, as kvgit stores it (scope prefixes
+    included) — the only way to see that a publication really landed in
+    the scope that outlives its session."""
+    import kvgit
+
+    handle = kvgit.store(kind="disk", path=str(Path(store) / "kvgit"), branch="probe")
+    try:
+        return handle.tags()
+    finally:
+        handle.versioned.store.close()
+
+
+def _publish(client, session: str, **body) -> dict:
+    r = client.post(f"/api/sessions/{session}/publish", json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_publish_tags_the_store_scope_and_marks_the_transcript(scripted, tmp_path):
+    """A version is a store-scoped tag, the app gets a db of its own,
+    and the conversation gets a landmark: the marker carries the
+    commit and tree it was made at, so it can be come back to."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    _run(client, "s1", _script("/workspace/app/index.html", "<h1>one</h1>", "built it"))
+
+    pub = _publish(client, "s1")
+    token = pub["token"]
+    assert f"@store/pub/{token}/v1" in _store_tags(tmp_path)
+    assert (tmp_path / "dbs" / "apps" / f"{token}.sqlite").exists()
+
+    events = client.get("/api/sessions/s1/events?wait=0").json()["events"]
+    marker = next(e for e in events if e["type"] == "publish")
+    assert marker["token"] == token
+    assert marker["version"] == "v1"
+    assert marker["url"] == f"/apps/{token}/"
+    assert marker["head"] == pub["checkpoint"] == registry.get("s1").ws.head
+    assert marker["tree"] == pub["tree"]
+
+
+def test_a_served_version_is_frozen_code_over_a_live_db(studio):
+    """The split the whole model rests on. A handler's write to the
+    workspace never lands — the cache refuses outright, and a file write
+    is discarded (under process isolation the sandbox absorbs nothing,
+    so the handler is not told; nothing reaches the store either way).
+    The app db is the other half: writes there work, which is the point
+    of the app owning one.
+    """
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
     session.ws.fs.makedirs("/workspace/app/api", exist_ok=True)
     session.ws.fs.write(
-        "/workspace/app/api/names.py",
-        b"def get(req):\n"
+        "/workspace/app/api/note.py",
+        b"def post(req):\n"
+        b"    open('/workspace/app/scribble.txt', 'w').write('nope')\n"
+        b"    return {'ok': True}\n",
+    )
+    session.ws.fs.write(
+        "/workspace/app/api/counter.py",
+        b"def post(req):\n    cache['n'] = 1\n    return {'ok': True}\n",
+    )
+    session.ws.fs.write(
+        "/workspace/app/api/tally.py",
+        NAMES_HANDLER + b"\n\n"
+        b"def post(req):\n"
         b'    db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")\n'
-        b"    return {'names': [r[0] for r in db.query('SELECT v FROM t')]}\n",
+        b"    db.execute(\"INSERT INTO t VALUES ('from the app')\")\n"
+        b"    return {'ok': True}\n",
     )
     session.ws.checkpoint()
-    pub = client.post("/api/sessions/s1/publish").json()
+    pub = _publish(client, "s1")
 
+    assert client.post(f"{pub['url']}api/counter").status_code == 500
+    client.post(f"{pub['url']}api/note")
+    assert client.get(f"{pub['url']}scribble.txt").status_code == 404
+    snapshot = registry.resolve(pub["token"])
+    assert snapshot.frozen
+    assert not snapshot.fs.exists("/workspace/app/scribble.txt")
+
+    assert client.post(f"{pub['url']}api/tally").json() == {"ok": True}
+    assert client.get(f"{pub['url']}api/tally").json() == {"names": ["from the app"]}
+    # nothing the app did reached the session's own db
+    assert session.db.query("SELECT name FROM sqlite_master WHERE name='t'") == []
+
+
+def test_make_current_repoints_the_url(studio):
+    """The URL belongs to the app. Rolling back is a pointer move — no
+    republish, no new token, the same link in someone's inbox."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    session.ws.fs.makedirs("/workspace/app", exist_ok=True)
+    session.ws.fs.write("/workspace/app/index.html", b"<h1>one</h1>")
+    session.ws.checkpoint()
+    pub = _publish(client, "s1")
+    session.ws.fs.write("/workspace/app/index.html", b"<h1>two</h1>")
+    session.ws.checkpoint()
+    v2 = _publish(client, "s1")
+    assert client.get(pub["url"]).text == "<h1>two</h1>"
+
+    app = client.post(
+        f"/api/apps/{pub['token']}/current", json={"version": "v1"}
+    ).json()
+    assert app["current"] == "v1"
+    assert client.get(pub["url"]).text == "<h1>one</h1>"
+    # and forward again
+    client.post(f"/api/apps/{pub['token']}/current", json={"version": "v2"})
+    assert client.get(v2["url"]).text == "<h1>two</h1>"
+    assert (
+        client.post(
+            f"/api/apps/{pub['token']}/current", json={"version": "v9"}
+        ).status_code
+        == 400
+    )
+
+
+def test_unpublish_removes_tags_db_and_manifest(studio, tmp_path):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+    pub = _publish(client, "s1")
+    _publish(client, "s1", name="release")
+    token = pub["token"]
+    assert client.get(pub["url"]).status_code == 200
+
+    assert client.delete(f"/api/apps/{token}").json() == {"ok": True}
+
+    assert client.get(pub["url"]).status_code == 404
+    assert not any(t.startswith(f"@store/pub/{token}/") for t in _store_tags(tmp_path))
+    assert not (tmp_path / "dbs" / "apps" / f"{token}.sqlite").exists()
+    assert client.get("/api/apps").json()["apps"] == []
+    assert client.delete(f"/api/apps/{token}").status_code == 404
+
+
+def test_delete_version_refuses_the_current_and_the_last(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+    pub = _publish(client, "s1")
+    token = pub["token"]
+    # the only version, and the current one
+    assert client.delete(f"/api/apps/{token}/versions/v1").status_code == 400
+
+    _publish(client, "s1")  # v2, now current
+    assert client.delete(f"/api/apps/{token}/versions/v2").status_code == 400
+    app = client.delete(f"/api/apps/{token}/versions/v1").json()
+    assert [v["name"] for v in app["versions"]] == ["v2"]
+    assert client.get(pub["url"]).status_code == 200
+    assert client.delete(f"/api/apps/{token}/versions/v1").status_code == 400
+
+
+def test_deleting_the_origin_session_leaves_the_app_served(studio, tmp_path):
+    """The publication promise: a store-scoped tag outlives the branch
+    that made it, and the app's db is its own file — so the URL keeps
+    working after the conversation behind it is gone."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_db_app(session)
     session.db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
-    session.db.execute("INSERT INTO t VALUES ('amy')")
-    # the FROZEN app sees the post-publish db write — live state
-    assert client.get(f"{pub['url']}api/names").json() == {"names": ["amy"]}
+    session.db.execute("INSERT INTO t VALUES ('published')")
+    pub = _publish(client, "s1")
+
+    assert client.delete("/api/sessions/s1").json() == {"ok": True}
+    assert client.get("/api/sessions").json()["sessions"] == []
+
+    # cold path too: nothing cached, no session to reopen
+    registry._published.clear()
+    assert client.get(f"{pub['url']}api/names").json() == {"names": ["published"]}
+    assert client.get("/api/apps").json()["apps"][0]["session"] == "s1"
+
+
+def test_app_selection_and_version_names(studio):
+    """Publishing again extends the session's most recent app; `app:
+    "new"` starts another; a name may be given, and must be a name a
+    tag can carry and one this app doesn't already hold."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+
+    first = _publish(client, "s1")
+    again = _publish(client, "s1")
+    assert again["token"] == first["token"] and again["version"] == "v2"
+
+    named = _publish(client, "s1", name="release-1")
+    assert named["token"] == first["token"] and named["version"] == "release-1"
+
+    other = _publish(client, "s1", app="new")
+    assert other["token"] != first["token"] and other["version"] == "v1"
+    # "most recent" is the app last published to, not the oldest lineage
+    assert _publish(client, "s1")["token"] == other["token"]
+    # ...and naming one keeps working. The default name counts the
+    # app's versions rather than its vN's, so a named version pushes
+    # the next number along rather than being overwritten by it.
+    assert _publish(client, "s1", app=first["token"])["version"] == "v4"
+
+    for bad in ("", "a/b", "a%b", "release-1"):
+        r = client.post(
+            "/api/sessions/s1/publish", json={"name": bad, "app": first["token"]}
+        )
+        assert r.status_code == 400, bad
+    assert (
+        client.post("/api/sessions/s1/publish", json={"app": "not-a-token"}).status_code
+        == 404
+    )
+
+
+def test_publish_refuses_a_turn_in_flight(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_app(session.ws)
+    session.turn_lock.acquire()
+    try:
+        assert client.post("/api/sessions/s1/publish").status_code == 409
+    finally:
+        session.turn_lock.release()
+
+
+def test_changed_since_answers_content_and_writes_apart(studio):
+    """Two questions, two answers. Editing an app file changes the
+    content; editing a note outside <root>/app leaves the app identical
+    but still moves the tree — kvgit stamps every write with its own
+    time, so `up_to_date` is the write question and `count` the content
+    one."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_app(session.ws)
+    pub = _publish(client, "s1")
+
+    def status() -> dict:
+        apps = client.get("/api/sessions/s1/apps").json()["apps"]
+        assert [a["token"] for a in apps] == [pub["token"]]
+        return apps[0]["changed_since"]
+
+    assert status() == {"count": 0, "paths": [], "up_to_date": True}
+
+    session.ws.write_file("/workspace/notes.md", "not an app file")
+    fresh = status()
+    assert fresh["count"] == 0 and fresh["paths"] == []
+    assert fresh["up_to_date"] is False  # written to, same app
+
+    session.ws.write_file("/workspace/app/index.html", "<h1>changed</h1>")
+    changed = status()
+    assert changed["count"] == 1
+    assert changed["paths"] == ["/workspace/app/index.html"]
+    assert changed["up_to_date"] is False
+
+    # publishing again closes both gaps
+    _publish(client, "s1")
+    assert status() == {"count": 0, "paths": [], "up_to_date": True}
+
+
+def test_apps_registry_lists_every_app(studio):
+    client, registry = studio
+    for name in ("s1", "s2"):
+        client.post("/api/sessions", json={"name": name})
+        _seed_app(registry.get(name).ws)
+    client.post("/api/sessions/s1/title", json={"title": "Dashboard"})
+    a = _publish(client, "s1")
+    b = _publish(client, "s2")
+
+    apps = client.get("/api/apps").json()["apps"]
+    assert {row["token"] for row in apps} == {a["token"], b["token"]}
+    mine = next(row for row in apps if row["token"] == a["token"])
+    assert mine["session"] == "s1"
+    assert mine["title"] == "Dashboard"
+    assert mine["current"] == "v1"
+    assert mine["url"] == a["url"]
+    assert [v["name"] for v in mine["versions"]] == ["v1"]
+    # the per-session view filters, and adds the live comparison
+    rows = client.get("/api/sessions/s2/apps").json()["apps"]
+    assert [row["token"] for row in rows] == [b["token"]]
+    assert "changed_since" in rows[0]
+
+
+def test_old_shape_publications_migrate_on_load(studio, tmp_path, caplog):
+    """The anchor-branch shape: a token naming a forked branch, served
+    over the session's live db. On load each becomes an app with a v1
+    tag and a db copy, and the anchor branch goes; an entry whose branch
+    is gone is dropped rather than left 404ing."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_db_app(session)
+    session.db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
+    session.db.execute("INSERT INTO t VALUES ('shared')")
+    branch = "s1-pub-deadbeef"
+    snapshot = session.ws.fork(branch)
+    checkpoint = snapshot.head
+    snapshot.close()
+    manifest = registry._manifest()
+    manifest["published"] = {
+        "live-token": {"branch": branch, "session": "s1", "checkpoint": checkpoint},
+        "dead-token": {"branch": "s1-pub-gone", "session": "s1", "checkpoint": "beef"},
+    }
+    registry._save_manifest(manifest)
+
+    with caplog.at_level("INFO", logger="nontainer_studio.sessions"):
+        reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    reborn._build_agent = lambda *a, **k: FakeAgent()
+    try:
+        with TestClient(server.build_app(reborn)) as client2:
+            apps = client2.get("/api/apps").json()["apps"]
+            assert [row["token"] for row in apps] == ["live-token"]
+            assert apps[0]["current"] == "v1"
+            # the db came across, and it is the app's own copy now
+            r = client2.get("/apps/live-token/api/names")
+            assert r.json() == {"names": ["shared"]}
+        assert reborn._manifest()["published"] == {}
+        assert "@store/pub/live-token/v1" in _store_tags(tmp_path)
+    finally:
+        reborn.close()
+    text = "\n".join(caplog.messages)
+    assert "migrated live-token" in text and "dropped dead-token" in text
+
+
+def test_restore_to_a_publish_rewinds_files_and_conversation(scripted):
+    """A publish marker is an anchor like a user message is: restoring
+    to one puts the files AND the agent's memory back where that version
+    was tagged, and cuts the transcript after the marker — the marker
+    itself survives, because the version it names still does."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    _run(client, "s1", _script("/workspace/app/index.html", "one", "made one"))
+    pub = _publish(client, "s1")
+    events = client.get("/api/sessions/s1/events?wait=0").json()["events"]
+    marker = next(e for e in events if e["type"] == "publish")
+    _run(client, "s1", _script("/workspace/app/index.html", "two", "made two"))
+    session = registry.get("s1")
+    assert session.ws.fs.read("/workspace/app/index.html") == b"two"
+    assert len(_run_ids(registry, "s1")) == 2
+
+    r = client.post("/api/sessions/s1/restore", json={"seq": marker["seq"]})
+    assert r.status_code == 200, r.text
+
+    assert session.ws.fs.read("/workspace/app/index.html") == b"one"
+    assert len(_run_ids(registry, "s1")) == 1  # the second turn was unsaid
+    after = client.get("/api/sessions/s1/events?wait=0").json()["events"]
+    cut = next(e for e in after if e["type"] == "truncate")
+    assert cut["to"] == marker["seq"] + 1
+    visible = [e for _, e in sessions_mod.Registry._visible(session.events)]
+    assert visible[-1]["type"] == "publish"  # the marker outlives its own rewind
+    # the publication itself is untouched: a rewind unsays turns, not tags
+    assert client.get(pub["url"]).status_code == 200
+
+
+def test_restore_validations(scripted):
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    _run(client, "s1", "!text hi")
+    events = client.get("/api/sessions/s1/events?wait=0").json()["events"]
+    user_seq = next(e["seq"] for e in events if e["type"] == "user")
+    assert client.post("/api/sessions/s1/restore", json={}).status_code == 400
+    assert (
+        client.post("/api/sessions/s1/restore", json={"seq": user_seq}).status_code
+        == 400
+    )
+
+
+def test_branch_from_a_version_opens_where_it_was_published(scripted):
+    """Fork the origin session and rewind the child to the version's
+    commit: the child opens with the files and the conversation as they
+    stood at that publish, with its own universe from there."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    _run(client, "s1", _script("/workspace/app/index.html", "one", "made one"))
+    pub = _publish(client, "s1")
+    _run(client, "s1", _script("/workspace/app/index.html", "two", "made two"))
+
+    r = client.post(f"/api/apps/{pub['token']}/versions/v1/branch")
+    assert r.status_code == 200, r.text
+    child = registry.get(r.json()["name"])
+    assert child.ws.fs.read("/workspace/app/index.html") == b"one"
+    assert len(_run_ids(registry, child.name)) == 1
+    # the parent is untouched by the branch
+    assert registry.get("s1").ws.fs.read("/workspace/app/index.html") == b"two"
+
+    client.delete("/api/sessions/s1")
+    gone = client.post(f"/api/apps/{pub['token']}/versions/v1/branch")
+    assert gone.status_code == 404
+    assert "still served" in gone.json()["error"]
 
 
 # -- files ----------------------------------------------------------------------
@@ -1487,23 +1922,16 @@ def test_repair_leaves_healthy_runs_alone(studio):
 
 
 def test_published_urls_survive_restart(studio, tmp_path):
-    """The snapshot branch was always durable; the token -> branch
-    mapping must be too — and the reborn snapshot reconnects to the
-    session's db file (frozen code, live state, across restarts)."""
+    """A version is a store-scoped tag and the db is the app's own file,
+    so a restart reopens the app from the manifest alone — no session
+    involved, nothing to reconstruct."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    session.ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    session.ws.fs.write(
-        "/workspace/app/api/names.py",
-        b"def get(req):\n"
-        b'    db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")\n'
-        b"    return {'names': [r[0] for r in db.query('SELECT v FROM t')]}\n",
-    )
-    session.ws.checkpoint()
-    pub = client.post("/api/sessions/s1/publish").json()
+    _seed_db_app(session)
     session.db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
     session.db.execute("INSERT INTO t VALUES ('before-restart')")
+    pub = client.post("/api/sessions/s1/publish").json()
     assert client.get(f"{pub['url']}api/names").json() == {"names": ["before-restart"]}
 
     # "restart": a fresh registry over the same store, sessions unopened
@@ -1512,7 +1940,7 @@ def test_published_urls_survive_restart(studio, tmp_path):
     with TestClient(server.build_app(reborn)) as client2:
         r = client2.get(f"{pub['url']}api/names")
         assert r.status_code == 200
-        assert r.json() == {"names": ["before-restart"]}  # same db file
+        assert r.json() == {"names": ["before-restart"]}  # the app's own db
         assert client2.get("/apps/not-a-real-token/").status_code == 404
     reborn.close()
 
@@ -1598,14 +2026,14 @@ def test_error_event_tail_survives_capping(studio):
 
 
 def test_delete_removes_the_whole_universe(studio, tmp_path):
-    """Delete takes the workspace branch, app db, transcript, chat
-    record, AND published snapshots (views of the same universe)."""
+    """Delete takes the workspace branch, the session's app db, the
+    transcript and the chat record. Its published apps are NOT part of
+    that universe — see the next test."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
     session.ws.write_file("keep.txt", "data")
     _seed_app(session.ws)
-    pub = client.post("/api/sessions/s1/publish").json()
     client.post("/api/sessions/s1/upload?name=u.txt", content=b"x")
     assert (tmp_path / "dbs" / "s1.sqlite").exists()
     assert (tmp_path / "events" / "s1.jsonl").exists()
@@ -1614,7 +2042,6 @@ def test_delete_removes_the_whole_universe(studio, tmp_path):
 
     assert client.get("/api/sessions").json()["sessions"] == []
     assert client.get("/api/sessions/s1/events?wait=0").status_code == 404
-    assert client.get(pub["url"]).status_code == 404
     assert not (tmp_path / "dbs" / "s1.sqlite").exists()
     assert not (tmp_path / "events" / "s1.jsonl").exists()
 
@@ -2214,10 +2641,11 @@ def test_executor_factory_plumbed_on_open_and_resolve(tmp_path, monkeypatch):
     try:
         session = registry.create()
         assert isinstance(session.ws._executor, MarkedExecutor)
-        token, _ = registry.publish(session.name)
-        # publish's fork inherits via Workspace.fork; force the OTHER
-        # path — the lazy manifest reopen a restart would take
-        registry._published.pop(token).close()
+        published = registry.publish(session.name)
+        token = published["token"]
+        # drop the cached snapshot so resolve takes the cold path — the
+        # lazy manifest reopen a restart would take
+        registry._published.pop((token, published["version"]), None)
         snapshot = registry.resolve(token)
         assert snapshot is not None
         assert isinstance(snapshot._executor, MarkedExecutor)
