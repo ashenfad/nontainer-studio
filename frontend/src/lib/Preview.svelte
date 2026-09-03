@@ -73,9 +73,13 @@
         }
     }
 
+    // The app's URL is stable by design, so the CURRENT VERSION has to
+    // be in the cache-busting key: making an older version current
+    // changes what the URL serves without changing the URL, and a
+    // keyed iframe with an identical src would keep showing the old one.
     const src = $derived(
         mode === 'published' && app
-            ? `${app.url}?v=${rt.version + manual}`
+            ? `${app.url}?v=${app.current}-${rt.version + manual}`
             : `/preview/${rt.name}/?v=${rt.version + manual}`,
     )
 

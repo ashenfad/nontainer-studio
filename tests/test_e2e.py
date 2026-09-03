@@ -411,6 +411,22 @@ def test_publish_a_version_and_toggle_between_live_and_published(page, server):
     page.get_by_role("button", name="live", exact=True).click()
     expect(frame.locator("#marker")).to_have_text("version two", timeout=20000)
 
+    # publish v2, then roll the URL back to v1 from the Published panel:
+    # the URL is stable, so only the version in the iframe's key makes
+    # the pane show the rollback
+    page.get_by_role("button", name="publish", exact=True).click()
+    page.get_by_role("button", name="publish", exact=True).click()
+    expect(page.locator(".seg.on")).to_have_text("published", timeout=10000)
+    expect(frame.locator("#marker")).to_have_text("version two", timeout=20000)
+
+    page.get_by_role("button", name="published…").click()
+    page.locator(".panel li", has_text="v1").get_by_role(
+        "button", name="make current"
+    ).click()
+    expect(page.locator(".panel li.current")).to_contain_text("v1", timeout=10000)
+    page.get_by_role("button", name="close").click()
+    expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
+
 
 def test_tool_steps_render_by_type(page, server):
     """The activity drill-down renders per tool: terminal commands as
