@@ -10,10 +10,13 @@
         forkSession,
         getRuntime,
         loadCatalog,
+        published,
         rail,
+        refreshApps,
         refreshSessions,
         setForegroundName,
     } from './lib/runtime.svelte.js'
+    import AppView from './lib/AppView.svelte'
     import SessionRail from './lib/SessionRail.svelte'
     import FileModal from './lib/FileModal.svelte'
     import SplitPane from './lib/SplitPane.svelte'
@@ -25,6 +28,10 @@
     // null until the bootstrap picks one: session names are minted
     // slugs now, so there is no well-known name to default to
     let active = $state(new URLSearchParams(location.search).get('session'))
+    // a published app opened from the rail, shown INSTEAD of the side
+    // tabs. Not a session: an app whose origin is deleted has none, and
+    // those are the ones only this view can reach.
+    let activeApp = $state(null)
     let tab = $state('preview')
     let ready = $state(false)
     // Set when the shell has no session to show and couldn't mint one.
@@ -73,9 +80,20 @@
 
     $effect(() => {
         refreshSessions()
+        refreshApps()
         loadCatalog()
-        const t = setInterval(refreshSessions, 4000)
+        const t = setInterval(() => {
+            refreshSessions()
+            refreshApps()
+        }, 4000)
         return () => clearInterval(t)
+    })
+
+    // unpublishing from the app view leaves nothing to show: close it
+    // rather than sit on a token the server has forgotten
+    $effect(() => {
+        if (activeApp && !published.apps.some((a) => a.token === activeApp))
+            activeApp = null
     })
 
     // Bootstrap: no ?session= means adopt the newest session, or mint the
@@ -101,6 +119,7 @@
 
     function switchTo(name) {
         history.replaceState(null, '', `?session=${encodeURIComponent(name)}`)
+        activeApp = null // the side pane goes back to this session's own
         active = name
     }
 
@@ -133,7 +152,7 @@
             return
         }
         dropRuntime(name)
-        await refreshSessions()
+        await Promise.all([refreshSessions(), refreshApps()])
         // deleting the last session leaves nothing to fall back to: mint
         // one rather than strand the shell with no active session
         if (name === active) {
@@ -177,10 +196,12 @@
         {#if showRail}
             <SessionRail
                 {active}
+                {activeApp}
                 onSwitch={switchTo}
                 onCreate={createAndSwitch}
                 onFork={forkAndSwitch}
                 onDelete={deleteSession}
+                onOpenApp={(token) => (activeApp = token)}
             />
         {/if}
         {#if bootstrapError}
@@ -206,19 +227,27 @@
                     {/snippet}
                     {#snippet right()}
                         <div class="side">
-                            <div class="tabs">
-                                {#each ['preview', 'files'] as t (t)}
-                                    <button
-                                        class="tab"
-                                        class:active={tab === t}
-                                        onclick={() => (tab = t)}>{t}</button
-                                    >
-                                {/each}
-                            </div>
-                            {#if tab === 'preview'}
-                                <Preview {rt} onSwitch={switchTo} />
+                            {#if activeApp}
+                                <AppView
+                                    token={activeApp}
+                                    onSwitch={switchTo}
+                                    onClose={() => (activeApp = null)}
+                                />
                             {:else}
-                                <FilesTab {rt} />
+                                <div class="tabs">
+                                    {#each ['preview', 'files'] as t (t)}
+                                        <button
+                                            class="tab"
+                                            class:active={tab === t}
+                                            onclick={() => (tab = t)}>{t}</button
+                                        >
+                                    {/each}
+                                </div>
+                                {#if tab === 'preview'}
+                                    <Preview {rt} onSwitch={switchTo} />
+                                {:else}
+                                    <FilesTab {rt} />
+                                {/if}
                             {/if}
                         </div>
                     {/snippet}

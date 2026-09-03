@@ -77,6 +77,20 @@ export function setForegroundName(name) {
     })
 }
 
+// Every app on the store (GET /api/apps), newest publish first — the
+// rail's Published section. Store-wide rather than per-session on
+// purpose: an app outlives the session that made it, and the ones whose
+// origin is gone are exactly the ones no per-session view can reach.
+export const published = $state({ apps: [] })
+
+export async function refreshApps() {
+    try {
+        published.apps = (await api('/api/apps')).apps
+    } catch {
+        /* transient; the next poll wins */
+    }
+}
+
 // what the server's env unlocks (GET /api/models) — loaded once
 export const catalog = $state({ providers: [], default: null })
 
@@ -459,9 +473,9 @@ export class SessionRuntime {
      * session's most recent). The marker arrives on the event feed, so
      * nothing here touches the transcript. */
     async publish(body = {}) {
-        const published = await api(`/api/sessions/${this.name}/publish`, body)
-        await this.loadApps()
-        return published
+        const made = await api(`/api/sessions/${this.name}/publish`, body)
+        await Promise.all([this.loadApps(), refreshApps()])
+        return made
     }
 
     /** restore to one of this session's own publishes: files, agent

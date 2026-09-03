@@ -2,11 +2,27 @@
     // Session list: server view overlaid with live runtime status.
     // Pulsing dot = a turn in flight; steady green = finished while
     // you were elsewhere (cleared on focus).
-    import { rail, peekRuntime, renameSession } from './runtime.svelte.js'
+    import { rail, published, peekRuntime, renameSession } from './runtime.svelte.js'
 
     const DEFAULT_TITLE = 'New session' // mirrors the server's fallback
 
-    let { active, onSwitch, onCreate, onDelete, onFork } = $props()
+    let { active, activeApp, onSwitch, onCreate, onDelete, onFork, onOpenApp } =
+        $props()
+
+    // An app's origin session may be deleted — the app is not. That is
+    // why this list is store-wide and why the row says so: those apps
+    // are reachable from no session's own panel.
+    const originOf = (a) => rail.sessions.find((s) => s.name === a.session) ?? null
+
+    function ago(seconds) {
+        if (!seconds) return ''
+        const mins = Math.round((Date.now() / 1000 - seconds) / 60)
+        if (mins < 1) return 'just now'
+        if (mins < 60) return `${mins}m ago`
+        const hours = Math.round(mins / 60)
+        if (hours < 24) return `${hours}h ago`
+        return `${Math.round(hours / 24)}d ago`
+    }
 
     let armed = $state(null) // session name whose delete is one tap away
     let renaming = $state(null) // session name being retitled
@@ -144,6 +160,41 @@
     <div class="new">
         <button class="new-btn" onclick={() => onCreate()}>+ New session</button>
     </div>
+    {#if published.apps.length}
+        <div class="rail-title">published</div>
+        <div class="apps">
+            {#each published.apps as a (a.token)}
+                {@const origin = originOf(a)}
+                <button
+                    class="app-row"
+                    class:active={a.token === activeApp}
+                    onclick={() => onOpenApp(a.token)}
+                >
+                    <span class="app-name" title={a.title}>{a.title}</span>
+                    <span class="app-meta">
+                        {a.current} · {a.versions.length} version{a.versions
+                            .length === 1
+                            ? ''
+                            : 's'} · {ago(a.published)}
+                    </span>
+                    {#if origin}
+                        <!-- svelte-ignore a11y_click_events_have_key_events -->
+                        <!-- svelte-ignore a11y_no_static_element_interactions -->
+                        <span
+                            class="app-origin link"
+                            title="open {origin.title}"
+                            onclick={(e) => {
+                                e.stopPropagation()
+                                onSwitch(a.session)
+                            }}>from {origin.title}</span
+                        >
+                    {:else}
+                        <span class="app-origin gone">session deleted</span>
+                    {/if}
+                </button>
+            {/each}
+        </div>
+    {/if}
 </nav>
 
 <style>
@@ -174,6 +225,58 @@
         letter-spacing: 0.08em;
         color: var(--text-muted);
         padding: 0.8rem 1rem 0.3rem;
+    }
+    .apps {
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        padding: 0 0.5rem 0.6rem;
+        max-height: 40%;
+        flex: none;
+    }
+    .app-row {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.05rem;
+        background: none;
+        border: none;
+        border-radius: 6px;
+        padding: 0.3rem 0.45rem;
+        cursor: pointer;
+        text-align: left;
+        width: 100%;
+    }
+    .app-row:hover,
+    .app-row.active {
+        background: var(--surface-hover);
+    }
+    .app-name {
+        color: var(--text-muted);
+        font-size: 0.78rem;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .app-row.active .app-name,
+    .app-row:hover .app-name {
+        color: var(--text);
+    }
+    .app-meta {
+        color: var(--text-muted);
+        font-size: 0.62rem;
+    }
+    .app-origin {
+        font-size: 0.62rem;
+        color: var(--text-muted);
+    }
+    .app-origin.link:hover {
+        color: var(--accent);
+        text-decoration: underline;
+    }
+    .app-origin.gone {
+        color: var(--warning);
     }
     .items {
         flex: 1;

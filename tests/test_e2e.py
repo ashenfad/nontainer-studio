@@ -89,6 +89,11 @@ def page(browser, server):
     page.close()
 
 
+JSX_APP = "import { createRoot } from 'react-dom/client';\nimport { Button } from '@mui/material';\ncreateRoot(document.getElementById('root')).render(<Button id=\"marker\">compiled in the browser</Button>);\n"
+
+JSX_HTML = '<html><body><div id="root"></div><script type="module" src="vendor/jsx-loader.js" data-app="app.jsx"></script></body></html>'
+
+
 def _send(page, message: str) -> None:
     page.fill("textarea", message)
     page.get_by_role("button", name="send").click()
@@ -426,6 +431,97 @@ def test_publish_a_version_and_toggle_between_live_and_published(page, server):
     expect(page.locator(".panel li.current")).to_contain_text("v1", timeout=10000)
     page.get_by_role("button", name="close").click()
     expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
+
+
+def test_a_published_jsx_app_loads_in_the_sandboxed_frame(page, server):
+    """The failure the CORS wrapper exists for, end to end. The frame is
+    an opaque origin, so the jsx loader's own fetch for app.jsx is
+    cross-origin; without the header on the /apps mount it is blocked
+    and the page renders nothing, while the same URL in a tab works."""
+    page.goto(f"{server}/?session=e2e-published-jsx")
+    _send(
+        page,
+        "!tool file_write "
+        + json.dumps({"path": "/workspace/app/app.jsx", "content": JSX_APP})
+        + "\n!tool file_write "
+        + json.dumps({"path": "/workspace/app/index.html", "content": JSX_HTML})
+        + "\n!text JSX app is up.",
+    )
+    # the LIVE pane first — its own route has carried these headers all
+    # along, so this is the control for the comparison below (and it
+    # waits out the turn, which publishing refuses to race)
+    frame = page.frame_locator("iframe[title='app preview']")
+    expect(frame.locator("#marker")).to_contain_text(
+        "compiled in the browser", timeout=25000
+    )
+
+    page.get_by_role("button", name="publish", exact=True).click()
+    page.get_by_role("button", name="publish", exact=True).click()
+    expect(page.locator(".seg.on")).to_have_text("published", timeout=15000)
+    expect(page.locator(".pub-error")).to_have_count(0)
+
+    # and now the published mount: the loader's fetch for app.jsx is
+    # cross-origin from the opaque frame, so nothing renders without the
+    # header the wrapper adds
+    expect(frame.locator("#marker")).to_contain_text(
+        "compiled in the browser", timeout=25000
+    )
+
+
+def _delete(server: str, name: str) -> None:
+    """Delete a session out of band. Like ``_title``, this only arranges
+    server state and deliberately avoids the browser's network stack."""
+    req = urllib.request.Request(f"{server}/api/sessions/{name}", method="DELETE")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        assert r.status == 200
+
+
+def test_the_rail_lists_apps_whose_session_is_gone(page, server):
+    """An app outlives the session that made it, so the rail lists apps
+    store-wide: after the session is deleted the app is reachable from
+    nowhere else, and selecting it serves the app with its verbs. The
+    frame is a sandboxed opaque origin, so this is also the CORS path."""
+    page.goto(f"{server}/?session=e2e-rail-app")
+    _title(server, "e2e-rail-app", "Rail app")
+    _send(
+        page,
+        '!tool file_write {"path": "/workspace/app/index.html", "content": '
+        '"<html><body><h1 id=marker>served from the rail</h1></body></html>"}\n'
+        "!text App is up.",
+    )
+    frame = page.frame_locator("iframe[title='app preview']")
+    expect(frame.locator("#marker")).to_have_text("served from the rail", timeout=20000)
+    page.get_by_role("button", name="publish", exact=True).click()
+    page.get_by_role("button", name="publish", exact=True).click()
+    expect(page.locator(".publish")).to_contain_text("published", timeout=15000)
+
+    row = page.locator(".app-row", has_text="Rail app")
+    expect(row).to_be_visible(timeout=15000)
+    expect(row).to_contain_text("from Rail app")
+
+    _delete(server, "e2e-rail-app")
+    # the app survives its session, and the row says the origin is gone
+    expect(row).to_contain_text("session deleted", timeout=15000)
+
+    row.click()
+    served = page.frame_locator("iframe[title='published app']")
+    expect(served.locator("#marker")).to_have_text(
+        "served from the rail", timeout=20000
+    )
+    # branching needs a conversation that no longer exists
+    branch = page.locator(".app-view button", has_text="branch from")
+    expect(branch).to_be_disabled()
+
+    # unpublish arms, then commits, and the app leaves the rail
+    danger = page.locator(".app-view .verb.danger").first
+    danger.click()
+    expect(danger).to_contain_text("really unpublish")
+    expect(danger).to_contain_text("the link stop working")
+    danger.click()
+    expect(page.locator(".app-row", has_text="Rail app")).to_have_count(
+        0, timeout=15000
+    )
+    expect(page.locator("iframe[title='published app']")).to_have_count(0)
 
 
 def test_tool_steps_render_by_type(page, server):

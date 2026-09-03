@@ -189,7 +189,12 @@
 </div>
 
 {#if panel}
-    <PublishedPanel {rt} {onSwitch} onClose={() => (panel = false)} />
+    <PublishedPanel
+        apps={rt.apps}
+        onChanged={() => rt.loadApps()}
+        {onSwitch}
+        onClose={() => (panel = false)}
+    />
 {/if}
 
 <style>
