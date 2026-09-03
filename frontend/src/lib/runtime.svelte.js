@@ -81,11 +81,15 @@ export function setForegroundName(name) {
 // rail's Published section. Store-wide rather than per-session on
 // purpose: an app outlives the session that made it, and the ones whose
 // origin is gone are exactly the ones no per-session view can reach.
-export const published = $state({ apps: [] })
+// `loaded` distinguishes "no apps" from "not fetched yet": before the
+// first fetch lands, every publish marker would otherwise read as an
+// app that has been removed (see MessageList's status).
+export const published = $state({ apps: [], loaded: false })
 
 export async function refreshApps() {
     try {
         published.apps = (await api('/api/apps')).apps
+        published.loaded = true
     } catch {
         /* transient; the next poll wins */
     }

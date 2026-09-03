@@ -484,6 +484,68 @@ def test_a_published_jsx_app_loads_in_the_sandboxed_frame(page, server):
     )
 
 
+def test_a_publish_marker_says_when_its_app_is_gone(page, server):
+    """The marker is a history fact and stays — the publish happened —
+    but it must not keep offering a link to an app that was unpublished
+    or a version that was deleted. Restoring survives all three states:
+    the commit is anchored in this session's history, not in the
+    publication."""
+    page.goto(f"{server}/?session=e2e-marker")
+    _title(server, "e2e-marker", "Marker app")
+    _send(
+        page,
+        '!tool file_write {"path": "/workspace/app/index.html", "content": '
+        '"<html><body><h1 id=marker>a marker app</h1></body></html>"}\n'
+        "!text App is up.",
+    )
+    frame = page.frame_locator("iframe[title='app preview']")
+    expect(frame.locator("#marker")).to_have_text("a marker app", timeout=20000)
+
+    # v1, then v2 — two markers, so the version-removed state has a
+    # marker of its own to land on
+    page.get_by_role("button", name="publish", exact=True).click()
+    page.get_by_role("button", name="publish", exact=True).click()
+    page.get_by_role("button", name="live", exact=True).click()
+    page.get_by_role("button", name="publish", exact=True).click()
+    page.get_by_role("button", name="publish", exact=True).click()
+    markers = page.locator(".publish")
+    expect(markers).to_have_count(2, timeout=15000)
+    expect(markers.first).to_contain_text("v1")
+    expect(markers.last).to_contain_text("v2")
+    # both live: an open link, no removal note
+    expect(markers.first.get_by_role("link", name="open ↗")).to_be_visible()
+    expect(markers.last.get_by_role("link", name="open ↗")).to_be_visible()
+
+    # delete v1 (v2 is current, so v1 can go) — only ITS marker changes
+    page.get_by_role("button", name="published…").click()
+    page.locator(".panel li", has_text="v1").get_by_role(
+        "button", name="delete"
+    ).click()
+    page.locator(".panel li", has_text="v1").get_by_role(
+        "button", name="really delete"
+    ).click()
+    page.get_by_role("button", name="close").click()
+    expect(markers.first).to_contain_text("version removed", timeout=10000)
+    expect(markers.first.get_by_role("link", name="open ↗")).to_have_count(0)
+    expect(
+        markers.first.get_by_role("button", name="restore to this publish")
+    ).to_be_visible()
+    expect(markers.last.get_by_role("link", name="open ↗")).to_be_visible()
+
+    # unpublish from the RAIL: every marker for that app says so
+    page.locator(".app-row", has_text="Marker app").click()
+    danger = page.locator(".app-view .verb.danger").first
+    danger.click()
+    danger.click()
+    expect(markers.last).to_contain_text("since removed", timeout=10000)
+    expect(markers.first).to_contain_text("since removed")
+    expect(page.locator(".publish a")).to_have_count(0)
+    # the anchor is this session's history, so restoring is still offered
+    expect(
+        markers.last.get_by_role("button", name="restore to this publish")
+    ).to_be_visible()
+
+
 def _delete(server: str, name: str) -> None:
     """Delete a session out of band. Like ``_title``, this only arranges
     server state and deliberately avoids the browser's network stack."""
