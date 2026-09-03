@@ -710,6 +710,65 @@ def test_publish_refuses_a_turn_in_flight(studio):
         session.turn_lock.release()
 
 
+def test_the_marker_lands_under_the_same_reservation_as_the_tag(scripted):
+    """The publish route holds ONE reservation across the tag and the
+    marker. A chat request that won the turn lock in between would put
+    its `user` event above a landmark whose checkpoint predates it — and
+    restoring to that marker would then rewind the files out from under
+    a prompt still on screen. So a chat racing a publish is refused,
+    and the marker is always the last event of the two."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    _run(client, "s1", _script("/workspace/app/index.html", "one", "built it"))
+    session = registry.get("s1")
+
+    # the reservation is real: a chat arriving mid-publish is refused
+    assert session.turn_lock.acquire(blocking=False)
+    try:
+        assert (
+            client.post(
+                "/api/sessions/s1/chat", json={"message": "!text hi"}
+            ).status_code
+            == 409
+        )
+    finally:
+        session.turn_lock.release()
+
+    _publish(client, "s1")
+    _run(client, "s1", "!text and now this")
+    events = client.get("/api/sessions/s1/events?wait=0").json()["events"]
+    marker = next(e for e in events if e["type"] == "publish")
+    users = [e["seq"] for e in events if e["type"] == "user"]
+    # the marker sits between the turn it names and the one after it
+    assert [u < marker["seq"] for u in users] == [True, False]
+    assert marker["head"] == next(
+        e["head"] for e in events if e["type"] == "done" and e["seq"] < marker["seq"]
+    )
+
+
+def test_publishing_into_another_sessions_app_is_refused(studio):
+    """An app belongs to the session that created it. Extending someone
+    else's would tag a version from this branch while the entry keeps
+    naming theirs — a version nothing downstream could reason about."""
+    client, registry = studio
+    for name in ("s1", "s2"):
+        client.post("/api/sessions", json={"name": name})
+        _seed_app(registry.get(name).ws)
+    theirs = _publish(client, "s1")
+
+    r = client.post("/api/sessions/s2/publish", json={"app": theirs["token"]})
+    assert r.status_code == 403
+    assert "belongs to session 's1'" in r.json()["error"]
+    # ...and nothing was tagged or recorded on the way to refusing
+    app = next(
+        a
+        for a in client.get("/api/apps").json()["apps"]
+        if a["token"] == theirs["token"]
+    )
+    assert [v["name"] for v in app["versions"]] == ["v1"]
+    assert app["session"] == "s1"
+
+
 def test_changed_since_answers_content_and_writes_apart(studio):
     """Two questions, two answers. Editing an app file changes the
     content; editing a note outside <root>/app leaves the app identical
@@ -884,6 +943,40 @@ def test_branch_from_a_version_opens_where_it_was_published(scripted):
     gone = client.post(f"/api/apps/{pub['token']}/versions/v1/branch")
     assert gone.status_code == 404
     assert "still served" in gone.json()["error"]
+
+
+def test_branching_survives_an_edit_that_hid_the_marker(scripted):
+    """The child's transcript is PROJECTED at the publish, not cut after
+    it. Editing back past a publish leaves a truncate in the log whose
+    cut precedes the marker; appending another cut cannot undo it, so a
+    copied log would leave the child showing a transcript that stops
+    before the state it actually holds."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    _run(client, "s1", _script("/workspace/a.txt", "one", "made one"))
+    _run(client, "s1", _script("/workspace/app/index.html", "app", "made the app"))
+    pub = _publish(client, "s1")
+    _run(client, "s1", _script("/workspace/c.txt", "three", "made three"))
+    # the edit rewinds to the SECOND prompt, cutting away the publish
+    session = registry.get("s1")
+    second = _user_seqs(session)[1]
+    _edit(client, "s1", second, _script("/workspace/b.txt", "two", "made two instead"))
+    visible = [e for _, e in sessions_mod.Registry._visible(session.events)]
+    assert not any(e["type"] == "publish" for e in visible)  # hidden in the origin
+
+    r = client.post(f"/api/apps/{pub['token']}/versions/v1/branch")
+    assert r.status_code == 200, r.text
+    child = registry.get(r.json()["name"])
+    shown = [e for _, e in sessions_mod.Registry._visible(child.events)]
+    assert shown[-1]["type"] == "publish"  # ends AT the publish
+    # the two turns before it survived; the one after it never came, and
+    # neither did the edit's replacement — both happened after the fork
+    assert sum(1 for e in shown if e["type"] == "user") == 2
+    assert not any("instead" in (e.get("text") or "") for e in shown)
+    assert child.ws.fs.read("/workspace/a.txt") == b"one"
+    assert child.ws.fs.read("/workspace/app/index.html") == b"app"
+    assert not child.ws.fs.exists("/workspace/b.txt")
+    assert not child.ws.fs.exists("/workspace/c.txt")
 
 
 # -- files ----------------------------------------------------------------------

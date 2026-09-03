@@ -809,20 +809,36 @@ def build_app(registry: Registry) -> Starlette:
             return JSONResponse({"error": "name must be a string"}, status_code=400)
         if app is not None and not isinstance(app, str):
             return JSONResponse({"error": "app must be a token"}, status_code=400)
+        # ONE reservation across the tag and the marker. Publishing
+        # under its own lock and emitting after it would let a chat
+        # request slip between them: its `user` event would sit above a
+        # landmark whose checkpoint predates the turn, and restoring to
+        # that marker would rewind the files under a prompt still on
+        # screen.
+        if not session.turn_lock.acquire(blocking=False):
+            return JSONResponse(
+                {"error": "can't publish while a turn is running"}, status_code=409
+            )
         try:
             published = await anyio.to_thread.run_sync(
-                partial(registry.publish, session.name, version=version, app=app)
+                partial(registry._publish_locked, session, version=version, app=app)
             )
-        except RuntimeError as e:
-            return JSONResponse({"error": str(e)}, status_code=409)
+        except PermissionError as e:
+            session.turn_lock.release()
+            return JSONResponse({"error": str(e)}, status_code=403)
         except KeyError as e:
+            session.turn_lock.release()
             return JSONResponse({"error": str(e.args[0])}, status_code=404)
         except ValueError as e:
+            session.turn_lock.release()
             return JSONResponse({"error": str(e)}, status_code=400)
-        # The transcript marker, emitted only once the version exists:
-        # it is a durable landmark in the conversation (the human can
-        # open it, or come back to it), so it must never describe a
-        # publish that didn't happen.
+        except BaseException:
+            session.turn_lock.release()
+            raise
+        # The marker is emitted only once the version exists: it is a
+        # durable landmark in the conversation (the human can open it,
+        # or come back to it), so it must never describe a publish that
+        # didn't happen.
         await session.emit(
             {
                 "type": "publish",
@@ -834,6 +850,7 @@ def build_app(registry: Registry) -> Starlette:
                 "tree": published["tree"],
             }
         )
+        session.turn_lock.release()
         return JSONResponse(published)
 
     @with_session
@@ -895,7 +912,7 @@ def build_app(registry: Registry) -> Starlette:
         token = request.path_params["token"]
         version = request.path_params["version"]
         try:
-            child, cut = await anyio.to_thread.run_sync(
+            child = await anyio.to_thread.run_sync(
                 registry.branch_from_version, token, version
             )
         except KeyError:
@@ -911,10 +928,6 @@ def build_app(registry: Registry) -> Starlette:
             return JSONResponse({"error": str(e)}, status_code=400)
         except RuntimeError as e:  # the origin session has a turn in flight
             return JSONResponse({"error": str(e)}, status_code=409)
-        if cut >= 0:
-            # the child inherited the parent's transcript, which runs on
-            # past this publish; the marker stays, everything after it goes
-            await child.emit({"type": "truncate", "to": cut + 1})
         return JSONResponse(
             {"ok": True, "name": child.name, "title": registry.title_of(child.name)}
         )

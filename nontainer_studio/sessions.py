@@ -1332,7 +1332,12 @@ class Registry:
             session.turn_lock.release()
 
     def _fork_locked(
-        self, session: Session, *, conversation: str, at: str | None = None
+        self,
+        session: Session,
+        *,
+        conversation: str,
+        at: str | None = None,
+        transcript: list[dict] | None = None,
     ) -> Session:
         """:meth:`fork` with the parent already reserved.
 
@@ -1343,6 +1348,13 @@ class Registry:
         Staged work is only in the way of a fork from the HEAD, which
         has to checkpoint it to see current state; a fork from a named
         past leaves it exactly where it is.
+
+        ``transcript`` gives the child that log instead of a copy of the
+        parent's, which is what a fork from a past checkpoint needs: the
+        parent's log runs on past it, and appending a cut cannot undo an
+        EARLIER cut already in it (a truncate only pops what is still
+        visible), so a child forked behind an edit would show a
+        transcript that stops before the state it actually holds.
         """
         if at is None and session.ws.dirty:
             raise RuntimeError("can't fork mid-turn: the workspace has staged changes")
@@ -1373,13 +1385,13 @@ class Registry:
                     # The visible transcript must match the memory the
                     # child inherited, or the human reads a blank page
                     # over an agent that remembers everything.
-                    if (
-                        conversation == "inherit"
-                        and session.log_path is not None
-                        and child.log_path is not None
-                        and session.log_path.exists()
-                    ):
-                        shutil.copyfile(session.log_path, child.log_path)
+                    if conversation == "inherit" and child.log_path is not None:
+                        if transcript is not None:
+                            with child.log_path.open("w") as f:
+                                for event in transcript:
+                                    f.write(json.dumps(event) + "\n")
+                        elif session.log_path is not None and session.log_path.exists():
+                            shutil.copyfile(session.log_path, child.log_path)
                     loaded = self._load_events(child.log_path)
                     child.events.extend(loaded)
                     child.next_seq = (loaded[-1]["seq"] + 1) if loaded else 0
@@ -1706,6 +1718,21 @@ class Registry:
             entry = apps.get(app)
             if entry is None:
                 raise KeyError(f"no app {app!r}")
+            origin = entry.get("session")
+            if origin != name:
+                # An app belongs to the session that created it, and
+                # nothing downstream survives that not being true: the
+                # entry keeps naming the original session, so the
+                # changed-since badge would compare against a branch
+                # that never wrote the version, and branch-from-version
+                # would fork a conversation the version did not come
+                # from. A permanent refusal, not a busy one — retrying
+                # can never make this token the caller's.
+                raise PermissionError(
+                    f"app {app!r} belongs to session {origin!r}: publish it "
+                    "from there, or fork that session and start an app of "
+                    "its own"
+                )
             return app, entry
         mine = [e for e in apps.values() if e.get("session") == name]
         if mine:
@@ -1739,70 +1766,82 @@ class Registry:
         if not session.turn_lock.acquire(blocking=False):
             raise RuntimeError("can't publish while a turn is running")
         try:
-            with self._lock:
-                manifest = self._manifest()
-                token, entry = self._target_app(name, app, manifest["apps"])
-                version = self._version_name(version, entry)
-                title = self.title_of(name, manifest)
-                tag = f"pub/{token}/{version}"
-                # The tag first, because it is the only step that can
-                # refuse (a taken name, a name kvgit won't have) — and
-                # it commits the session's staged work, so what the tag
-                # names is what the human was looking at.
-                commit = session.ws.tag(
-                    tag,
-                    scope="store",
-                    info={
-                        "token": token,
-                        "session": name,
-                        "version": version,
-                        "title": title,
-                    },
-                )
-                try:
-                    if not entry:
-                        self._app_db_path(token).parent.mkdir(
-                            parents=True, exist_ok=True
-                        )
-                        session.db.copy_to(self._app_db_path(token))
-                        entry = {
-                            "token": token,
-                            "session": name,
-                            "created": time.time(),
-                            "db": f"dbs/apps/{token}.sqlite",
-                            "versions": {},
-                        }
-                    entry = dict(entry, versions=dict(entry["versions"]))
-                    # the app wears the session's title as of this
-                    # publish: renaming the session and publishing again
-                    # should rename the app, not leave it under a name
-                    # nobody uses any more
-                    entry["title"] = title
-                    entry["versions"][version] = {
-                        "tag": tag,
-                        "commit": commit,
-                        "tree": session.ws.head_tree,
-                        "created": time.time(),
-                    }
-                    entry["current"] = version
-                    manifest["apps"][token] = entry
-                    self._save_manifest(manifest)
-                except BaseException:
-                    # a tag with no manifest entry is a name nothing can
-                    # reach and nothing will ever collect
-                    session.ws.delete_tag(tag, scope="store")
-                    raise
-                self._drop_snapshots(token)
-                return {
-                    "token": token,
-                    "url": f"/apps/{token}/",
-                    "version": version,
-                    "title": title,
-                    "checkpoint": commit,
-                    "tree": entry["versions"][version]["tree"],
-                }
+            return self._publish_locked(session, version=version, app=app)
         finally:
             session.turn_lock.release()
+
+    def _publish_locked(
+        self, session: Session, *, version: str | None = None, app: str | None = None
+    ) -> dict:
+        """:meth:`publish` with the session already reserved.
+
+        The reservation has to outlive the call for the caller that
+        EMITS the marker: a chat request winning the turn lock between
+        the tag and the marker would put its `user` event above a
+        landmark whose checkpoint predates it, and restoring to that
+        marker would then rewind the files under a prompt still on
+        screen. So the route holds one reservation across both."""
+        name = session.name
+        with self._lock:
+            manifest = self._manifest()
+            token, entry = self._target_app(name, app, manifest["apps"])
+            version = self._version_name(version, entry)
+            title = self.title_of(name, manifest)
+            tag = f"pub/{token}/{version}"
+            # The tag first, because it is the only step that can
+            # refuse (a taken name, a name kvgit won't have) — and
+            # it commits the session's staged work, so what the tag
+            # names is what the human was looking at.
+            commit = session.ws.tag(
+                tag,
+                scope="store",
+                info={
+                    "token": token,
+                    "session": name,
+                    "version": version,
+                    "title": title,
+                },
+            )
+            try:
+                if not entry:
+                    self._app_db_path(token).parent.mkdir(parents=True, exist_ok=True)
+                    session.db.copy_to(self._app_db_path(token))
+                    entry = {
+                        "token": token,
+                        "session": name,
+                        "created": time.time(),
+                        "db": f"dbs/apps/{token}.sqlite",
+                        "versions": {},
+                    }
+                entry = dict(entry, versions=dict(entry["versions"]))
+                # the app wears the session's title as of this
+                # publish: renaming the session and publishing again
+                # should rename the app, not leave it under a name
+                # nobody uses any more
+                entry["title"] = title
+                entry["versions"][version] = {
+                    "tag": tag,
+                    "commit": commit,
+                    "tree": session.ws.head_tree,
+                    "created": time.time(),
+                }
+                entry["current"] = version
+                manifest["apps"][token] = entry
+                self._save_manifest(manifest)
+            except BaseException:
+                # a tag with no manifest entry is a name nothing can
+                # reach and nothing will ever collect
+                session.ws.delete_tag(tag, scope="store")
+                raise
+            self._drop_snapshots(token)
+            return {
+                "token": token,
+                "url": f"/apps/{token}/",
+                "version": version,
+                "title": title,
+                "checkpoint": commit,
+                "tree": entry["versions"][version]["tree"],
+            }
 
     # -- serving: the URL is the app's, the state is a version's ------------
 
@@ -2033,9 +2072,6 @@ class Registry:
         version's commit, so it opens with the files AND the
         conversation as they stood at that publish.
 
-        Returns the child and the seq of the publish marker in its
-        transcript (-1 if it holds none), which the caller cuts after.
-
         Raises ``KeyError`` when the origin session is gone: the app's
         files are still served from the tag, but a conversation cannot
         be branched out of a branch that no longer exists.
@@ -2059,21 +2095,44 @@ class Registry:
             raise RuntimeError("can't branch while a turn is running")
         try:
             child = self._fork_locked(
-                session, conversation="inherit", at=info["commit"]
+                session,
+                conversation="inherit",
+                at=info["commit"],
+                transcript=self._transcript_at_publish(session, token, version),
             )
         finally:
             session.turn_lock.release()
-        cut = next(
+        return child
+
+    @staticmethod
+    def _transcript_at_publish(
+        session: Session, token: str, version: str
+    ) -> list[dict] | None:
+        """The session's transcript as it stood at that publish, or None
+        if the marker is not in the event window (then the caller falls
+        back to the whole log).
+
+        Built by PROJECTING the events up to and including the marker,
+        not by cutting the log after it: a truncate applies only to what
+        is still visible, so a later edit that already hid the marker
+        would leave the child's transcript stopping short of the state
+        it holds. Truncates after the marker are none of the child's
+        business — they unsay turns the child never inherited."""
+        marker = next(
             (
-                e["seq"]
-                for e in reversed(child.events)
+                e
+                for e in reversed(session.events)
                 if e.get("type") == "publish"
                 and e.get("token") == token
                 and e.get("version") == version
             ),
-            -1,
+            None,
         )
-        return child, cut
+        if marker is None:
+            return None
+        seq = marker.get("seq", 0)
+        prefix = [e for e in session.events if e.get("seq", 0) <= seq]
+        return [event for _, event in Registry._visible(prefix)]
 
     def restore_to_publish(self, session: Session, seq: int) -> int:
         """Rewind a session to one of its own publishes: the files and
