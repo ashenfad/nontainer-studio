@@ -4,6 +4,7 @@
     // the visible transcript — the edited prompt runs as a fresh turn
     // from there. One mental model: everything below gets replaced.
     import AgentMessage from './AgentMessage.svelte'
+    import { published } from './runtime.svelte.js'
     import { viewFile } from './viewer.svelte.js'
 
     let { rt } = $props()
@@ -73,6 +74,26 @@
     // version was tagged and cuts everything after it. Armed on the
     // first tap, like the rail's delete — it unsays turns.
     let armedRestore = $state(null)
+
+    // What the marker's app is NOW. The marker itself is a history
+    // fact — it stays in the log, unmutated, because the publish
+    // happened — but it must not keep offering a link to an app that
+    // was unpublished, or to a version that was deleted. Resolved
+    // against the same store-wide list the rail reads, so an unpublish
+    // from the modal or the rail retitles every marker for it at once.
+    // Restoring stays available in every state: the commit is anchored
+    // in this session's own history, not in the publication.
+    function status(msg) {
+        // before the first fetch, believe the marker: reading "removed"
+        // for a beat on every load would be worse than a link that is
+        // corrected a moment later
+        if (!published.loaded) return { state: 'live', url: msg.url }
+        const app = published.apps.find((a) => a.token === msg.token)
+        if (!app) return { state: 'gone', text: 'since removed' }
+        if (!app.versions.some((v) => v.name === msg.version))
+            return { state: 'dropped', text: 'version removed' }
+        return { state: 'live', url: app.url }
+    }
 
     function restore(msg) {
         if (armedRestore !== msg.seq) {
@@ -162,9 +183,14 @@
         {:else if msg.role === 'agent'}
             <AgentMessage {msg} session={rt.name} />
         {:else if msg.role === 'publish'}
-            <div class="publish">
+            {@const now = status(msg)}
+            <div class="publish" class:removed={now.state !== 'live'}>
                 <span>published <strong>{msg.version}</strong></span>
-                <a href={msg.url} target="_blank" rel="noopener">open ↗</a>
+                {#if now.state === 'live'}
+                    <a href={now.url} target="_blank" rel="noopener">open ↗</a>
+                {:else}
+                    <span class="removed-note">{now.text}</span>
+                {/if}
                 {#if msg.seq != null && !rt.busy}
                     <button
                         class="restore"
@@ -353,6 +379,17 @@
     }
     .publish strong {
         color: var(--text);
+    }
+    /* Same weight as a live one: this publish HAPPENED, and dimming it
+       would read as a lesser event rather than a removed app. Only the
+       colour moves, from "there is something to open" to "there isn't". */
+    .publish.removed {
+        background: rgba(255, 255, 255, 0.04);
+        border-color: var(--border);
+    }
+    .removed-note {
+        color: var(--text-muted);
+        font-style: italic;
     }
     .publish a {
         color: var(--success);
