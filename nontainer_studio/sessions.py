@@ -1331,21 +1331,26 @@ class Registry:
         finally:
             session.turn_lock.release()
 
-    def _fork_locked(self, session: Session, *, conversation: str) -> Session:
+    def _fork_locked(
+        self, session: Session, *, conversation: str, at: str | None = None
+    ) -> Session:
         """:meth:`fork` with the parent already reserved.
 
-        Split out for the callers that need to do something to the
-        parent's branch inside the same reservation — see
-        :meth:`branch_from_version`, which rewinds the parent, forks
-        there, and puts it back.
+        ``at`` branches from an earlier checkpoint of the parent rather
+        than its head — the child gets the files and the conversation as
+        they stood there, with its own identity written on top, and the
+        parent is not touched at all (see :meth:`branch_from_version`).
+        Staged work is only in the way of a fork from the HEAD, which
+        has to checkpoint it to see current state; a fork from a named
+        past leaves it exactly where it is.
         """
-        if session.ws.dirty:
+        if at is None and session.ws.dirty:
             raise RuntimeError("can't fork mid-turn: the workspace has staged changes")
         with self._lock:
             name = self._mint_name()
             self._record(name, session.model)
         try:
-            child_ws = fork_session(session.ws, name, conversation=conversation)
+            child_ws = fork_session(session.ws, name, conversation=conversation, at=at)
             # The fork inherits the PARENT's python config, and with it
             # the parent's `db` host object. Let it go and build the
             # child's own handle over the copied file below — two
@@ -2045,23 +2050,17 @@ class Registry:
         if origin not in self.known():
             raise KeyError(origin)
         session = self.open(origin)
-        # Rewind the PARENT, fork there, put it back — nontainer's own
-        # recipe for branching from a checkpoint, and the only one that
-        # gives a coherent child: forking first and rewinding the child
-        # after would unwrite the fork's own commit, the one that gave
-        # the child its session id, so the branch would hold the
-        # conversation under the PARENT's name and the child would open
-        # with no memory at all. The parent is reserved throughout, so
-        # nothing can see it mid-rewind but its own live preview.
+        # The origin is read, never moved: ``at`` branches the child
+        # from the version's checkpoint and writes its identity on top,
+        # so the parent keeps its head. Still reserved for the call — a
+        # turn landing a commit under a fork of its own branch is the
+        # half-turn state the fork guard exists for.
         if not session.turn_lock.acquire(blocking=False):
             raise RuntimeError("can't branch while a turn is running")
         try:
-            head = session.ws.head
-            session.ws.restore(info["commit"])
-            try:
-                child = self._fork_locked(session, conversation="inherit")
-            finally:
-                session.ws.restore(head)
+            child = self._fork_locked(
+                session, conversation="inherit", at=info["commit"]
+            )
         finally:
             session.turn_lock.release()
         cut = next(
