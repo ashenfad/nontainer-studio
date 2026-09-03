@@ -576,6 +576,50 @@ def test_a_served_version_is_frozen_code_over_a_live_db(studio):
     assert session.db.query("SELECT name FROM sqlite_master WHERE name='t'") == []
 
 
+def test_a_published_app_is_readable_from_a_sandboxed_iframe(studio):
+    """The preview iframe has no allow-same-origin, so it is an opaque
+    origin and everything a published app fetches from it — the jsx
+    loader's app.jsx, the app's own api calls — is cross-origin. Static
+    files, handler responses and preflights all have to say so, or the
+    app works in a tab and fails in the pane."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_app(session.ws)
+    session.ws.fs.write("/workspace/app/app.jsx", b"export default 1\n")
+    session.ws.checkpoint()
+    pub = _publish(client, "s1")
+
+    for path in ("", "app.jsx", "api/count"):
+        r = client.get(f"{pub['url']}{path}")
+        assert r.status_code == 200, path
+        assert r.headers["access-control-allow-origin"] == "*", path
+
+    # a JSON POST from app code preflights first
+    pre = client.options(
+        f"{pub['url']}api/count",
+        headers={
+            "origin": "null",
+            "access-control-request-method": "POST",
+            "access-control-request-headers": "content-type",
+        },
+    )
+    assert pre.status_code == 204
+    assert pre.headers["access-control-allow-origin"] == "*"
+    assert "POST" in pre.headers["access-control-allow-methods"]
+    assert pre.headers["access-control-allow-headers"] == "content-type"
+    # and the answer to the real request carries the header too
+    assert (
+        client.post(f"{pub['url']}api/count").headers["access-control-allow-origin"]
+        == "*"
+    )
+    # an unknown token is still a 404, with the header (the iframe has
+    # to be able to READ that answer to report it)
+    missing = client.get("/apps/not-a-real-token/")
+    assert missing.status_code == 404
+    assert missing.headers["access-control-allow-origin"] == "*"
+
+
 def test_make_current_repoints_the_url(studio):
     """The URL belongs to the app. Rolling back is a pointer move — no
     republish, no new token, the same link in someone's inbox."""
