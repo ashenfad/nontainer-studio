@@ -18,9 +18,12 @@ you can rewind, fork, or publish.
   finished while you were away (green).
 - **Live preview → publish.** Anything the agent writes under
   `/workspace/app` serves live in the preview pane as it takes shape.
-  `publish` freezes
-  the current state behind a capability URL — frozen code over the
-  session's live `db`, while your session keeps moving.
+  `publish` freezes the current state as a **version** of an **app**: a
+  capability URL that keeps serving while your session keeps moving.
+  Publishing again adds `v2` under the same URL, and the pointer moves
+  back as easily as forward. An app owns its `db` from its first
+  version, and its versions are store-scoped tags — so a session can be
+  deleted without taking its apps down.
 - **Rich replies.** The agent can drop plots, tables, images, and HTML
   into its answers via `ui = {...}` — rendered inline, themed by the
   shell.
@@ -160,9 +163,25 @@ Three kinds of state, on purpose:
 
 | state | durability | restore | fork | publish |
 |---|---|---|---|---|
-| **workspace** (files, cache, cwd) | kvgit branch per session | rewinds | branches (O(1)) | frozen snapshot |
-| **app `db`** (live SQLite host object) | file per session | untouched — external state has no history | copied | **shared** — frozen code, live state |
-| **conversation** | agno's session in the same kvgit branch (+ a jsonl transcript) | rewinds with the files — one `restore`, not two writes that can disagree; an `edit` trims the visible transcript too | `inherit` or `fresh` | — |
+| **workspace** (files, cache, cwd) | kvgit branch per session | rewinds | branches (O(1)) | a version — a store-scoped tag, frozen and read-only |
+| **app `db`** (live SQLite host object) | file per session | untouched — external state has no history | copied | copied ONCE, at the app's first version; the app owns it from then on |
+| **conversation** | agno's session in the same kvgit branch (+ a jsonl transcript) | rewinds with the files — one `restore`, not two writes that can disagree; an `edit` trims the visible transcript too | `inherit` or `fresh` | a marker in the transcript you can restore to, or branch from |
+
+An **app** is a publication lineage: one URL, one `db`, and a growing
+list of versions. The URL serves whichever version is *current*, so
+publishing moves it forward and `make current` moves it back — the link
+you handed someone never changes. Versions are store-scoped nontainer
+tags, the scope that outlives a branch, so nothing an app serves depends
+on the session that built it still existing.
+
+The `db` copy is what makes that true of the *state* as well as the
+code. A published app's users write rows; so does the session's live
+preview; sharing one file would mean deleting the session took the app's
+data with it, and every rewind of the conversation happened underneath
+strangers. So the app takes a copy at its first version and owns it —
+and a later version of that app therefore meets whatever schema the
+previous one left (`CREATE TABLE IF NOT EXISTS`, tolerant reads; the
+agent is told).
 
 agno's cross-session tables — user memories, metrics — sit at
 `store/agno` and never version: a memory spans conversations, so it
