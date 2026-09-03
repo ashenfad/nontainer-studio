@@ -6,9 +6,10 @@ Ownership model, on display:
 - WORKSPACE (files, cache, cwd): durable and versioned — a kvgit
   branch per session; an edit's rewind applies here.
 - APP DB (``db`` host object): durable but HISTORYLESS — live app
-  state that survives publish and never time-travels. Fresh per
-  session, shared with published snapshots (a view of the same
-  universe), untouched by rewinds.
+  state that never time-travels. Fresh per session, untouched by
+  rewinds. A published app gets a COPY at its first version and owns
+  it from then on, so the two universes stop writing over each other
+  the moment there are two.
 - CONVERSATION: durable and versioned WITH the files — agno's session
   lives in the session's own kvgit branch (one ``KvgitStoreDb`` over
   the store, a branch per session), so a turn's files, cache, cwd and
@@ -28,7 +29,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import shutil
 import sqlite3
 import sys
@@ -54,6 +54,16 @@ from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
 log = logging.getLogger(__name__)
 
 DEFAULT_STORE = Path.home() / ".nontainer-studio"
+
+APP_BRANCH = "_apps"
+"""The reserved branch published apps are served THROUGH.
+
+``at_tag`` reads a name off the store, and a name in the store scope
+belongs to no session — so the lookup needs a workspace that stands for
+no session either. This one does: it is never in the manifest, so it is
+never in the rail, never opened as a session, and never deleted with
+one; nothing is ever committed to it beyond the empty baseline opening a
+branch writes."""
 
 MAX_EVENTS = 10_000  # in-MEMORY tail window, not a lifetime cap
 
@@ -485,14 +495,20 @@ STUDIO_PRIMER = (
     "turn is a checkpoint the human can rewind by editing an earlier "
     "prompt — prefer small complete "
     "steps over big-bang changes. They may also PUBLISH the app: a "
-    "frozen copy of the code serving live, behind a share URL, over "
-    "the same live `db`."
+    "frozen version of the code behind a share URL that keeps serving "
+    "while you keep working, over a `db` the published app owns. "
+    "Publishing again adds a version and the URL moves to it, so build "
+    "toward states worth publishing."
 )
 
 DB_PRIMER = (
-    "`db` is a shared SQLite store for LIVE app state — it survives "
-    "publish and is shared with published copies of your app; it does "
-    "NOT time-travel with checkpoints. Use it (not `cache`) for any "
+    "`db` is a SQLite store for LIVE app state — it does NOT "
+    "time-travel with checkpoints, so no rewind ever unwrites it. "
+    "Publishing copies it once into the published app's own db, and "
+    "every later version of that app keeps that db: a new version "
+    "meets whatever schema the last one left, so create tables with "
+    "CREATE TABLE IF NOT EXISTS and read tolerantly. Use it (not "
+    "`cache`) for any "
     "state the app's users mutate. `cache` is versioned workspace "
     "data: it rewinds with restores and freezes at publish. API: "
     "`db.execute(sql, params=())` for writes (INSERT / UPDATE / "
@@ -673,7 +689,14 @@ class Registry:
         # (see apps_config).
         self.apps = apps or apps_config()
         self._sessions: dict[str, Session] = {}
-        self._published: dict[str, Workspace] = {}  # token -> frozen snapshot
+        # (token, version) -> the frozen workspace serving it. Keyed by
+        # BOTH because an app's URL can be repointed at another version
+        # (see set_current) and the snapshots are otherwise identical
+        # objects to hand out.
+        self._published: dict[tuple[str, str], Workspace] = {}
+        # token -> the app's own db handle, shared by every version of
+        # that app: the versions are different code over one live state.
+        self._app_dbs: dict[str, Db] = {}
         # Workspaces mid-construction, by name. ``workspace_for`` has to
         # answer for a session that does not exist yet: building its
         # agent constructs the toolkit, which asks the db whether it owns
@@ -693,6 +716,7 @@ class Registry:
             open=self.workspace_for,
             db_path=str(self._store / "agno"),
         )
+        self._migrate_published()
 
     def workspace_for(self, name: str) -> Workspace:
         """The LIVE workspace for a session — the store db's ``open``.
@@ -774,10 +798,15 @@ class Registry:
         return self._store / "sessions.json"
 
     def _manifest(self) -> dict:
-        """{"sessions": [...], "published": {token: {branch, session,
-        checkpoint}}, "models": {name: spec}, "titles": {name: {user,
-        agent}}, "created": {name: epoch}} — tolerant of the v1
-        bare-list format, and of any key simply being absent."""
+        """{"sessions": [...], "apps": {token: app}, "published":
+        {token: {branch, session, checkpoint}}, "models": {name: spec},
+        "titles": {name: {user, agent}}, "created": {name: epoch}} —
+        tolerant of the v1 bare-list format, and of any key simply
+        being absent.
+
+        ``apps`` is the publication registry (see :meth:`publish`);
+        ``published`` is the anchor-branch shape that preceded it and
+        is empty after :meth:`_migrate_published` has run once."""
         try:
             data = json.loads(self._manifest_path().read_text())
         except Exception:
@@ -786,6 +815,7 @@ class Registry:
             data = {"sessions": data}
         return {
             "sessions": data.get("sessions", []),
+            "apps": data.get("apps", {}),
             "published": data.get("published", {}),
             "models": data.get("models", {}),
             "titles": data.get("titles", {}),
@@ -1287,71 +1317,82 @@ class Registry:
         if not session.turn_lock.acquire(blocking=False):
             raise RuntimeError("can't fork while a turn is running")
         try:
-            if session.ws.dirty:
-                raise RuntimeError(
-                    "can't fork mid-turn: the workspace has staged changes"
-                )
-            with self._lock:
-                name = self._mint_name()
-                self._record(name, session.model)
-            try:
-                child_ws = fork_session(session.ws, name, conversation=conversation)
-                # The fork inherits the PARENT's python config, and with it
-                # the parent's `db` host object. Let it go and build the
-                # child's own handle over the copied file below — two
-                # universes sharing one app db is the state this copy exists
-                # to prevent.
-                child_ws.close()
-                dst = self._store / "dbs" / f"{name}.sqlite"
-                session.db.copy_to(dst)
-                db = Db(dst)
-                ws = workspace(
-                    name,
-                    store=self._store,
-                    python=self._python_config(db),
-                    **_ws_kwargs(),
-                )
-                with self._lock:
-                    self._opening[name] = ws
-                    try:
-                        child = self._assemble(name, ws, db, session.model)
-                        # The visible transcript must match the memory the
-                        # child inherited, or the human reads a blank page
-                        # over an agent that remembers everything.
-                        if (
-                            conversation == "inherit"
-                            and session.log_path is not None
-                            and child.log_path is not None
-                            and session.log_path.exists()
-                        ):
-                            shutil.copyfile(session.log_path, child.log_path)
-                        loaded = self._load_events(child.log_path)
-                        child.events.extend(loaded)
-                        child.next_seq = (loaded[-1]["seq"] + 1) if loaded else 0
-                        child.flush_idx = len(child.events)  # loaded = on disk
-                        self._sessions[name] = child
-                    finally:
-                        self._opening.pop(name, None)
-                return child
-            except BaseException:
-                # A reserved name whose fork failed would sit in the rail
-                # forever, 500ing on every click — same rollback as create.
-                with self._lock:
-                    self._unrecord(name)
-                raise
-
+            return self._fork_locked(session, conversation=conversation)
         finally:
             session.turn_lock.release()
+
+    def _fork_locked(self, session: Session, *, conversation: str) -> Session:
+        """:meth:`fork` with the parent already reserved.
+
+        Split out for the callers that need to do something to the
+        parent's branch inside the same reservation — see
+        :meth:`branch_from_version`, which rewinds the parent, forks
+        there, and puts it back.
+        """
+        if session.ws.dirty:
+            raise RuntimeError("can't fork mid-turn: the workspace has staged changes")
+        with self._lock:
+            name = self._mint_name()
+            self._record(name, session.model)
+        try:
+            child_ws = fork_session(session.ws, name, conversation=conversation)
+            # The fork inherits the PARENT's python config, and with it
+            # the parent's `db` host object. Let it go and build the
+            # child's own handle over the copied file below — two
+            # universes sharing one app db is the state this copy exists
+            # to prevent.
+            child_ws.close()
+            dst = self._store / "dbs" / f"{name}.sqlite"
+            session.db.copy_to(dst)
+            db = Db(dst)
+            ws = workspace(
+                name,
+                store=self._store,
+                python=self._python_config(db),
+                **_ws_kwargs(),
+            )
+            with self._lock:
+                self._opening[name] = ws
+                try:
+                    child = self._assemble(name, ws, db, session.model)
+                    # The visible transcript must match the memory the
+                    # child inherited, or the human reads a blank page
+                    # over an agent that remembers everything.
+                    if (
+                        conversation == "inherit"
+                        and session.log_path is not None
+                        and child.log_path is not None
+                        and session.log_path.exists()
+                    ):
+                        shutil.copyfile(session.log_path, child.log_path)
+                    loaded = self._load_events(child.log_path)
+                    child.events.extend(loaded)
+                    child.next_seq = (loaded[-1]["seq"] + 1) if loaded else 0
+                    child.flush_idx = len(child.events)  # loaded = on disk
+                    self._sessions[name] = child
+                finally:
+                    self._opening.pop(name, None)
+            return child
+        except BaseException:
+            # A reserved name whose fork failed would sit in the rail
+            # forever, 500ing on every click — same rollback as create.
+            with self._lock:
+                self._unrecord(name)
+            raise
 
     # -- delete: remove a session's whole universe ---------------------------
 
     def delete(self, session: Session) -> None:
         """Delete a session and everything it owns: the workspace
-        branch, the app db, the transcript, the agent's chat record —
-        and any published snapshots (they're views of this universe;
-        their branches and tokens go too). Caller ensures not busy."""
+        branch, the session's app db, the transcript, the agent's chat
+        record. Caller ensures not busy.
+
+        Its published APPS are not among them. An app owns its db and
+        its versions are store-scoped tags, which is the scope that
+        survives ``delete_workspace`` — so the URLs someone was handed
+        keep serving after the conversation that built them is gone.
+        Taking one down is ``unpublish``, said about the app."""
         name = session.name
-        doomed = {name}
         # Before the session leaves the registry: the db reaches the
         # conversation through workspace_for, which would otherwise
         # reopen the session it is being asked to erase. Best-effort —
@@ -1364,13 +1405,6 @@ class Registry:
         with self._lock:
             self._sessions.pop(name, None)
             manifest = self._manifest()
-            for token, entry in list(manifest["published"].items()):
-                if entry.get("session") == name:
-                    snapshot = self._published.pop(token, None)
-                    if snapshot is not None:
-                        snapshot.close()
-                    doomed.add(entry["branch"])
-                    del manifest["published"][token]
             manifest["sessions"] = [s for s in manifest["sessions"] if s != name]
             manifest["models"].pop(name, None)
             # titles/created go too, or a later mint that happens to draw
@@ -1384,18 +1418,17 @@ class Registry:
             close_runtime()
         session.ws.close()  # before branch deletion: it holds the branch
         session.db.close()
-        self._delete_branches(doomed)
+        self._delete_branches({name})
         (self._store / "dbs" / f"{name}.sqlite").unlink(missing_ok=True)
         (self._store / "events" / f"{name}.jsonl").unlink(missing_ok=True)
 
     def _delete_branches(self, names: set[str]) -> None:
-        """Remove the session's kvgit branches — the workspace branch
-        plus any published-snapshot branches (all live in the one shared
-        store). Deletion is nontainer's now: `delete_workspace` resolves
-        `store/kvgit` from the same `store` the workspaces were built
-        with, and carries the `__void__`-anchor dance kvgit needs to
-        delete a branch a handle can't be anchored on (that hidden
-        anchor branch keeps working across the move — same name)."""
+        """Remove kvgit branches from the shared store. Deletion is
+        nontainer's: `delete_workspace` resolves `store/kvgit` from the
+        same `store` the workspaces were built with, and takes each
+        branch's session-scoped tags with it while leaving store-scoped
+        ones — which is what keeps a published app up after its session
+        is deleted."""
         delete_workspace(names, store=self._store, backend="kvgit")
 
     # -- model switching ----------------------------------------------------
@@ -1434,6 +1467,17 @@ class Registry:
         head = event.get("head") if event else None
         if event is None or event.get("type") != "user" or not head:
             raise ValueError(f"event {seq} is not an editable user message")
+        self._rewind(session, seq, head)
+
+    def _rewind(self, session: Session, seq: int, head: str) -> None:
+        """Put the files, the agent's memory and the agent's title back
+        where they stood at ``head``, with the transcript cut at ``seq``.
+
+        One ``restore`` covers the first two: the conversation lives in
+        the same branch as the files. The title is a third thing, kept
+        in the manifest, so it is put back by hand — the agent named the
+        session from a conversation that is being unsaid.
+        """
         surviving_title = None
         prior = [e for e in session.events if e["seq"] < seq]
         for _, ev in self._visible(prior):
@@ -1467,64 +1511,577 @@ class Registry:
                 visible.append((event.get("seq", 0), event))
         return visible
 
-    # -- publish: a VIEW of the same universe ------------------------------
+    # -- migration: anchor branches become apps -----------------------------
 
-    def publish(self, name: str) -> tuple[str, str | None]:
-        """Freeze the current state behind a capability token. The
-        snapshot branch never moves; its handlers share the session's
-        LIVE db — the workspace fork carries host_objects, and a worker
-        reaches the real object over sandtrap's RPC bridge rather than
-        holding a copy. Frozen code, live state, the idiomatic shape."""
+    def _migrate_published(self) -> None:
+        """Bring pre-app publications forward, once, at startup.
+
+        A publish used to fork an anchor branch and serve it over the
+        session's live db, so the token named a BRANCH and the state was
+        the session's. An app now owns its db and its versions are
+        store-scoped tags — so each old entry becomes an app holding one
+        version, ``v1``, tagged at the anchor branch's head, over a copy
+        of the origin session's db. A copy is the closest state there
+        is: the two were sharing one db, and the app has to stop sharing
+        it here or deleting the session would take the app's state.
+
+        An entry whose anchor branch is gone is dropped. A token that
+        names no state serves nothing, and leaving it in the manifest
+        only means a 404 that looks like a bug.
+        """
+        with self._lock:
+            manifest = self._manifest()
+            legacy = manifest.get("published") or {}
+            if not legacy:
+                return
+            for token, old in legacy.items():
+                entry = self._migrate_one(token, old, manifest)
+                if entry is None:
+                    log.warning(
+                        "publish: dropped %s — its snapshot branch %r is gone",
+                        token,
+                        old.get("branch"),
+                    )
+                else:
+                    manifest["apps"][token] = entry
+                    log.info(
+                        "publish: migrated %s to an app at v1 (was branch %r)",
+                        token,
+                        old.get("branch"),
+                    )
+            manifest["published"] = {}
+            self._save_manifest(manifest)
+
+    def _migrate_one(self, token: str, old: dict, manifest: dict) -> dict | None:
+        """One anchor branch -> one app with a ``v1``, or None if the
+        branch is gone. Caller holds ``_lock``."""
+        branch = old.get("branch")
+        checkpoint = old.get("checkpoint")
+        origin = old.get("session")
+        if not branch:
+            return None
+        tag = f"pub/{token}/v1"
+        title = self.title_of(origin, manifest) if origin else DEFAULT_TITLE
+        commit = tree = None
+        ws = workspace(branch, store=self._store)
+        try:
+            # Opening a branch CREATES it, so "is it still there" cannot
+            # be asked by opening. Ask by content instead: an anchor
+            # never moved after the fork that made it, so its head is
+            # the checkpoint the manifest recorded — while a branch this
+            # very call invented has a baseline head of its own.
+            if checkpoint and ws.head == checkpoint:
+                commit = ws.tag(
+                    tag,
+                    scope="store",
+                    info={
+                        "token": token,
+                        "session": origin,
+                        "version": "v1",
+                        "title": title,
+                    },
+                )
+                tree = ws.head_tree
+        finally:
+            ws.close()
+        # Either way the anchor branch goes: it was the old serving
+        # mechanism, and the tag (store-scoped) outlives it.
+        self._delete_branches({branch})
+        if commit is None:
+            return None
+        src = self._store / "dbs" / f"{origin}.sqlite"
+        dst = self._app_db_path(token)
+        if src.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            db = Db(src)
+            try:
+                db.copy_to(dst)
+            finally:
+                db.close()
+        return {
+            "token": token,
+            "session": origin,
+            "title": title,
+            "created": time.time(),
+            "db": f"dbs/apps/{token}.sqlite",
+            "current": "v1",
+            "versions": {
+                "v1": {
+                    "tag": tag,
+                    "commit": commit,
+                    "tree": tree,
+                    "created": time.time(),
+                }
+            },
+        }
+
+    # -- publish: an app is a lineage of versions ---------------------------
+    #
+    # An APP is a publication with a stable URL: one capability token,
+    # one db of its own, and a growing set of VERSIONS. A version is a
+    # store-scoped nontainer tag over the origin session's branch, which
+    # is the scope that outlives a session — so deleting the session
+    # that built an app leaves the app up.
+    #
+    # The app owns its db from its first version: the session's live db
+    # is copied once (through SQLite's backup API) into
+    # dbs/apps/<token>.sqlite, and every later version of that app keeps
+    # it. Schema migration across versions is the app's own business,
+    # which is exactly what the DB_PRIMER already tells the agent about
+    # `db`: live state, no history, nothing rewinds it.
+
+    def _app_db_path(self, token: str) -> Path:
+        return self._store / "dbs" / "apps" / f"{token}.sqlite"
+
+    def _app_db(self, entry: dict) -> Db:
+        """The app's own db handle, one per app.
+
+        Shared by every version of that app on purpose: the versions are
+        different code over ONE live state, the same way the preview and
+        the session share one db."""
+        token = entry["token"]
+        db = self._app_dbs.get(token)
+        if db is None:
+            db = Db(self._store / entry["db"])
+            self._app_dbs[token] = db
+        return db
+
+    @staticmethod
+    def _version_name(asked: str | None, entry: dict | None) -> str:
+        """The name this version gets: the caller's, or the next free
+        ``vN`` in the app.
+
+        ``/`` is refused on top of kvgit's own rule (non-empty, no
+        ``%``) because a version's tag is ``pub/<token>/<version>`` — a
+        slash in the name would make the tag say something else."""
+        taken = set((entry or {}).get("versions", {}))
+        if asked is None:
+            n = len(taken) + 1
+            while f"v{n}" in taken:
+                n += 1
+            return f"v{n}"
+        name = asked.strip()
+        if not name or "/" in name or "%" in name:
+            raise ValueError(
+                f"a version name must be non-empty and free of '/' and '%': {asked!r}"
+            )
+        if name in taken:
+            raise ValueError(f"this app already has a version {name!r}")
+        return name
+
+    @staticmethod
+    def _last_published(entry: dict) -> float:
+        """When this app last got a version — how "the session's most
+        recent app" is decided, since an app's own birthday says only
+        when the lineage started."""
+        versions = entry.get("versions") or {}
+        return max(
+            (v.get("created", 0) for v in versions.values()),
+            default=entry.get("created", 0),
+        )
+
+    def _target_app(self, name: str, app: str | None, apps: dict) -> tuple[str, dict]:
+        """Which lineage this publish extends: a named token, a fresh
+        one for ``"new"``, or — with nothing asked — the session's most
+        recently published app, or a fresh one if it has none. The
+        second element is the existing entry, or ``{}`` for a new app."""
+        if app == "new":
+            return mint_token(), {}
+        if app:
+            entry = apps.get(app)
+            if entry is None:
+                raise KeyError(f"no app {app!r}")
+            return app, entry
+        mine = [e for e in apps.values() if e.get("session") == name]
+        if mine:
+            newest = max(mine, key=self._last_published)
+            return newest["token"], newest
+        return mint_token(), {}
+
+    def publish(
+        self, name: str, *, version: str | None = None, app: str | None = None
+    ) -> dict:
+        """Publish the session's current state as a new version of an app.
+
+        The version is a store-scoped tag, so it is durable and
+        session-independent from the moment it exists; the app's URL
+        then points at it (``current``), which is what makes publishing
+        a new version the everyday verb and rolling back a pointer move
+        (:meth:`set_current`).
+
+        ``app`` picks the lineage — a token extends that app, ``"new"``
+        starts one, and ``None`` means the session's most recently
+        published app or a new one. ``version`` names it; the default is
+        ``v1``, ``v2``, ... within the app.
+
+        A between-turns verb, like fork: a turn in flight owns the
+        workspace, and a tag made over half a turn would name a state
+        no checkpoint ever held.
+        """
         session = self._sessions.get(name)
         if session is None:
             raise KeyError(name)
-        branch = f"{name}-pub-{secrets.token_hex(4)}"
-        snapshot = session.ws.fork(branch)
-        token = mint_token()
-        with self._lock:
-            self._published[token] = snapshot
-            # The snapshot BRANCH is durable (it's a kvgit branch);
-            # persist the token -> branch mapping too, or restarts
-            # orphan real snapshots behind forgotten URLs.
-            manifest = self._manifest()
-            manifest["published"][token] = {
-                "branch": branch,
-                "session": name,
-                "checkpoint": snapshot.head,
-            }
-            self._save_manifest(manifest)
-        return token, snapshot.head
+        if not session.turn_lock.acquire(blocking=False):
+            raise RuntimeError("can't publish while a turn is running")
+        try:
+            with self._lock:
+                manifest = self._manifest()
+                token, entry = self._target_app(name, app, manifest["apps"])
+                version = self._version_name(version, entry)
+                title = self.title_of(name, manifest)
+                tag = f"pub/{token}/{version}"
+                # The tag first, because it is the only step that can
+                # refuse (a taken name, a name kvgit won't have) — and
+                # it commits the session's staged work, so what the tag
+                # names is what the human was looking at.
+                commit = session.ws.tag(
+                    tag,
+                    scope="store",
+                    info={
+                        "token": token,
+                        "session": name,
+                        "version": version,
+                        "title": title,
+                    },
+                )
+                try:
+                    if not entry:
+                        self._app_db_path(token).parent.mkdir(
+                            parents=True, exist_ok=True
+                        )
+                        session.db.copy_to(self._app_db_path(token))
+                        entry = {
+                            "token": token,
+                            "session": name,
+                            "created": time.time(),
+                            "db": f"dbs/apps/{token}.sqlite",
+                            "versions": {},
+                        }
+                    entry = dict(entry, versions=dict(entry["versions"]))
+                    # the app wears the session's title as of this
+                    # publish: renaming the session and publishing again
+                    # should rename the app, not leave it under a name
+                    # nobody uses any more
+                    entry["title"] = title
+                    entry["versions"][version] = {
+                        "tag": tag,
+                        "commit": commit,
+                        "tree": session.ws.head_tree,
+                        "created": time.time(),
+                    }
+                    entry["current"] = version
+                    manifest["apps"][token] = entry
+                    self._save_manifest(manifest)
+                except BaseException:
+                    # a tag with no manifest entry is a name nothing can
+                    # reach and nothing will ever collect
+                    session.ws.delete_tag(tag, scope="store")
+                    raise
+                self._drop_snapshots(token)
+                return {
+                    "token": token,
+                    "url": f"/apps/{token}/",
+                    "version": version,
+                    "title": title,
+                    "checkpoint": commit,
+                    "tree": entry["versions"][version]["tree"],
+                }
+        finally:
+            session.turn_lock.release()
+
+    # -- serving: the URL is the app's, the state is a version's ------------
 
     def resolve(self, token: str) -> Workspace | None:
-        """The ``build_router`` resolve hook (token -> frozen
-        Workspace). Falls back to the manifest after a restart: the
-        snapshot branch persisted, so reopen it lazily — with the
-        parent session's live db as its host object (frozen code,
-        live state, same as at publish time)."""
-        snapshot = self._published.get(token)
-        if snapshot is not None:
-            return snapshot
-        entry = self._manifest()["published"].get(token)
+        """The ``build_router`` resolve hook: the frozen workspace at
+        this app's CURRENT version.
+
+        The URL belongs to the app, not to a version, so what it serves
+        moves when the pointer moves — hence the cache is keyed by
+        token AND version, and repointing simply drops the old entry.
+
+        Reopening after a restart needs nothing from the origin session,
+        which may be long gone: the version is a store-scoped tag and
+        the db is the app's own file. ``at_tag`` does need SOME
+        workspace on the store to look a name up, so a handle on the
+        reserved ``_apps`` branch does the lookup and is closed again
+        immediately — the frozen workspace it returns holds its own
+        kvgit handle and its own executor, so the parent is scaffolding,
+        not part of what serves.
+        """
+        entry = self._manifest()["apps"].get(token)
         if entry is None:
             return None
+        version = entry.get("current")
+        info = (entry.get("versions") or {}).get(version)
+        if info is None:
+            return None
+        snapshot = self._published.get((token, version))
+        if snapshot is not None:
+            return snapshot
         with self._lock:
-            snapshot = self._published.get(token)
+            snapshot = self._published.get((token, version))
             if snapshot is not None:
                 return snapshot
-            parent = self._sessions.get(entry["session"])
-            db = (
-                parent.db
-                if parent is not None
-                else Db(self._store / "dbs" / f"{entry['session']}.sqlite")
-            )
-            snapshot = workspace(
-                entry["branch"],
+            parent = workspace(
+                APP_BRANCH,
                 store=self._store,
-                python=self._python_config(db),
+                python=self._python_config(self._app_db(entry)),
                 **_ws_kwargs(),
             )
-            self._published[token] = snapshot
+            try:
+                snapshot = parent.at_tag(info["tag"], scope="store")
+            finally:
+                parent.close()
+            self._published[(token, version)] = snapshot
             return snapshot
+
+    def _drop_snapshots(self, token: str, version: str | None = None) -> None:
+        """Close cached frozen workspaces for an app — all of them, or
+        one version's. Caller holds ``_lock``."""
+        doomed = [
+            key
+            for key in self._published
+            if key[0] == token and (version is None or key[1] == version)
+        ]
+        for key in doomed:
+            self._published.pop(key).close()
+
+    # -- the registry of apps ----------------------------------------------
+
+    def list_apps(self) -> list[dict]:
+        """Every app on this store, most recently published first."""
+        rows = [self._app_row(e) for e in self._manifest()["apps"].values()]
+        rows.sort(key=lambda r: -r["published"])
+        return rows
+
+    @staticmethod
+    def _app_row(entry: dict) -> dict:
+        """One app, as the API says it. Versions come back as a LIST in
+        publish order — the order they are read in — rather than the
+        manifest's name-keyed map."""
+        versions = entry.get("versions") or {}
+        return {
+            "token": entry["token"],
+            "title": entry.get("title") or DEFAULT_TITLE,
+            "session": entry.get("session"),
+            "created": entry.get("created", 0),
+            "published": Registry._last_published(entry),
+            "current": entry.get("current"),
+            "url": f"/apps/{entry['token']}/",
+            "versions": [
+                {
+                    "name": name,
+                    "commit": v.get("commit"),
+                    "tree": v.get("tree"),
+                    "created": v.get("created", 0),
+                }
+                for name, v in sorted(
+                    versions.items(), key=lambda kv: kv[1].get("created", 0)
+                )
+            ],
+        }
+
+    def session_apps(self, session: Session) -> list[dict]:
+        """This session's apps, each carrying what its live workspace
+        holds that the served version doesn't."""
+        rows = [r for r in self.list_apps() if r["session"] == session.name]
+        for row in rows:
+            row["changed_since"] = self._changed_since(session, row)
+        return rows
+
+    @staticmethod
+    def _changed_since(session: Session, row: dict) -> dict:
+        """The distance between a session's app files and the version
+        its URL serves — two answers, because they are two questions.
+
+        ``count`` / ``paths`` are the CONTENT question: files under
+        ``<root>/app`` whose bytes differ from the tagged state. A file
+        re-saved with the bytes it already had is not in them.
+
+        ``up_to_date`` is the WRITE question: kvgit stamps every write
+        with when it happened, so the tree moves on any write at all,
+        anywhere in the workspace. False with ``count`` 0 means "the
+        session has moved on, but the app is the same app" — which is
+        the common case after a turn that only touched notes.
+        """
+        current = next(
+            (v for v in row["versions"] if v["name"] == row["current"]), None
+        )
+        if current is None or not current.get("commit"):
+            return {"count": 0, "paths": [], "up_to_date": True}
+        diff = session.ws.changed_since(current["commit"])
+        prefix = f"{session.ws.root}/app/"
+        paths = sorted(
+            p
+            for p in (diff.added | diff.removed | diff.modified)
+            if p.startswith(prefix)
+        )
+        return {
+            "count": len(paths),
+            "paths": paths,
+            "up_to_date": session.ws.head_tree == current.get("tree"),
+        }
+
+    # -- moving and removing publications ----------------------------------
+
+    def set_current(self, token: str, version: str) -> dict:
+        """Repoint an app's URL at one of its versions — a rollback or a
+        roll forward. Tags never move; the pointer does, which is the
+        whole reason the URL is the app's and not a version's."""
+        with self._lock:
+            manifest = self._manifest()
+            entry = manifest["apps"].get(token)
+            if entry is None:
+                raise KeyError(token)
+            if version not in (entry.get("versions") or {}):
+                raise ValueError(f"this app has no version {version!r}")
+            entry["current"] = version
+            self._save_manifest(manifest)
+            self._drop_snapshots(token)
+            return self._app_row(entry)
+
+    def unpublish(self, token: str) -> None:
+        """Take an app down: every version's tag, its db, its cached
+        snapshots and its manifest entry.
+
+        The origin session is untouched — an app was never the session's
+        state, only a named copy of it."""
+        with self._lock:
+            manifest = self._manifest()
+            entry = manifest["apps"].pop(token, None)
+            if entry is None:
+                raise KeyError(token)
+            self._drop_snapshots(token)
+            db = self._app_dbs.pop(token, None)
+            if db is not None:
+                db.close()
+            self._delete_tags(v["tag"] for v in (entry.get("versions") or {}).values())
+            (self._store / entry["db"]).unlink(missing_ok=True)
+            self._save_manifest(manifest)
+
+    def delete_version(self, token: str, version: str) -> dict:
+        """Remove one version of an app.
+
+        Not the one the URL serves (it would point at nothing) and not
+        the last one — taking an app down is ``unpublish``, and a verb
+        that big should be the one the caller named."""
+        with self._lock:
+            manifest = self._manifest()
+            entry = manifest["apps"].get(token)
+            if entry is None:
+                raise KeyError(token)
+            versions = entry.get("versions") or {}
+            if version not in versions:
+                raise ValueError(f"this app has no version {version!r}")
+            if version == entry.get("current"):
+                raise ValueError(
+                    f"{version!r} is what the app's URL serves — point it at "
+                    "another version first"
+                )
+            if len(versions) == 1:
+                raise ValueError(
+                    "this is the app's only version — unpublish the app instead"
+                )
+            self._drop_snapshots(token, version)
+            self._delete_tags([versions.pop(version)["tag"]])
+            self._save_manifest(manifest)
+            return self._app_row(entry)
+
+    def _delete_tags(self, names: Iterable[str]) -> None:
+        """Drop store-scoped tags.
+
+        Saying it needs a workspace on the store, and no session owns
+        these names — so it is said through a handle on the reserved
+        ``_apps`` branch, opened for the call and closed again. No
+        executor factory: nothing here runs agent code, and a dud rung
+        would boot a machine to delete a name.
+        """
+        names = list(names)
+        if not names:
+            return
+        ws = workspace(APP_BRANCH, store=self._store)
+        try:
+            for name in names:
+                try:
+                    ws.delete_tag(name, scope="store")
+                except Exception:
+                    log.warning("publish: could not delete tag %s", name)
+        finally:
+            ws.close()
+
+    # -- branching a version back into a conversation -----------------------
+
+    def branch_from_version(self, token: str, version: str) -> tuple[Session, int]:
+        """Fork the origin session and rewind the child to that
+        version's commit, so it opens with the files AND the
+        conversation as they stood at that publish.
+
+        Returns the child and the seq of the publish marker in its
+        transcript (-1 if it holds none), which the caller cuts after.
+
+        Raises ``KeyError`` when the origin session is gone: the app's
+        files are still served from the tag, but a conversation cannot
+        be branched out of a branch that no longer exists.
+        """
+        entry = self._manifest()["apps"].get(token)
+        if entry is None:
+            raise KeyError(token)
+        info = (entry.get("versions") or {}).get(version)
+        if info is None:
+            raise ValueError(f"this app has no version {version!r}")
+        origin = entry.get("session")
+        if origin not in self.known():
+            raise KeyError(origin)
+        session = self.open(origin)
+        # Rewind the PARENT, fork there, put it back — nontainer's own
+        # recipe for branching from a checkpoint, and the only one that
+        # gives a coherent child: forking first and rewinding the child
+        # after would unwrite the fork's own commit, the one that gave
+        # the child its session id, so the branch would hold the
+        # conversation under the PARENT's name and the child would open
+        # with no memory at all. The parent is reserved throughout, so
+        # nothing can see it mid-rewind but its own live preview.
+        if not session.turn_lock.acquire(blocking=False):
+            raise RuntimeError("can't branch while a turn is running")
+        try:
+            head = session.ws.head
+            session.ws.restore(info["commit"])
+            try:
+                child = self._fork_locked(session, conversation="inherit")
+            finally:
+                session.ws.restore(head)
+        finally:
+            session.turn_lock.release()
+        cut = next(
+            (
+                e["seq"]
+                for e in reversed(child.events)
+                if e.get("type") == "publish"
+                and e.get("token") == token
+                and e.get("version") == version
+            ),
+            -1,
+        )
+        return child, cut
+
+    def restore_to_publish(self, session: Session, seq: int) -> int:
+        """Rewind a session to one of its own publishes: the files and
+        the conversation go back to where they stood when that version
+        was tagged.
+
+        The same synchronized rewind an edit does — one ``restore``,
+        because the conversation lives in the branch with the files —
+        anchored on the marker's commit instead of a user event's
+        pre-turn head. Returns the seq the transcript is cut AFTER: the
+        marker survives its own restore, since the version it names is
+        still there and is still what you came back to.
+        """
+        event = next((e for e in session.events if e.get("seq") == seq), None)
+        head = event.get("head") if event else None
+        if event is None or event.get("type") != "publish" or not head:
+            raise ValueError(f"event {seq} is not a publish marker")
+        self._rewind(session, seq, head)
+        return seq + 1
 
     def close(self) -> None:
         with self._lock:
@@ -1538,6 +2095,9 @@ class Registry:
             for snapshot in self._published.values():
                 snapshot.close()
             self._published.clear()
+            for db in self._app_dbs.values():
+                db.close()
+            self._app_dbs.clear()
 
 
 def repair_aborted_run(session: Session, run_id: str | None, note: str) -> None:

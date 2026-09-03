@@ -787,14 +787,163 @@ def build_app(registry: Registry) -> Starlette:
         )
         return JSONResponse({"ok": True, "model": spec})
 
-    # -- publish: freeze a snapshot behind a capability token ------------
+    # -- publish: a version of an app, behind a capability URL -----------
+    # An app is a publication lineage: one token, one URL, one db of its
+    # own, and a growing set of versions (store-scoped tags). The URL
+    # serves whichever version is current, so publishing again moves it
+    # forward and `POST /api/apps/{token}/current` moves it back.
 
     @with_session
     async def publish(request: Any, session: Any) -> JSONResponse:
-        token, commit = registry.publish(session.name)
-        return JSONResponse(
-            {"token": token, "url": f"/apps/{token}/", "checkpoint": commit}
+        """Publish a new version. `name` names it (default: v1, v2, ...
+        within the app); `app` picks the lineage — a token extends that
+        app, "new" starts one, absent means the session's most recently
+        published app or a new one."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        version = body.get("name")
+        app = body.get("app")
+        if version is not None and not isinstance(version, str):
+            return JSONResponse({"error": "name must be a string"}, status_code=400)
+        if app is not None and not isinstance(app, str):
+            return JSONResponse({"error": "app must be a token"}, status_code=400)
+        try:
+            published = await anyio.to_thread.run_sync(
+                partial(registry.publish, session.name, version=version, app=app)
+            )
+        except RuntimeError as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+        except KeyError as e:
+            return JSONResponse({"error": str(e.args[0])}, status_code=404)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        # The transcript marker, emitted only once the version exists:
+        # it is a durable landmark in the conversation (the human can
+        # open it, or come back to it), so it must never describe a
+        # publish that didn't happen.
+        await session.emit(
+            {
+                "type": "publish",
+                "token": published["token"],
+                "version": published["version"],
+                "title": published["title"],
+                "url": published["url"],
+                "head": published["checkpoint"],
+                "tree": published["tree"],
+            }
         )
+        return JSONResponse(published)
+
+    @with_session
+    async def session_apps(request: Any, session: Any) -> JSONResponse:
+        """This session's apps, each with how far its files have moved
+        since the version the URL serves."""
+        rows = await anyio.to_thread.run_sync(registry.session_apps, session)
+        return JSONResponse({"apps": rows})
+
+    async def list_apps(request: Any) -> JSONResponse:
+        return JSONResponse(
+            {"apps": await anyio.to_thread.run_sync(registry.list_apps)}
+        )
+
+    async def set_current(request: Any) -> JSONResponse:
+        """Repoint an app's URL at one of its versions — rollback, or
+        roll forward again. Nothing is rebuilt; the pointer moves and
+        the cached snapshot is dropped."""
+        token = request.path_params["token"]
+        body = await request.json()
+        version = (body.get("version") or "").strip()
+        if not version:
+            return JSONResponse({"error": "missing version"}, status_code=400)
+        try:
+            app = await anyio.to_thread.run_sync(registry.set_current, token, version)
+        except KeyError:
+            return JSONResponse({"error": f"no app {token!r}"}, status_code=404)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse(app)
+
+    async def unpublish(request: Any) -> JSONResponse:
+        token = request.path_params["token"]
+        try:
+            await anyio.to_thread.run_sync(registry.unpublish, token)
+        except KeyError:
+            return JSONResponse({"error": f"no app {token!r}"}, status_code=404)
+        return JSONResponse({"ok": True})
+
+    async def delete_version(request: Any) -> JSONResponse:
+        token = request.path_params["token"]
+        version = request.path_params["version"]
+        try:
+            app = await anyio.to_thread.run_sync(
+                registry.delete_version, token, version
+            )
+        except KeyError:
+            return JSONResponse({"error": f"no app {token!r}"}, status_code=404)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse(app)
+
+    async def branch_version(request: Any) -> JSONResponse:
+        """Fork the origin session and rewind the child to this
+        version's commit: the files and the conversation as they stood
+        at that publish. 404 when the origin session is gone — the app
+        is still served and still readable, but there is no conversation
+        left to branch."""
+        token = request.path_params["token"]
+        version = request.path_params["version"]
+        try:
+            child, cut = await anyio.to_thread.run_sync(
+                registry.branch_from_version, token, version
+            )
+        except KeyError:
+            return JSONResponse(
+                {
+                    "error": f"the session that published {token!r} is gone — its "
+                    "files are still served at the app's URL, but there is no "
+                    "conversation left to branch from"
+                },
+                status_code=404,
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except RuntimeError as e:  # the origin session has a turn in flight
+            return JSONResponse({"error": str(e)}, status_code=409)
+        if cut >= 0:
+            # the child inherited the parent's transcript, which runs on
+            # past this publish; the marker stays, everything after it goes
+            await child.emit({"type": "truncate", "to": cut + 1})
+        return JSONResponse(
+            {"ok": True, "name": child.name, "title": registry.title_of(child.name)}
+        )
+
+    @with_session
+    async def restore(request: Any, session: Any) -> JSONResponse:
+        """Rewind to one of this session's own publishes: files, agent
+        memory and title go back to where that version was tagged, and
+        the transcript is cut after the marker. The same machinery an
+        edit uses — one restore, because the conversation lives in the
+        branch — with no new turn started."""
+        body = await request.json()
+        seq = body.get("seq")
+        if not isinstance(seq, int) or isinstance(seq, bool):
+            return JSONResponse(
+                {"error": "seq must name a publish event"}, status_code=400
+            )
+        if not session.turn_lock.acquire(blocking=False):
+            return JSONResponse({"error": "a turn is already running"}, status_code=409)
+        try:
+            cut = await anyio.to_thread.run_sync(
+                registry.restore_to_publish, session, seq
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        finally:
+            session.turn_lock.release()
+        await session.emit({"type": "truncate", "to": cut})
+        return JSONResponse({"ok": True, "since": session.next_seq})
 
     async def api_fallback(request: Any) -> Response:
         """Unmatched /api/* — almost always an app in the preview
@@ -853,7 +1002,22 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions/{name}/app", app_exists, methods=["GET"]),
             Route("/api/sessions/{name}/file", file_raw, methods=["GET"]),
             Route("/api/sessions/{name}/publish", publish, methods=["POST"]),
+            Route("/api/sessions/{name}/apps", session_apps, methods=["GET"]),
+            Route("/api/sessions/{name}/restore", restore, methods=["POST"]),
             Route("/api/sessions/{name}/fork", fork, methods=["POST"]),
+            Route("/api/apps", list_apps, methods=["GET"]),
+            Route("/api/apps/{token}/current", set_current, methods=["POST"]),
+            Route(
+                "/api/apps/{token}/versions/{version}/branch",
+                branch_version,
+                methods=["POST"],
+            ),
+            Route(
+                "/api/apps/{token}/versions/{version}",
+                delete_version,
+                methods=["DELETE"],
+            ),
+            Route("/api/apps/{token}", unpublish, methods=["DELETE"]),
             # after every real /api route: absolute-path fetches from
             # preview'd apps get a CORS-readable teaching 404
             Route("/api/{path:path}", api_fallback, methods=preview_verbs),
