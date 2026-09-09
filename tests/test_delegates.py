@@ -7,6 +7,7 @@ real against its own branch.
 """
 
 import asyncio
+import json
 import time
 
 import pytest
@@ -149,6 +150,42 @@ def test_a_dotted_name_nobody_forked_is_a_session_like_any_other(registry):
     assert [row["name"] for row in registry.list()] == ["my.notes"]
 
 
+def test_a_dotted_session_is_not_owned_by_the_session_it_is_named_under(registry):
+    """Ownership is recorded, never inferred. `foo.notes` typed by a
+    human is an ordinary session even when `foo` exists beside it."""
+    foo = registry.open("foo")
+    notes = registry.open("foo.notes")
+    _turn(notes, "!text a session of its own")  # gives it a transcript to keep
+
+    assert not registry.is_delegate("foo.notes")
+    assert sorted(row["name"] for row in registry.list()) == ["foo", "foo.notes"]
+
+    registry.delete(foo)
+
+    assert [row["name"] for row in registry.list()] == ["foo.notes"]
+    assert "foo.notes" in registry._store.sessions()
+    assert (registry._store.path / "dbs" / "foo.notes.sqlite").exists()
+    assert (registry._store.path / "events" / "foo.notes.jsonl").exists()
+
+
+def test_the_delegate_record_outlives_the_registry(registry, tmp_path):
+    """The record is in the manifest, so a restart still knows which
+    sessions are somebody's delegates."""
+    parent = registry.open("boss")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+
+    manifest = json.loads((tmp_path / "sessions.json").read_text())
+    assert manifest["delegates"][answer.branch] == "boss"
+
+    reborn = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+    )
+    assert reborn.is_delegate(answer.branch)
+    assert [row["name"] for row in reborn.list()] == ["boss"]
+
+
 def test_deleting_a_session_takes_its_delegates_with_it(registry):
     parent = registry.open("boss")
     answer = _delegate(registry, parent, WRITE_A_NOTE)
@@ -160,6 +197,19 @@ def test_deleting_a_session_takes_its_delegates_with_it(registry):
     assert child not in registry._store.sessions()
     assert not (registry._store.path / "dbs" / f"{child}.sqlite").exists()
     assert not (registry._store.path / "events" / f"{child}.jsonl").exists()
+    # the ownership record goes with the branch it described
+    assert registry._manifest()["delegates"] == {}
+
+
+def test_deleting_a_delegate_on_its_own_takes_its_record(registry):
+    parent = registry.open("boss")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+
+    registry.delete(registry.open(answer.branch))
+
+    assert registry._manifest()["delegates"] == {}
+    assert answer.branch not in registry._store.sessions()
+    assert [row["name"] for row in registry.list()] == ["boss"]
 
 
 # -- the sessions tool, end to end ------------------------------------------

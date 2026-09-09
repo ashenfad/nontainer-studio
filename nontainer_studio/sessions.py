@@ -50,7 +50,7 @@ from nontainer.adapters.agno import WorkspaceTools
 from nontainer.adapters.agno_db import KvgitStoreDb, fork_session
 from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
 from nontainer.errors import JobRunning, SessionIdError, SessionsError
-from nontainer.sessions import SEPARATOR, Sessions
+from nontainer.sessions import Sessions
 from nontainer.wsgit import register_wsgit
 
 from .delegates import DELEGATE_TURNS, StudioRunner
@@ -877,8 +877,10 @@ class Registry:
         # Delegates are the parent's business, not the rail's: they are
         # forked by a tool call, answered on a later turn, and deleted
         # with the session that asked. Listing them would put a row in
-        # the rail for every question an agent ever farmed out.
-        names = {n for n in names if not self.is_delegate(n, names)}
+        # the rail for every question an agent ever farmed out. By the
+        # record, so a session that merely LOOKS like a child of another
+        # is listed like the ordinary session it is.
+        names = {n for n in names if n not in manifest["delegates"]}
         created = manifest["created"]
         rows = []
         for name in names:
@@ -903,22 +905,38 @@ class Registry:
         rows.sort(key=lambda r: (-created.get(r["name"], 0), r["name"]))
         return rows
 
-    def is_delegate(self, name: str, known: "set[str] | None" = None) -> bool:
+    def is_delegate(self, name: str, manifest: dict | None = None) -> bool:
         """Whether ``name`` is a session somebody forked as a delegate.
 
-        nontainer scopes a child under the session that asked for it —
-        ``analyst.sleepy-otter``, dot-separated because a session id is
-        a branch name and holds no path separator — and a slug the
-        studio mints is hyphenated petname words with no dot in them.
-        So a dotted name whose prefix names a session here was forked by
-        that session, and a dotted name a human typed is a session like
-        any other. ``known`` supplies the pool to check against, for a
-        caller that already has one.
+        Recorded, never inferred. nontainer scopes a child under the
+        session that asked for it (``analyst.sleepy-otter``, dot-
+        separated because a session id is a branch name and holds no
+        path separator), but that is NAMING: ``analyst.notes`` typed by
+        a human is an ordinary session, and reading ownership off the
+        prefix would hide it from the rail and delete it with
+        ``analyst``. What makes a session a delegate is the record the
+        studio wrote when it opened one (see :meth:`open_delegate`).
+
+        Pass ``manifest`` to answer for a batch without re-reading it.
         """
-        if SEPARATOR not in name:
-            return False
-        pool = self.known() if known is None else known
-        return any(name.startswith(p + SEPARATOR) for p in pool if p != name)
+        return name in (manifest or self._manifest())["delegates"]
+
+    def delegates_of(self, name: str, manifest: dict | None = None) -> list[str]:
+        """Every session forked under ``name``, delegates of delegates
+        included — the subtree that goes when ``name`` goes."""
+        record = (manifest or self._manifest())["delegates"]
+        found: list[str] = []
+        frontier = [name]
+        while frontier:
+            parent = frontier.pop()
+            children = sorted(
+                child
+                for child, owner in record.items()
+                if owner == parent and child not in found
+            )
+            found.extend(children)
+            frontier.extend(children)
+        return found
 
     # -- titles: display only, never identity ------------------------------
 
@@ -958,9 +976,14 @@ class Registry:
     def _manifest(self) -> dict:
         """{"sessions": [...], "apps": {token: app}, "published":
         {token: {branch, session, checkpoint}}, "models": {name: spec},
-        "titles": {name: {user, agent}}, "created": {name: epoch}} —
-        tolerant of the v1 bare-list format, and of any key simply
-        being absent.
+        "titles": {name: {user, agent}}, "created": {name: epoch},
+        "delegates": {child: parent}} — tolerant of the v1 bare-list
+        format, and of any key simply being absent.
+
+        ``delegates`` is who forked whom (see :meth:`open_delegate`).
+        It is a RECORD and not a naming rule: a session is somebody's
+        delegate because the studio wrote it down when it opened one,
+        never because of what its name looks like.
 
         ``apps`` is the publication registry (see :meth:`publish`);
         ``published`` is the anchor-branch shape that preceded it and
@@ -978,6 +1001,7 @@ class Registry:
             "models": data.get("models", {}),
             "titles": data.get("titles", {}),
             "created": data.get("created", {}),
+            "delegates": data.get("delegates", {}),
         }
 
     def _load_manifest(self) -> set[str]:
@@ -1015,6 +1039,7 @@ class Registry:
         manifest["models"].pop(name, None)
         manifest["titles"].pop(name, None)
         manifest["created"].pop(name, None)
+        manifest["delegates"].pop(name, None)
         self._save_manifest(manifest)
 
     # -- create: mint an identity, then open it ----------------------------
@@ -1497,13 +1522,33 @@ class Registry:
         one its parent is looking at. Copied and not shared, for the
         reason :meth:`fork` copies it: two universes must not write over
         each other's rows.
+
+        This is also the one moment the studio knows both halves of
+        ``child -> parent``, so it is where that is written down. Only
+        what is written down is a delegate: the naming convention says
+        who asked, the record says who OWNS, and a branch the helper
+        forked whose run never reached here has neither a record nor a
+        session row — it is a branch in the store that nothing lists,
+        that no parent's deletion takes with it, and that becomes an
+        ordinary session if a later ``open`` is ever asked for its name.
         """
         dst = self._store.path / "dbs" / f"{name}.sqlite"
         with self._lock:
             source = self._sessions.get(parent)
+            manifest = self._manifest()
+            manifest["delegates"][name] = parent
+            self._save_manifest(manifest)
         if source is not None and not dst.exists():
             source.db.copy_to(dst)
-        return self.open(name)
+        try:
+            return self.open(name)
+        except BaseException:
+            # An unopened name whose record stayed would hide a session
+            # that does not exist from a rail that never showed it, and
+            # would put it on the parent's deletion list.
+            with self._lock:
+                self._unrecord(name)
+            raise
 
     def release(self, name: str) -> None:
         """Close a session's live handles and leave everything on disk.
@@ -1659,15 +1704,16 @@ class Registry:
         keep serving after the conversation that built them is gone.
         Taking one down is ``unpublish``, said about the app.
 
-        Its DELEGATES are. A delegate is scoped under the session that
-        asked for it, has no row in the rail of its own, and exists to
-        answer that session — so it goes when that session goes, by
-        prefix, and the whole subtree with it (a delegate may delegate).
+        Its DELEGATES are. A delegate has no row in the rail of its own
+        and exists to answer the session that forked it, so it goes when
+        that session goes, and the whole subtree with it (a delegate may
+        delegate). By the RECORD of who forked whom, not by the shape of
+        the names: a session that merely looks like a child of this one
+        is an ordinary session and stays. Deleting a delegate on its own
+        works the same way and takes its record with it.
         """
         name = session.name
-        doomed = [name] + sorted(
-            n for n in self.known() if n.startswith(name + SEPARATOR)
-        )
+        doomed = [name] + self.delegates_of(name)
         for victim in doomed:
             # Before the session leaves the registry: the db reaches the
             # conversation through workspace_for, which would otherwise
@@ -1688,6 +1734,7 @@ class Registry:
                 # it) would inherit a dead session's name and birthday
                 manifest["titles"].pop(victim, None)
                 manifest["created"].pop(victim, None)
+                manifest["delegates"].pop(victim, None)
                 self._save_manifest(manifest)
             if live is not None:
                 # before branch deletion: an open workspace holds its branch

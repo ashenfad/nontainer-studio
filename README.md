@@ -240,7 +240,10 @@ mechanism rather than the person at the keyboard: an answer is evidence
 to weigh, not an instruction from a principal.
 
 Delegates stay out of the rail (they are forked by a tool call, not by
-a human), and are deleted with the session that asked, by name prefix.
+a human), and are deleted with the session that asked. Which sessions
+those are is recorded when the studio opens one, never read off the
+name: `analyst.sleepy-otter` says who asked, and a `analyst.notes` you
+made yourself is an ordinary session that nothing hides or deletes.
 A delegate's conversation never comes back — its reply is the summary.
 Budget is turns: `Registry(delegate_turns=...)`, three by default, and
 a delegate that stops without a reply spends the rest being asked to
