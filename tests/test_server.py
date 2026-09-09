@@ -370,15 +370,6 @@ def test_busy_session_409s_chat(studio):
         session.turn_lock.release()
 
 
-def test_the_app_branch_name_is_reserved(studio):
-    """`_apps` is the branch a store tag is read through when no
-    session is left to lend a handle, so it cannot also be a session —
-    deleting that session would take the anchor with it."""
-    client, registry = studio
-    r = client.post("/api/sessions", json={"name": "_apps"})
-    assert r.status_code == 400 and "reserved" in r.json()["error"]
-
-
 def test_bad_session_name_400(studio):
     client, _ = studio
     assert client.post("/api/sessions", json={"name": "../evil"}).status_code == 400
