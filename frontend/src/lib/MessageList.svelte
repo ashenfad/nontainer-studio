@@ -4,6 +4,7 @@
     // the visible transcript — the edited prompt runs as a fresh turn
     // from there. One mental model: everything below gets replaced.
     import AgentMessage from './AgentMessage.svelte'
+    import Markdown from './Markdown.svelte'
     import { published } from './runtime.svelte.js'
     import { viewFile } from './viewer.svelte.js'
 
@@ -204,6 +205,17 @@
                     >
                 {/if}
             </div>
+        {:else if msg.role === 'delegate'}
+            <!-- A peer's answer, framed as one. It arrived in the slot a
+                 person's message occupies, so the card says whose it is
+                 and the text keeps its own provenance header. -->
+            <div class="delegate">
+                <div class="delegate-head">
+                    delegate <strong>{msg.name}</strong>
+                    {msg.status ?? 'answered'}
+                </div>
+                <Markdown text={msg.text} />
+            </div>
         {:else if msg.role === 'notice'}
             <div class="notice">{msg.text}</div>
         {:else if msg.role === 'error'}
@@ -355,6 +367,31 @@
     .attach-chip svg {
         flex-shrink: 0;
         opacity: 0.7;
+    }
+    .delegate {
+        align-self: stretch;
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 8px;
+        background: var(--surface);
+        padding: 0.5rem 0.8rem;
+        margin: 0.3rem 0;
+        font-size: 0.82rem;
+        color: var(--text-muted);
+        overflow-x: auto;
+    }
+    .delegate-head {
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-muted);
+        margin-bottom: 0.3rem;
+    }
+    .delegate-head strong {
+        color: var(--accent);
+        font-weight: 600;
+        text-transform: none;
+        letter-spacing: 0;
     }
     .notice {
         align-self: center;

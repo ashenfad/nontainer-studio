@@ -31,6 +31,7 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from . import delegates
 from .sessions import Registry, _clean_title, repair_aborted_run
 
 STATIC = Path(__file__).parent / "static"
@@ -364,7 +365,26 @@ async def _run_turn(session: Any, message: str) -> None:
         # head here = the workspace BEFORE this turn: the user event's
         # stamp is the undo anchor (check it out = unwind this turn)
         await session.emit({"type": "user", "text": message, "head": session.ws.head})
-        async for ev in session.agent.arun(message, stream=True, stream_events=True):
+        # Delegates answer between turns, and nontainer holds the answer
+        # until something collects it. This turn is that something: the
+        # answers go into the transcript where the human can read them,
+        # and ahead of the human's message in what the model is sent,
+        # because they arrived first and the message is the instruction.
+        # Marked as mechanism, never as the human asking (answer_message).
+        answers = session.take_delegate_answers()
+        for name, answer in answers:
+            await session.emit(
+                {
+                    "type": "delegate",
+                    "name": name,
+                    "status": answer.status,
+                    "text": delegates.answer_message(name, answer),
+                }
+            )
+        prompt = "\n\n".join(
+            [delegates.answer_message(n, a) for n, a in answers] + [message]
+        )
+        async for ev in session.agent.arun(prompt, stream=True, stream_events=True):
             run_id = getattr(ev, "run_id", None) or run_id
             session.run_id = run_id  # the stop button's cancel handle
             kind = getattr(ev, "event", "")
