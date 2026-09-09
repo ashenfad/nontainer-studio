@@ -160,14 +160,17 @@ class StudioRunner:
         child = self._registry.open_delegate(self._parent, session)
         try:
             prompt = self._brief(child) + task
-            error = None
             for _ in range(turns):
                 text, error = self._turn(child, prompt)
+                # The error first, and always. A turn that streamed prose
+                # and THEN died has both, and prose that simply stops
+                # reads as a finished answer — so a run that failed says
+                # so, whatever it managed to say on the way.
+                if error:
+                    return Answer(text=_failed_text(text, error), status="failed")
                 if text:
                     return Answer(text=text)
                 prompt = NUDGE
-            if error:
-                return Answer(text=error, status="failed")
             return Answer(text=CAPPED, status="capped")
         finally:
             self._registry.release(session)
@@ -232,6 +235,18 @@ class StudioRunner:
         since = child.next_seq
         asyncio.run(_run_turn(child, prompt))
         return _reply(child, since)
+
+
+def _failed_text(text: str, error: str) -> str:
+    """A failed run's answer: what the delegate said, and why it stopped.
+
+    Both halves, because either alone misleads the caller. A bare error
+    throws away work the delegate did and described, and partial prose
+    on its own is indistinguishable from a delegate that finished.
+    """
+    if not text:
+        return error
+    return f"{text}\n\n[the delegate's run failed: {error}]"
 
 
 def _reply(child: "Session", since: int) -> tuple[str, str | None]:

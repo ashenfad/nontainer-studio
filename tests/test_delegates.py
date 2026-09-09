@@ -10,6 +10,7 @@ import asyncio
 import time
 
 import pytest
+from agno.models.response import ModelResponse
 from nontainer.sessions import Sessions
 
 from nontainer_studio import delegates, server
@@ -283,3 +284,30 @@ def test_an_edited_turn_gets_the_delegates_answer_again(registry):
     # once, though: the turn after it is not a third delivery
     assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok"))
     assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [0]
+
+
+class FailingModel(DummyModel):
+    """Streams a sentence, then the provider dies mid-run."""
+
+    async def ainvoke_stream(self, messages, **kwargs):
+        yield ModelResponse(role="assistant", content="Got part of the way. ")
+        raise RuntimeError("provider exploded")
+
+
+def test_a_failure_after_partial_prose_is_failed_not_answered(tmp_path):
+    """Prose that simply stops reads as a complete answer. A run that
+    died says so, and keeps what the delegate managed to say."""
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a, **k: FailingModel(),
+        store=tmp_path,
+        default_model="dummy",
+    )
+    try:
+        parent = registry.open("boss")
+        answer = _delegate(registry, parent, "look into it")
+    finally:
+        registry.close()
+
+    assert answer.status == "failed"
+    assert "Got part of the way." in answer.text
+    assert "provider exploded" in answer.text
