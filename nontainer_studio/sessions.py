@@ -846,6 +846,7 @@ class Registry:
             db_path=str(self._store.path / "agno"),
         )
         self._migrate_published()
+        self._migrate_publications()
 
     def workspace_for(self, name: str) -> Workspace:
         """The LIVE workspace for a session — the store db's ``open``.
@@ -1949,6 +1950,149 @@ class Registry:
                 }
             },
         }
+
+    # -- migration: tagged versions become publications ---------------------
+
+    def _migrate_publications(self) -> None:
+        """Re-derive tagged versions as publications, once, at startup.
+
+        A version used to be a store-scoped tag over the origin
+        session's branch, so a capability URL froze the whole session
+        tree behind it — the notes, the uploads, the skills, the
+        conversation record. A publication holds the files under
+        ``app/`` and the rows that describe them, on a branch of its
+        own, so re-derive each recorded version from the commit its tag
+        names, keep the names, the order and the pointer, and drop the
+        tag.
+
+        Versions never move, so this runs once per install: an app
+        whose every version row already names a publication ref is
+        already migrated and is not looked at again.
+        """
+        with self._lock:
+            manifest = self._manifest()
+            stale = {
+                token: entry
+                for token, entry in manifest["apps"].items()
+                if any(
+                    not row.get("ref") for row in (entry.get("versions") or {}).values()
+                )
+            }
+            if not stale:
+                return
+            for token, entry in stale.items():
+                migrated = self._migrate_app(token, entry)
+                if migrated is None:
+                    manifest["apps"].pop(token, None)
+                    log.warning(
+                        "publish: dropped %s — none of its tagged versions "
+                        "could be published",
+                        token,
+                    )
+                else:
+                    manifest["apps"][token] = migrated
+                    log.info(
+                        "publish: migrated %s to publication %r at %s (current %s)",
+                        token,
+                        migrated["pub"],
+                        ", ".join(migrated["versions"]),
+                        migrated["current"],
+                    )
+            self._save_manifest(manifest)
+
+    def _migrate_app(self, token: str, entry: dict) -> dict | None:
+        """One tag-shaped app entry -> the same app over a publication,
+        or None if not one of its versions could be re-derived. Caller
+        holds ``_lock``."""
+        pub = _pub_name(entry, token)
+        rows = entry.get("versions") or {}
+        # Publish order, so the versions land in the order they were
+        # made — nontainer keeps the lineage, and a name published out
+        # of order would still read as if it had come later.
+        ordered = sorted(rows.items(), key=lambda kv: kv[1].get("created", 0))
+        migrated: dict[str, dict] = {}
+        for version, row in ordered:
+            if row.get("ref"):
+                migrated[version] = row
+                continue
+            ref = self._republish(pub, version, entry, row)
+            if ref is None:
+                continue
+            migrated[version] = {k: v for k, v in row.items() if k != "tag"} | {
+                "ref": ref
+            }
+        self._delete_tags(r["tag"] for r in rows.values() if r.get("tag"))
+        if not migrated:
+            return None
+        current = entry.get("current")
+        if current not in migrated:
+            # The version the URL pointed at could not be re-derived.
+            # The newest one that could is the closest thing to what
+            # was being served, and a publication must point somewhere.
+            current = max(migrated, key=lambda v: migrated[v].get("created", 0))
+        self._store.set_current(pub, current)
+        return dict(entry, pub=pub, current=current, versions=migrated)
+
+    def _republish(self, pub: str, version: str, entry: dict, row: dict) -> str | None:
+        """Publish one tagged version again as a version of ``pub``;
+        returns its ref, or None if the tagged state holds no app.
+
+        The source is a FROZEN workspace over the tagged commit, which
+        is what publishing derives from. It is opened through the
+        origin SESSION where that branch is still there, so the version
+        records the session it actually came from; through the tag
+        itself where the session is gone, and then ``published_from``
+        names whichever branch the store-scoped read borrowed instead.
+        The studio's own ``session`` key carries the origin either way,
+        which is what the rail and ``branch_from_version`` read.
+
+        No execution settings are passed: nothing runs here, only
+        reads, so this takes nontainer's default executor rather than
+        booting a selected backend once per version.
+        """
+        origin = entry.get("session")
+        commit = row.get("commit")
+        tag = row.get("tag")
+        source = None
+        if origin and commit and origin in self.known():
+            try:
+                source = self._store.resolve(f"{origin}@{commit}")
+            except Exception:
+                source = None
+        if source is None and tag:
+            try:
+                source = self._store.tags.at(tag)
+            except Exception:
+                source = None
+        if source is None:
+            log.warning(
+                "publish: dropped %s/%s — neither its session nor its tag still opens",
+                entry.get("token"),
+                version,
+            )
+            return None
+        try:
+            published = self._store.publish(
+                source,
+                pub,
+                version=version,
+                info={
+                    "token": entry.get("token"),
+                    "session": origin,
+                    "title": entry.get("title") or DEFAULT_TITLE,
+                },
+            )
+        except Exception as e:
+            log.warning(
+                "publish: dropped %s/%s — it cannot be published: %s",
+                entry.get("token"),
+                version,
+                e,
+            )
+            return None
+        finally:
+            source.close()
+        return str(published.version(version).ref)
 
     # -- publish: an app is a lineage of versions ---------------------------
     #

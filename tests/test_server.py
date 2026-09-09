@@ -1005,6 +1005,119 @@ def test_old_shape_publications_migrate_on_load(studio, tmp_path, caplog):
     assert "migrated live-token" in text and "dropped dead-token" in text
 
 
+def _tagged_app(registry, session, token, versions, current=None) -> dict:
+    """The layout a version had before publications, built by hand: one
+    store-scoped `pub/<token>/<version>` tag per version, a manifest row
+    naming it, and the app's db copied beside the session's."""
+    rows = {}
+    for i, (version, html) in enumerate(versions):
+        session.ws.files.write("/workspace/app/index.html", html)
+        session.ws.commit()
+        tag = f"pub/{token}/{version}"
+        commit = registry._store.tags.add(
+            session.ws,
+            tag,
+            info={
+                "token": token,
+                "session": session.name,
+                "version": version,
+                "title": "Old app",
+            },
+        )
+        rows[version] = {
+            "tag": tag,
+            "commit": commit,
+            "tree": sessions_mod._head_tree(session.ws),
+            "created": 100.0 + i,
+        }
+    db = registry._store.path / "dbs" / "apps" / f"{token}.sqlite"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    session.db.copy_to(db)
+    manifest = registry._manifest()
+    entry = {
+        "token": token,
+        "session": session.name,
+        "title": "Old app",
+        "created": 100.0,
+        "db": f"dbs/apps/{token}.sqlite",
+        "current": current or versions[-1][0],
+        "versions": rows,
+    }
+    manifest["apps"][token] = entry
+    registry._save_manifest(manifest)
+    return entry
+
+
+def test_tagged_versions_migrate_to_publications(studio, tmp_path, caplog):
+    """The one-way migration. Each recorded tag is published again as a
+    version of a publication named for the token — same names, same
+    order, same pointer — and the tag goes. A version whose origin
+    session was deleted comes across too: the tag is still there, and
+    that is what the state is re-derived from."""
+    client, registry = studio
+    for name in ("s1", "s2"):
+        client.post("/api/sessions", json={"name": name})
+    live = _tagged_app(
+        registry,
+        registry.get("s1"),
+        "live-app",
+        [("v1", "<h1>one</h1>"), ("v2", "<h1>two</h1>")],
+        current="v1",  # the URL was rolled back
+    )
+    _tagged_app(registry, registry.get("s2"), "orphan-app", [("v1", "<h1>alone</h1>")])
+    assert client.delete("/api/sessions/s2").json() == {"ok": True}
+
+    with caplog.at_level("INFO", logger="nontainer_studio.sessions"):
+        reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    reborn._build_agent = lambda *a, **k: FakeAgent()
+    try:
+        record = _registry(tmp_path)
+        assert sorted(record["live-app"]["versions"]) == ["v1", "v2"]
+        assert record["live-app"]["current"] == "v1"  # the pointer came across
+        assert sorted(record["orphan-app"]["versions"]) == ["v1"]
+        # the old tags are gone, and the rows name publications now
+        tags = _store_tags(tmp_path)
+        assert not any(t.startswith("@store/pub/live-app/") for t in tags)
+        assert not any(t.startswith("@store/pub/orphan-app/") for t in tags)
+        entry = reborn._manifest()["apps"]["live-app"]
+        assert entry["pub"] == "live-app"
+        assert all("tag" not in v and v["ref"] for v in entry["versions"].values())
+        # what the SESSION commit was is kept: it is what a marker
+        # restores to and what changed_since measures against
+        assert {v: r["commit"] for v, r in entry["versions"].items()} == {
+            v: r["commit"] for v, r in live["versions"].items()
+        }
+
+        with TestClient(server.build_app(reborn)) as client2:
+            assert "<h1>one</h1>" in client2.get("/apps/live-app/").text
+            assert "<h1>alone</h1>" in client2.get("/apps/orphan-app/").text
+            # and the pointer still moves
+            client2.post("/api/apps/live-app/current", json={"version": "v2"})
+            assert "<h1>two</h1>" in client2.get("/apps/live-app/").text
+    finally:
+        reborn.close()
+    assert "migrated live-app" in "\n".join(caplog.messages)
+
+
+def test_the_migration_runs_once(studio, tmp_path):
+    """Versions never move, so a second open has nothing to do: the
+    refs it finds are the refs the first one wrote, and no version is
+    published twice."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _tagged_app(registry, registry.get("s1"), "once-app", [("v1", "<h1>one</h1>")])
+
+    first = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    refs = first._manifest()["apps"]["once-app"]["versions"]
+    first.close()
+    second = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    try:
+        assert second._manifest()["apps"]["once-app"]["versions"] == refs
+        assert sorted(_registry(tmp_path)["once-app"]["versions"]) == ["v1"]
+    finally:
+        second.close()
+
+
 def test_restore_to_a_publish_rewinds_files_and_conversation(scripted):
     """A publish marker is an anchor like a user message is: restoring
     to one puts the files AND the agent's memory back where that version
