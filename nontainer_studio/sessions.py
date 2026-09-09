@@ -512,10 +512,11 @@ STUDIO_PRIMER = (
     "turn is a commit the human can rewind by editing an earlier "
     "prompt — prefer small complete "
     "steps over big-bang changes. They may also PUBLISH the app: a "
-    "frozen version of the code behind a share URL that keeps serving "
-    "while you keep working, over a `db` the published app owns. "
-    "Publishing again adds a version and the URL moves to it, so build "
-    "toward states worth publishing."
+    "frozen version of `app/` — that tree and nothing else in the "
+    "workspace — behind a share URL that keeps serving while you keep "
+    "working, over a `db` the published app owns. Publishing again adds "
+    "a version and the URL moves to it, so build toward states worth "
+    "publishing."
 )
 
 VERSIONING_PRIMER = (
@@ -565,7 +566,9 @@ DB_PRIMER = (
     "CREATE TABLE IF NOT EXISTS and read tolerantly. Use it (not "
     "`cache`) for any "
     "state the app's users mutate. `cache` is versioned workspace "
-    "data: it rewinds with the workspace and freezes at publish. API: "
+    "data: it rewinds with the workspace and is NOT published — a "
+    "version is the `app/` tree, so anything a published handler must "
+    "read belongs in a file under `app/` or in `db`. API: "
     "`db.execute(sql, params=())` for writes (INSERT / UPDATE / "
     "`CREATE TABLE IF NOT EXISTS`), `db.executemany(sql, rows)` for "
     "bulk inserts (one commit), `db.query(sql, params=()) -> list "

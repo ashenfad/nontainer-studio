@@ -510,7 +510,7 @@ export class SessionRuntime {
     }
 
     /** restore to one of this session's own publishes: files, agent
-     * memory and title go back to where that version was tagged, and
+     * memory and title go back to where that version was published, and
      * the transcript is cut after the marker (which survives). */
     async restoreTo(seq) {
         if (this.busy) return false

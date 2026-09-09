@@ -167,8 +167,11 @@ def get(req):
   pass `columns=[...]` for just what you use) rather than assuming it
   happens once.
 - For something genuinely too expensive to redo per request, precompute
-  it into `cache` from run_python — handlers can READ `cache` and it
-  persists. A GET cannot WRITE it (read-only; writing 500s).
+  it into a FILE under /workspace/app/data/ from run_python. `cache`
+  works in the live preview — handlers can READ it — but it is not
+  published: a version is the `app/` tree and its rows, so a published
+  handler finds an empty cache. A GET cannot WRITE `cache` either
+  (read-only; writing 500s).
 - Shared backend code goes in /helpers/<mod>.py, imported QUALIFIED:
   `from helpers.mymod import fn`. Imports resolve from the workspace
   root — a bare `import mymod` will not find it.
