@@ -34,6 +34,10 @@ you can rewind, fork, or publish.
   the parent stands — same transcript, same memory, its own universe
   from there; `fresh` keeps the files and starts the chat over. The app
   db is copied either way, since live state has no history.
+- **Delegate = a fork with an agent on it.** The agent can hand a task
+  to a fork of itself and collect the answer a turn or two later. The
+  delegate works on a branch of its own, so nothing it writes touches
+  your files until the parent merges it — in the terminal, by name.
 
 Demo, not product: single-user, localhost, no auth.
 
@@ -165,7 +169,7 @@ Three kinds of state, on purpose:
 | state | durability | restore | fork | publish |
 |---|---|---|---|---|
 | **workspace** (files, cache, cwd) | kvgit branch per session | rewinds | branches (O(1)) | a version — a store-scoped tag, frozen and read-only |
-| **app `db`** (live SQLite host object) | file per session | untouched — external state has no history | copied | copied ONCE, at the app's first version; the app owns it from then on |
+| **app `db`** (live SQLite host object) | file per session | untouched — external state has no history | copied (a delegate's too) | copied ONCE, at the app's first version; the app owns it from then on |
 | **conversation** | agno's session in the same kvgit branch (+ a jsonl transcript) | rewinds with the files — one `checkout`, not two writes that can disagree; an `edit` trims the visible transcript too | `inherit` or `fresh` | a marker in the transcript you can restore to, or branch from |
 
 An **app** is a publication lineage: one URL, one `db`, and a growing
@@ -189,6 +193,58 @@ agno's cross-session tables — user memories, metrics — sit at
 must not rewind with any one branch. Conversations from before the
 move into the branch (the old `store/chat.sqlite`) are not carried
 over; those sessions keep their files and start with an empty memory.
+
+### Delegation
+
+The agent can delegate. One tool, `sessions`, with an action argument:
+
+```
+sessions ask     task=... [name=] [paths=] [inherit=] [wait=]
+sessions list    your jobs: name, status, what you asked for
+sessions result  name=... — the answer, once the job is done
+sessions cancel / keep
+```
+
+A delegate is a fork with an agent on it. `ask` forks this session
+under a name scoped to it (`analyst.sleepy-otter`), and the studio
+assembles that branch the way it assembles any session — same model,
+same tools, same python config, and a copy of the app db, because live
+state versions with nothing and a delegate sent to work on an app over
+an empty db would be testing a different program. Then it runs the task
+as that session's turn, exactly as a human's turn runs.
+
+**Nothing comes back on its own.** The delegate's files are on its own
+branch, and the parent takes them itself, in the terminal:
+
+```sh
+ws-git diff <name>                  # read what it did
+ws-git merge <name>                 # take all of it
+ws-git checkout <name> -- <paths>   # take some
+```
+
+`ws-git` is the agent's own git over the session — status, commit, log,
+diff, branch, merge, checkout — and it is on because delegation is what
+needs it. A delegate's work arrives as a *named* commit only if the
+delegate runs `ws-git commit`; what it staged is taken as exactly that,
+and anything it wrote past its last commit is reported as left out
+rather than committed on its behalf. A delegate that never touches
+ws-git is simpler: its branch head is its result, since every write is
+already there.
+
+**Delivery is pull, notification is the studio's.** nontainer holds the
+answer until something collects it; the studio shows a count on the
+parent's rail row and injects the answer into that session's next turn
+— into the transcript as its own card, and into what the model is sent.
+The text says whose answer it is and that this is the delegation
+mechanism rather than the person at the keyboard: an answer is evidence
+to weigh, not an instruction from a principal.
+
+Delegates stay out of the rail (they are forked by a tool call, not by
+a human), and are deleted with the session that asked, by name prefix.
+A delegate's conversation never comes back — its reply is the summary.
+Budget is turns: `Registry(delegate_turns=...)`, three by default, and
+a delegate that stops without a reply spends the rest being asked to
+finish before its answer resolves as `capped`.
 
 ### a2ui egress
 
@@ -223,7 +279,8 @@ projection of the foreground runtime — that's what makes background
 turns and instant session switching work. The server-side halves live in
 `nontainer_studio/server.py` (routes, agno-stream → event mapping) and
 `nontainer_studio/sessions.py` (registry, synchronized rewind, publish,
-durable transcript).
+durable transcript). Delegation's loop half — the `SessionRunner` that
+drives a forked session to an answer — is `nontainer_studio/delegates.py`.
 
 ## Tests
 
