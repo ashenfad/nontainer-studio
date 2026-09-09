@@ -1158,6 +1158,63 @@ def test_tagged_versions_migrate_to_publications(studio, tmp_path, caplog):
     assert "migrated live-app" in "\n".join(caplog.messages)
 
 
+def test_the_migration_resumes_after_a_crash(studio, tmp_path):
+    """The window between a version landing on the store and the row
+    naming it landing in the manifest. A crash in there must be
+    recoverable, so the legacy tag — the only thing that could
+    re-derive the version — outlives the manifest write rather than
+    going with the publish, and the retry ADOPTS the version already
+    published under that name instead of colliding with it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _tagged_app(
+        registry,
+        registry.get("s1"),
+        "crash-app",
+        [("v1", "<h1>one</h1>"), ("v2", "<h1>two</h1>")],
+        current="v1",
+    )
+
+    original = sessions_mod.Registry._save_manifest
+
+    def die_once(self, manifest):
+        app = manifest["apps"].get("crash-app") or {}
+        if app.get("pub"):  # the row that names the publication
+            raise RuntimeError("the machine went away mid-migration")
+        return original(self, manifest)
+
+    sessions_mod.Registry._save_manifest = die_once
+    try:
+        with pytest.raises(RuntimeError):
+            sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    finally:
+        sessions_mod.Registry._save_manifest = original
+
+    # the versions are on the store and the manifest never heard: the
+    # tags have to still be there, or nothing can finish the job
+    assert sorted(_registry(tmp_path)["crash-app"]["versions"]) == ["v1", "v2"]
+    crashed = _store_tags(tmp_path)
+    assert "@store/pub/crash-app/v1" in crashed
+    assert "@store/pub/crash-app/v2" in crashed
+
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    reborn._build_agent = lambda *a, **k: FakeAgent()
+    try:
+        entry = reborn._manifest()["apps"]["crash-app"]
+        record = _registry(tmp_path)["crash-app"]
+        # once each, not twice, and pointing where it pointed
+        assert sorted(entry["versions"]) == sorted(record["versions"]) == ["v1", "v2"]
+        assert entry["current"] == record["current"] == "v1"
+        # and only NOW do the tags go
+        assert not any(
+            t.startswith("@store/pub/crash-app/") for t in _store_tags(tmp_path)
+        )
+        with TestClient(server.build_app(reborn)) as client2:
+            assert "<h1>one</h1>" in client2.get("/apps/crash-app/").text
+    finally:
+        reborn.close()
+
+
 def test_the_migration_runs_once(studio, tmp_path):
     """Versions never move, so a second open has nothing to do: the
     refs it finds are the refs the first one wrote, and no version is
