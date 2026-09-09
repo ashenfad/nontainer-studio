@@ -432,7 +432,8 @@ export class SessionRuntime {
     }
 
     /** gracefully stop the running turn (agno cancels at the next
-     * checkpoint; partial work stays in files AND agent memory) */
+     * cancellation point; partial work stays in files AND agent
+     * memory) */
     async stop() {
         if (!this.busy) return false
         try {
