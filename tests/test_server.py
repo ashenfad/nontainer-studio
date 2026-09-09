@@ -574,6 +574,65 @@ def test_a_version_carries_the_app_and_not_the_session(studio):
     )
 
 
+def test_shared_backend_code_lives_under_app(studio, tmp_path):
+    """Everything a published app RUNS from lives under `app/`. A
+    version is that tree, so a module at the workspace root imports
+    fine in the live preview and raises on every request once
+    published — the trap this asserts nobody falls into.
+
+    `_`-prefixed files under `app/api/` are where it goes: the api/
+    prefix routes only to a bare handler name (no slash, no leading
+    underscore) and static serving refuses everything under api/, so
+    the module is importable and reachable by nobody, exactly as
+    handler source is. Asserted through a published app after a cold
+    restart, and asserted of the SKILL too, because what the agent is
+    told is the half that decides where the module ends up.
+    """
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    fs = session.ws.files.fs
+    fs.makedirs("/workspace/app/api", exist_ok=True)
+    fs.makedirs("/workspace/helpers", exist_ok=True)
+    fs.write("/workspace/helpers/outside.py", b"def fn():\n    return 'outside'\n")
+    fs.write("/workspace/app/api/_shared.py", b"def fn():\n    return 'shared'\n")
+    fs.write(
+        "/workspace/app/api/under.py",
+        b"def get(req):\n    from app.api._shared import fn\n    return {'v': fn()}\n",
+    )
+    fs.write(
+        "/workspace/app/api/outside.py",
+        b"def get(req):\n    from helpers.outside import fn\n    return {'v': fn()}\n",
+    )
+    fs.write("/workspace/app/index.html", b"<h1>hi</h1>")
+    session.ws.commit()
+    # against the live workspace both import, which is why the wrong
+    # one is so easy to write
+    assert client.get("/preview/s1/api/under").json() == {"v": "shared"}
+    assert client.get("/preview/s1/api/outside").json() == {"v": "outside"}
+    pub = _publish(client, "s1")
+
+    # cold: a fresh registry over the same store, nothing cached
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    reborn._build_agent = lambda *a, **k: FakeAgent()
+    try:
+        with TestClient(server.build_app(reborn)) as client2:
+            assert client2.get(f"{pub['url']}api/under").json() == {"v": "shared"}
+            assert client2.get(f"{pub['url']}api/outside").status_code == 500
+            # ...and the module is not a download
+            assert client2.get(f"{pub['url']}api/_shared.py").status_code == 404
+            assert client2.get(f"{pub['url']}api/_shared").status_code == 404
+    finally:
+        reborn.close()
+
+    skill = (
+        Path(__file__).parent.parent / "skills" / "building-apps" / "SKILL.md"
+    ).read_text()
+    assert "app/api/_shared.py" in skill
+    assert "from app.api._shared import fn" in skill
+    assert "/helpers/<mod>.py" not in skill
+
+
 def test_a_served_version_is_frozen_code_over_a_live_db(studio):
     """The split the whole model rests on. A handler's write to the
     workspace never lands and is refused loudly — the cache and the
