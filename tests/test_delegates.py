@@ -7,6 +7,7 @@ real against its own branch.
 """
 
 import asyncio
+import time
 
 import pytest
 from nontainer.sessions import Sessions
@@ -203,3 +204,47 @@ def test_the_agent_delegates_and_merges_the_work_back(registry):
     )
     assert _tool_results(merged, "terminal")
     assert parent.ws.files.fs.read("/workspace/scouted.md") == b"found it"
+
+
+ASK_ASYNC = (
+    '!tool sessions {"action": "ask", "name": "scout", '
+    '"task": "!tool file_write {\\"path\\": \\"/workspace/scouted.md\\", '
+    '\\"content\\": \\"found it\\"}\\n!text Found it."}\n'
+    "!text Sent a scout."
+)
+
+
+def _await_delegates(session, timeout=20):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if session.answered_delegates():
+            return
+        time.sleep(0.02)
+    raise AssertionError("no delegate answered in time")
+
+
+def test_a_delegates_answer_reaches_the_parent_on_its_next_turn(registry):
+    parent = registry.open("boss")
+    _turn(parent, ASK_ASYNC)  # cross-turn: the tool returns at once
+    _await_delegates(parent)
+
+    # the rail says an answer is waiting on a session nobody is watching
+    assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [1]
+
+    events = _turn(parent, "what did the scout say?")
+    injected = next(e for e in events if e["type"] == "delegate")
+    assert injected["name"] == "boss.scout"
+    assert injected["status"] == "answered"
+    # mechanism, and the next step spelled for the terminal
+    assert "not the person at the keyboard" in injected["text"]
+    assert "Found it." in injected["text"]
+    assert "ws-git merge boss.scout" in injected["text"]
+
+    # the model was sent it too, ahead of the human's message (the dummy
+    # echoes what it was asked when the message carries no directives)
+    reply = "".join(e["delta"] for e in events if e["type"] == "text")
+    assert reply.startswith("dummy: [delegate `boss.scout` answered")
+
+    # delivered once: the next turn has nothing waiting
+    assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [0]
+    assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok"))

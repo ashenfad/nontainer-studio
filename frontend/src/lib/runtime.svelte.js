@@ -18,6 +18,11 @@
 //                                    — a version of an app was published:
 //                                      a transcript LANDMARK, and an anchor
 //                                      the session can be restored to
+//   {type:'delegate', name, status, text}
+//                                    — a delegate this session forked has
+//                                      answered; the text carries its own
+//                                      provenance header and is what the
+//                                      model was sent this turn too
 //   {type:'notice', text}            — uploads, ...
 //   {type:'error',  message}
 //   {type:'done',   run_id, head}    — turn boundary
@@ -342,6 +347,18 @@ export class SessionRuntime {
                 input_tokens: ev.input_tokens,
                 cached_tokens: ev.cached_tokens ?? 0,
             }
+        } else if (ev.type === 'delegate') {
+            // Its own kind of message, not a notice: a delegate's answer
+            // is content the agent acted on, and the rail's waiting count
+            // clears the moment this arrives.
+            this.messages.push({
+                role: 'delegate',
+                name: ev.name,
+                status: ev.status,
+                text: ev.text,
+            })
+            this.version++
+            refreshSessions()
         } else if (ev.type === 'notice') {
             this.messages.push({ role: 'notice', text: ev.text })
             this.version++

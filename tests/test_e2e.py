@@ -880,3 +880,34 @@ def test_background_turn_survives_session_switch(page, server):
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "first session reply", timeout=10000
     )
+
+
+def test_a_delegates_answer_reaches_the_parent_next_turn(page, server):
+    """Delegation end to end: the agent forks itself with the `sessions`
+    tool, the delegate writes a file on its own branch and answers, the
+    rail says an answer is waiting, and the parent's next turn carries it
+    into the transcript with its provenance header."""
+    page.goto(f"{server}/?session=e2e-delegate")
+    _send(
+        page,
+        '!tool sessions {"action": "ask", "name": "scout", '
+        '"task": "!tool file_write {\\"path\\": \\"/workspace/scouted.md\\", '
+        '\\"content\\": \\"found it\\"}\\n!text Found it."}\n'
+        "!text Sent a scout.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Sent a scout.", timeout=15000
+    )
+    # the delegate is a session of its own, and NOT a row in the rail
+    expect(page.locator(".rail .waiting")).to_be_visible(timeout=20000)
+    expect(page.locator(".rail .item", has_text="scout")).to_have_count(0)
+
+    _send(page, "what did the scout say?")
+    card = page.locator(".delegate")
+    expect(card).to_be_visible(timeout=15000)
+    expect(card).to_contain_text("e2e-delegate.scout")
+    expect(card).to_contain_text("Found it.")
+    # the next step, spelled for the terminal
+    expect(card).to_contain_text("ws-git merge e2e-delegate.scout")
+    # and delivering it clears the rail badge
+    expect(page.locator(".rail .waiting")).to_have_count(0, timeout=20000)

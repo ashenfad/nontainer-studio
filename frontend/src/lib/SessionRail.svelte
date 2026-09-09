@@ -133,6 +133,20 @@
                         <span class="name" title="{s.title} (double-click to rename)"
                             >{s.title}</span
                         >
+                        {#if s.delegates}
+                            <!-- A delegate this session sent off has
+                                 answered. Pull, not push: the answer is
+                                 waiting and reaches the agent on this
+                                 session's next turn, which is when the
+                                 badge clears. -->
+                            <span
+                                class="waiting"
+                                title="{s.delegates} delegate answer{s.delegates === 1
+                                    ? ''
+                                    : 's'} waiting — they reach this session on its next turn"
+                                >⑂{s.delegates}</span
+                            >
+                        {/if}
                     </button>
                     <button
                         class="fork"
@@ -378,6 +392,15 @@
         padding: 0.4rem 0.5rem;
         margin: 0 0.15rem;
         outline: none;
+    }
+    .waiting {
+        flex-shrink: 0;
+        font-size: 0.62rem;
+        line-height: 1;
+        padding: 0.15rem 0.3rem;
+        border-radius: 999px;
+        color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 16%, transparent);
     }
     .dot {
         width: 7px;

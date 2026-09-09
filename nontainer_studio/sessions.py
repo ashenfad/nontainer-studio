@@ -49,7 +49,7 @@ from nontainer import (
 from nontainer.adapters.agno import WorkspaceTools
 from nontainer.adapters.agno_db import KvgitStoreDb, fork_session
 from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
-from nontainer.errors import SessionIdError
+from nontainer.errors import JobRunning, SessionIdError, SessionsError
 from nontainer.sessions import SEPARATOR, Sessions
 from nontainer.wsgit import register_wsgit
 
@@ -649,6 +649,14 @@ class Session:
     indicator, the answer injected next turn) reads these jobs, and
     closing the session has to join their workers."""
 
+    delivered: set = field(default_factory=set)
+    """Delegate jobs whose answers this session has already been shown.
+
+    Delivery from nontainer is PULL — a job sits in the table until
+    something collects it — so the studio, which is where notification
+    lives, has to remember what it has notified about. An answer reaches
+    the session that asked exactly once, on the next turn it takes."""
+
     log_path: Path | None = None
     """Durable transcript: the COMPACTED event stream, appended at
     each non-delta boundary; open() reloads the tail. Replay-vs-live
@@ -728,6 +736,36 @@ class Session:
     @property
     def busy(self) -> bool:
         return self.turn_lock.locked()
+
+    def answered_delegates(self) -> list:
+        """Delegate jobs with an answer this session has not read yet.
+
+        A cancelled job is never among them: cancelling means the answer
+        is discarded when it arrives, so there is nothing to deliver and
+        nothing to keep waiting for."""
+        if self.delegates is None:
+            return []
+        return [
+            job
+            for job in self.delegates.list()
+            if job.status not in ("running", "cancelled")
+            and job.name not in self.delivered
+        ]
+
+    def take_delegate_answers(self) -> list:
+        """Those answers, as ``(job name, Answer)``, marked delivered."""
+        out = []
+        for job in self.answered_delegates():
+            try:
+                answer = self.delegates.result(job.name)
+            except (JobRunning, SessionsError):
+                # Raced the landing, or the job was cancelled between the
+                # listing and here: leave it for the next turn, which is
+                # where an unfinished job belongs anyway.
+                continue
+            self.delivered.add(job.name)
+            out.append((job.name, answer))
+        return out
 
 
 class Registry:
@@ -827,15 +865,26 @@ class Registry:
         # the rail for every question an agent ever farmed out.
         names = {n for n in names if not self.is_delegate(n, names)}
         created = manifest["created"]
-        rows = [
-            {
-                "name": name,
-                "title": self.title_of(name, manifest),
-                "busy": (s := self._sessions.get(name)) is not None and s.busy,
-                "model": (s.model if s is not None else manifest["models"].get(name)),
-            }
-            for name in names
-        ]
+        rows = []
+        for name in names:
+            live = self._sessions.get(name)
+            rows.append(
+                {
+                    "name": name,
+                    "title": self.title_of(name, manifest),
+                    "busy": live is not None and live.busy,
+                    "model": (
+                        live.model if live is not None else manifest["models"].get(name)
+                    ),
+                    # Notification is the studio's half of delegation:
+                    # nontainer holds the answer until something asks for
+                    # it, and this is the count the rail shows so a human
+                    # can see one arrived on a session they are not
+                    # looking at. It clears when the session's next turn
+                    # takes the answers.
+                    "delegates": len(live.answered_delegates()) if live else 0,
+                }
+            )
         rows.sort(key=lambda r: (-created.get(r["name"], 0), r["name"]))
         return rows
 

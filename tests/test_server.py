@@ -358,7 +358,13 @@ def test_busy_session_409s_chat(studio):
             == 409
         )
         assert client.get("/api/sessions").json()["sessions"] == [
-            {"name": "s1", "title": "New session", "busy": True, "model": None}
+            {
+                "name": "s1",
+                "title": "New session",
+                "busy": True,
+                "model": None,
+                "delegates": 0,
+            }
         ]
     finally:
         session.turn_lock.release()
@@ -1226,7 +1232,13 @@ def test_session_manifest_survives_restart(studio, tmp_path):
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
     assert reborn.list() == [
-        {"name": "s1", "title": "New session", "busy": False, "model": None}
+        {
+            "name": "s1",
+            "title": "New session",
+            "busy": False,
+            "model": None,
+            "delegates": 0,
+        }
     ]
     # and it opens lazily with its files intact
     registry.get("s1").ws.files.write("keep.txt", "here")
@@ -1370,8 +1382,11 @@ class FakeChatDb:
 
 
 def _turn(client, session: str, message: str) -> None:
-    client.post(f"/api/sessions/{session}/chat", json={"message": message})
-    _collect_until_done(client, session)
+    # From the cursor the POST hands back, not from 0: a second turn
+    # polled from 0 sees the FIRST turn's `done` and returns while the
+    # new one is still running.
+    started = client.post(f"/api/sessions/{session}/chat", json={"message": message})
+    _collect_until_done(client, session, since=started.json()["since"])
 
 
 # -- edit: rewind + retry as one verb ---------------------------------------------
@@ -2242,7 +2257,13 @@ def test_delete_leaves_other_sessions_alone(studio):
     registry.get("s2").ws.files.write("mine.txt", "s2 data")
     client.delete("/api/sessions/s1")
     assert client.get("/api/sessions").json()["sessions"] == [
-        {"name": "s2", "title": "New session", "busy": False, "model": None}
+        {
+            "name": "s2",
+            "title": "New session",
+            "busy": False,
+            "model": None,
+            "delegates": 0,
+        }
     ]
     assert registry.get("s2").ws.files.fs.read("mine.txt") == b"s2 data"
 
@@ -2300,7 +2321,13 @@ def test_model_switch_persists_and_notices(studio, tmp_path):
     # the rail shows it, and a restart remembers it
     listed = client.get("/api/sessions").json()["sessions"]
     assert listed == [
-        {"name": "s1", "title": "New session", "busy": False, "model": "dummy"}
+        {
+            "name": "s1",
+            "title": "New session",
+            "busy": False,
+            "model": "dummy",
+            "delegates": 0,
+        }
     ]
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
@@ -2651,6 +2678,7 @@ def test_v1_manifest_format_tolerated(studio, tmp_path):
         "title": "New session",
         "busy": False,
         "model": None,
+        "delegates": 0,
     } in reborn.list()
     assert reborn.resolve("nope") is None
     reborn.close()
