@@ -15,9 +15,10 @@ dependencies = [
     # is what made a multi-threaded host a hang risk), and 0.3.1 is the
     # floor that carries sandtrap >= 0.3.2, where the factory can
     # finally reach preload_grants at all.
-    # 0.2.1 brought delete_workspace (session teardown is nontainer's,
-    # so kvgit is only transitive here); 0.2.0 the workspace root
-    # contract (files at /workspace across executors).
+    # 0.2.1 brought store-level session teardown (deleting a session's
+    # branch is nontainer's job, so kvgit is only transitive here);
+    # 0.2.0 the workspace root contract (files at /workspace across
+    # executors).
     #
     # 0.3.3 is the floor studio needs NEXT rather than now: it adds
     # AppsConfig.static_assets — host files served with an app but
@@ -53,11 +54,23 @@ dependencies = [
     # 0.5.0 brings the agno session db (KvgitStoreDb) and fork_session --
     # the conversation stored in the branch with the files.
     #
-    # 0.5.1: the tags api the publish workflow is built on (ws.tag /
-    # at_tag / changed_since, the store scope, fork(at=)), and a sandtrap
-    # floor under which a frozen snapshot refuses a handler's file write
-    # loudly under process isolation.
-    "nontainer[agno,apps]>=0.5.1",
+    # 0.5.1: the tags api the publish workflow is built on (naming a
+    # commit, opening the tagged state frozen, changed_since, the store
+    # scope, fork(at=)), and a sandtrap floor under which a frozen
+    # snapshot refuses a handler's file write loudly under process
+    # isolation.
+    #
+    # 0.6.0 is a HARD floor, not a preference: the api-v2 release
+    # renamed the whole surface studio calls with no compatibility
+    # layer, so 0.5.x and 0.6 cannot both be spoken. `Store` owns what
+    # outlives a session (open / delete / tags), `ws.files` / `ws.tags`
+    # / `ws.runtime` group the verbs that were flat, and versioning
+    # takes git's names — commit, log, checkout, uncommitted. The one
+    # behaviour change studio had to think about rather than rename:
+    # checkout APPENDS a commit whose content equals the target instead
+    # of moving the head backward, so an edit's rewind is now
+    # undo-able and nothing it stepped off is ever collected.
+    "nontainer[agno,apps]>=0.6.0",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",
