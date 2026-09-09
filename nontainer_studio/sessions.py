@@ -649,14 +649,6 @@ class Session:
     indicator, the answer injected next turn) reads these jobs, and
     closing the session has to join their workers."""
 
-    delivered: set = field(default_factory=set)
-    """Delegate jobs whose answers this session has already been shown.
-
-    Delivery from nontainer is PULL — a job sits in the table until
-    something collects it — so the studio, which is where notification
-    lives, has to remember what it has notified about. An answer reaches
-    the session that asked exactly once, on the next turn it takes."""
-
     log_path: Path | None = None
     """Durable transcript: the COMPACTED event stream, appended at
     each non-delta boundary; open() reloads the tail. Replay-vs-live
@@ -745,15 +737,39 @@ class Session:
         nothing to keep waiting for."""
         if self.delegates is None:
             return []
+        shown = self.delivered_delegates()
         return [
             job
             for job in self.delegates.list()
-            if job.status not in ("running", "cancelled")
-            and job.name not in self.delivered
+            if job.status not in ("running", "cancelled") and job.name not in shown
         ]
 
+    def delivered_delegates(self) -> set:
+        """Job names whose answers the transcript still shows.
+
+        Delivery is a fact of the TRANSCRIPT, not of memory. An edit
+        rewinds the files, the agent's memory and the visible transcript
+        together, so an answer whose `delegate` event went with them has
+        not been delivered to the conversation that exists now, and the
+        next turn has to carry it again — a flag set when it was first
+        shown would say otherwise and lose it for good. Read through the
+        truncate projection for the same reason every other reader of
+        "what the transcript now says" does: the log is append-only, and
+        a cut is an event rather than a deletion.
+        """
+        return {
+            event["name"]
+            for _, event in Registry._visible(self.events)
+            if event.get("type") == "delegate" and event.get("name")
+        }
+
     def take_delegate_answers(self) -> list:
-        """Those answers, as ``(job name, Answer)``, marked delivered."""
+        """Those answers, as ``(job name, Answer)``.
+
+        Nothing is marked here: the caller emits a `delegate` event per
+        answer, and that event IS the record of delivery. So a turn that
+        dies between collecting and emitting delivers again next turn,
+        rather than dropping an answer nobody ever read."""
         out = []
         for job in self.answered_delegates():
             try:
@@ -763,7 +779,6 @@ class Session:
                 # listing and here: leave it for the next turn, which is
                 # where an unfinished job belongs anyway.
                 continue
-            self.delivered.add(job.name)
             out.append((job.name, answer))
         return out
 
