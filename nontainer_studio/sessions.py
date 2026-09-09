@@ -13,8 +13,8 @@ Ownership model, on display:
 - CONVERSATION: durable and versioned WITH the files — agno's session
   lives in the session's own kvgit branch (one ``KvgitStoreDb`` over
   the store, a branch per session), so a turn's files, cache, cwd and
-  the agent's memory land in ONE commit and one ``ws.restore`` rewinds
-  all four. agno's cross-session tables (memories, metrics) live at
+  the agent's memory land in ONE commit and one ``ws.checkout`` puts
+  all four back. agno's cross-session tables (memories, metrics) live at
   ``store/agno`` and never version — world state, not session state.
 - EVENT LOG: durable but session-scoped — the transcript appends to a
   jsonl per session. An EDIT (rewind_to_event) trims the visible
@@ -42,10 +42,9 @@ from typing import Any, Callable
 import petname
 from nontainer import (
     PythonConfig,
+    Store,
     Workspace,
-    delete_workspace,
     validate_session_id,
-    workspace,
 )
 from nontainer.adapters.agno import WorkspaceTools
 from nontainer.adapters.agno_db import KvgitStoreDb, fork_session
@@ -59,12 +58,14 @@ DEFAULT_STORE = Path.home() / ".nontainer-studio"
 APP_BRANCH = "_apps"
 """The reserved branch published apps are served THROUGH.
 
-``at_tag`` reads a name off the store, and a name in the store scope
-belongs to no session — so the lookup needs a workspace that stands for
-no session either. This one does: it is never in the manifest, so it is
-never in the rail, never opened as a session, and never deleted with
-one; nothing is ever committed to it beyond the empty baseline opening a
-branch writes."""
+A store-scoped tag belongs to no session, so opening the state it names
+needs a workspace that stands for no session either — and one built
+with the app's own python config, since the frozen snapshot inherits
+its host objects from the workspace it is opened through and a served
+app talks to its `db`. This branch is that workspace: it is never in
+the manifest, so it is never in the rail, never opened as a session,
+and never deleted with one; nothing is ever committed to it beyond the
+empty baseline opening a branch writes."""
 
 MAX_EVENTS = 10_000  # in-MEMORY tail window, not a lifetime cap
 
@@ -98,7 +99,7 @@ def _executor_factory() -> Callable[[], Any] | None:
       bash — on ANY dud backend, not just the subprocess one. Worse
       than absent: real curl IS on the guest PATH, so a `curl api/x`
       reaches the network rather than failing. Both places that could
-      teach it are gated on ``ws.supports_commands`` — nontainer's apps
+      teach it are gated on ``ws.runtime.supports_commands`` — nontainer's apps
       primer, and the seeded skill text (see
       ``_resolve_skill_conditionals``) — so the agent is steered to
       test_app / the preview instead. Closing it needs a guest->host
@@ -413,12 +414,21 @@ def start_vm_prewarm() -> "threading.Thread | None":
 
 
 def _ws_kwargs() -> dict[str, Any]:
-    """Executor kwarg for ``workspace()``, added ONLY when a custom
-    backend is selected — so the default path calls ``workspace()``
-    with its historical signature (a nontainer without
-    ``executor_factory`` still works)."""
+    """Executor kwarg for ``Store.open()``, added ONLY when a custom
+    backend is selected — so the default path opens a session with
+    nothing but its python config, and nontainer picks the executor."""
     factory = _executor_factory()
     return {"executor_factory": factory} if factory is not None else {}
+
+
+def _head_tree(ws: Workspace) -> str | None:
+    """The content hash of what this workspace holds right now.
+
+    ``ws.head`` identifies a point in history; the tree identifies what
+    the files and cache ARE, so equal trees mean identical content.
+    None on a workspace with no history at all."""
+    head = next(iter(ws.log(limit=1)), None)
+    return head.tree if head is not None else None
 
 
 DEFAULT_TITLE = "New session"
@@ -493,7 +503,7 @@ STUDIO_PRIMER = (
     "know what this one is about — usually after the first substantial "
     "exchange — call recommend_title so the human can find it again. "
     "Every "
-    "turn is a checkpoint the human can rewind by editing an earlier "
+    "turn is a commit the human can rewind by editing an earlier "
     "prompt — prefer small complete "
     "steps over big-bang changes. They may also PUBLISH the app: a "
     "frozen version of the code behind a share URL that keeps serving "
@@ -504,14 +514,15 @@ STUDIO_PRIMER = (
 
 DB_PRIMER = (
     "`db` is a SQLite store for LIVE app state — it does NOT "
-    "time-travel with checkpoints, so no rewind ever unwrites it. "
+    "time-travel with the workspace's commits, so no rewind ever "
+    "unwrites it. "
     "Publishing copies it once into the published app's own db, and "
     "every later version of that app keeps that db: a new version "
     "meets whatever schema the last one left, so create tables with "
     "CREATE TABLE IF NOT EXISTS and read tolerantly. Use it (not "
     "`cache`) for any "
     "state the app's users mutate. `cache` is versioned workspace "
-    "data: it rewinds with restores and freezes at publish. API: "
+    "data: it rewinds with the workspace and freezes at publish. API: "
     "`db.execute(sql, params=())` for writes (INSERT / UPDATE / "
     "`CREATE TABLE IF NOT EXISTS`), `db.executemany(sql, rows)` for "
     "bulk inserts (one commit), `db.query(sql, params=()) -> list "
@@ -684,7 +695,13 @@ class Registry:
     ) -> None:
         self._model_factory = model_factory  # (spec) -> agno Model
         self._default_model = default_model
-        self._store = Path(store) if store else DEFAULT_STORE
+        # The store is the object that owns what outlives a session:
+        # opening one, deleting one, and the tag scope that belongs to
+        # none of them. Studio's own bookkeeping (the app dbs, the
+        # transcripts, agno's cross-session tables) sits BESIDE it
+        # under the same directory, which is what `.path` is for —
+        # nothing the store deletes ever reaches those files.
+        self._store = Store(Path(store) if store else DEFAULT_STORE)
         # Public: the router mounts alongside `resolve`, so the serving
         # half reads the same object the authoring half was built with
         # (see apps_config).
@@ -715,9 +732,9 @@ class Registry:
         # cross-session tables agno keeps outside a session — memories,
         # metrics — which must not rewind with any one branch.
         self.db = KvgitStoreDb(
-            self._store,
+            self._store.path,
             open=self.workspace_for,
-            db_path=str(self._store / "agno"),
+            db_path=str(self._store.path / "agno"),
         )
         self._migrate_published()
 
@@ -798,7 +815,7 @@ class Registry:
             return self.title_of(name, manifest)  # manifest passed: no re-lock
 
     def _manifest_path(self) -> Path:
-        return self._store / "sessions.json"
+        return self._store.path / "sessions.json"
 
     def _manifest(self) -> dict:
         """{"sessions": [...], "apps": {token: app}, "published":
@@ -923,10 +940,9 @@ class Registry:
             if existing is not None:
                 return existing
             model = self._manifest()["models"].get(name) or self._default_model
-            db = Db(self._store / "dbs" / f"{name}.sqlite")
-            ws = workspace(
+            db = Db(self._store.path / "dbs" / f"{name}.sqlite")
+            ws = self._store.open(
                 name,
-                store=self._store,
                 python=self._python_config(db),
                 **_ws_kwargs(),
             )
@@ -939,13 +955,13 @@ class Registry:
                 # savefig into it directly (instead of assigning objects
                 # to `ui`), and VFS open honors real-fs semantics — no
                 # parent, no write. Forgive the near-miss.
-                if not ws.fs.isdir(f"{ws.root}/ui"):
-                    ws.fs.makedirs(f"{ws.root}/ui", exist_ok=True)
-                    ws.checkpoint(info={"tool": "init"})
+                if not ws.files.fs.isdir(f"{ws.root}/ui"):
+                    ws.files.fs.makedirs(f"{ws.root}/ui", exist_ok=True)
+                    ws.commit(info={"tool": "init"})
                 # Seed skills once, at session CREATION — after that they
                 # are the session's own versioned state (agents may edit
                 # or add them; a reseed would clobber that).
-                if not ws.fs.isdir(f"{ws.root}/skills"):
+                if not ws.files.fs.isdir(f"{ws.root}/skills"):
                     self._seed_skills(ws)
                 session = self._assemble(name, ws, db, model)
                 loaded = self._load_events(session.log_path)
@@ -996,7 +1012,7 @@ class Registry:
     # affordances (the apps `curl` builtin) exist only on LocalExecutor;
     # under dud the terminal is real bash, where `curl api/x` silently
     # hits the NETWORK instead of the dispatcher. nontainer already
-    # gates its tool-description primer on ws.supports_commands; seeded
+    # gates its tool-description primer on ws.runtime.supports_commands; seeded
     # skill text has to be gated the same way or it teaches a debugging
     # step that fails open.
     _IF_BLOCK = re.compile(
@@ -1024,21 +1040,21 @@ class Registry:
         of forking it into per-executor variants that drift.
         """
         root = f"{ws.root}/skills"
-        if not ws.fs.isdir(root):
+        if not ws.files.fs.isdir(root):
             return
-        commands = ws.supports_commands
+        commands = ws.runtime.supports_commands
         changed = False
-        for name in sorted(ws.fs.list(root)):
+        for name in sorted(ws.files.fs.list(root)):
             path = f"{root}/{name}/SKILL.md"
-            if not ws.fs.exists(path):
+            if not ws.files.fs.exists(path):
                 continue
-            text = ws.fs.read(path).decode("utf-8", "replace")
+            text = ws.files.fs.read(path).decode("utf-8", "replace")
             resolved = Registry._resolve_skill_text(text, commands=commands)
             if resolved != text:
-                ws.fs.write(path, resolved.encode())
+                ws.files.fs.write(path, resolved.encode())
                 changed = True
-        if changed and ws.caps.versioned and ws.dirty:
-            ws.checkpoint(info={"tool": "skill", "skill": "resolve-conditionals"})
+        if changed and ws.caps.versioned and ws.uncommitted:
+            ws.commit(info={"tool": "skill", "skill": "resolve-conditionals"})
 
     @staticmethod
     def _python_config(db: Db) -> PythonConfig:
@@ -1108,7 +1124,7 @@ class Registry:
         # self.apps, not a fresh AppsConfig: the router serves published
         # snapshots under this same declaration (see apps_config).
         runtime = enable_apps(ws, self.apps)
-        log_dir = self._store / "events"
+        log_dir = self._store.path / "events"
         log_dir.mkdir(parents=True, exist_ok=True)
         return Session(
             name=name,
@@ -1188,7 +1204,12 @@ class Registry:
         RunOutput is created once, outside the loop). So the first call
         of a run records the pre-turn head — the same commit the `user`
         event stamps as its undo anchor — and any later call under that
-        run_id is by definition a retry: restore to it.
+        run_id is by definition a retry: check that commit out.
+
+        Anchored on the commit id, not on a count of steps, so it holds
+        however many attempts a run takes: a checkout lands a NEW commit
+        holding the pre-turn content, and checking the anchor out again
+        from there writes nothing and returns where it stands.
 
         One slot rather than a map: a session runs one turn at a time
         (``turn_lock``), so there is only ever one live run to track.
@@ -1205,10 +1226,10 @@ class Registry:
                 return
             head = state.get("head")
             if head is None or ws.head == head:
-                return  # nothing was committed to unwind
-            # off-loop: restore takes the workspace lock and rewrites the
-            # tree (and re-syncs a remote executor's guest)
-            await asyncio.to_thread(ws.restore, head)
+                return  # the attempt committed nothing; nothing to unwind
+            # off-loop: a checkout takes the workspace lock and rewrites
+            # the tree (and re-syncs a remote executor's guest)
+            await asyncio.to_thread(ws.checkout, head)
 
         return rewind_workspace_on_retry
 
@@ -1228,7 +1249,7 @@ class Registry:
             # agno runs post hooks BEFORE it persists the run, so a
             # hook-driven commit would carry the turn's files without
             # its memory. The db commits at the persist instead, and
-            # the checkpoint mode stays per mutating call — this is the
+            # the commit mode stays per mutating call — this is the
             # turn's trailing commit, so the head stamped on the next
             # `user` event includes the conversation.
             session_db=self.db,
@@ -1261,13 +1282,13 @@ class Registry:
             # studio-owned context: nontainer's tool descriptions cover
             # the MECHANICS (workspace, handlers, curl); this covers the
             # product the human is looking at (preview, artifacts,
-            # checkpoints, publish)
+            # commits, publish)
             instructions=STUDIO_PRIMER,
             # Durable chat, keyed by the session name and stored in that
             # session's own workspace branch: after a server restart the
             # agent still remembers the conversation (and the jsonl
             # event log restores the visible transcript), and a rewind
-            # of the files is a rewind of the memory — one restore, not
+            # of the files is a rewind of the memory — one checkout, not
             # two writes that can disagree.
             db=self.db,
             session_id=name,
@@ -1313,7 +1334,7 @@ class Registry:
 
         Forking is a between-turns verb. A turn in flight owns the
         workspace, and kvgit refuses to fork a branch with staged
-        changes — a fork of half a turn would be a state no checkpoint
+        changes — a fork of half a turn would be a state no commit
         ever held.
         """
         if conversation not in ("inherit", "fresh"):
@@ -1341,22 +1362,22 @@ class Registry:
     ) -> Session:
         """:meth:`fork` with the parent already reserved.
 
-        ``at`` branches from an earlier checkpoint of the parent rather
+        ``at`` branches from an earlier commit of the parent rather
         than its head — the child gets the files and the conversation as
         they stood there, with its own identity written on top, and the
         parent is not touched at all (see :meth:`branch_from_version`).
         Staged work is only in the way of a fork from the HEAD, which
-        has to checkpoint it to see current state; a fork from a named
+        has to commit it to see current state; a fork from a named
         past leaves it exactly where it is.
 
         ``transcript`` gives the child that log instead of a copy of the
-        parent's, which is what a fork from a past checkpoint needs: the
+        parent's, which is what a fork from a past commit needs: the
         parent's log runs on past it, and appending a cut cannot undo an
         EARLIER cut already in it (a truncate only pops what is still
         visible), so a child forked behind an edit would show a
         transcript that stops before the state it actually holds.
         """
-        if at is None and session.ws.dirty:
+        if at is None and session.ws.uncommitted:
             raise RuntimeError("can't fork mid-turn: the workspace has staged changes")
         with self._lock:
             name = self._mint_name()
@@ -1369,12 +1390,11 @@ class Registry:
             # universes sharing one app db is the state this copy exists
             # to prevent.
             child_ws.close()
-            dst = self._store / "dbs" / f"{name}.sqlite"
+            dst = self._store.path / "dbs" / f"{name}.sqlite"
             session.db.copy_to(dst)
             db = Db(dst)
-            ws = workspace(
+            ws = self._store.open(
                 name,
-                store=self._store,
                 python=self._python_config(db),
                 **_ws_kwargs(),
             )
@@ -1416,7 +1436,7 @@ class Registry:
 
         Its published APPS are not among them. An app owns its db and
         its versions are store-scoped tags, which is the scope that
-        survives ``delete_workspace`` — so the URLs someone was handed
+        survives a session's deletion — so the URLs someone was handed
         keep serving after the conversation that built them is gone.
         Taking one down is ``unpublish``, said about the app."""
         name = session.name
@@ -1446,17 +1466,18 @@ class Registry:
         session.ws.close()  # before branch deletion: it holds the branch
         session.db.close()
         self._delete_branches({name})
-        (self._store / "dbs" / f"{name}.sqlite").unlink(missing_ok=True)
-        (self._store / "events" / f"{name}.jsonl").unlink(missing_ok=True)
+        (self._store.path / "dbs" / f"{name}.sqlite").unlink(missing_ok=True)
+        (self._store.path / "events" / f"{name}.jsonl").unlink(missing_ok=True)
 
     def _delete_branches(self, names: set[str]) -> None:
-        """Remove kvgit branches from the shared store. Deletion is
-        nontainer's: `delete_workspace` resolves `store/kvgit` from the
-        same `store` the workspaces were built with, and takes each
-        branch's session-scoped tags with it while leaving store-scoped
-        ones — which is what keeps a published app up after its session
-        is deleted."""
-        delete_workspace(names, store=self._store, backend="kvgit")
+        """Remove sessions from the store. Deletion is nontainer's: the
+        store deletes the branches it opened, and takes each branch's
+        session-scoped tags with it while leaving store-scoped ones —
+        which is what keeps a published app up after its session is
+        deleted. It is a store-level verb, not a live-session one, so
+        every caller closes the session's workspace first: an open
+        handle pins its branch."""
+        self._store.delete(names)
 
     # -- model switching ----------------------------------------------------
 
@@ -1477,16 +1498,19 @@ class Registry:
     # -- edit: rewind + retry as one verb -----------------------------------
 
     def rewind_to_event(self, session: Session, seq: int) -> None:
-        """The rewind half of an EDIT: restore the workspace to the
-        user event's pre-turn head. That one call is the whole rewind —
-        the agent's memory lives in the same branch as the files, so the
-        turns after that head are unsaid by the same restore that
-        unwrites their files. The caller emits the `truncate` event and
-        starts the new turn.
+        """The rewind half of an EDIT: check out the user event's
+        pre-turn head. That one call is the whole rewind — the agent's
+        memory lives in the same branch as the files, so the turns
+        after that head are unsaid by the same checkout that unwrites
+        their files. The caller emits the `truncate` event and starts
+        the new turn.
 
-        The head, not commit order, is the anchor: the `user` event
+        The commit id, not commit order, is the anchor: the `user` event
         stamps the workspace as it stood before its turn ran, which is
-        exactly the state the edited prompt should run from.
+        exactly the state the edited prompt should run from. It stays a
+        valid anchor no matter how often the session has been rewound,
+        because a checkout appends rather than dropping what came after
+        it — every head the transcript ever stamped is still in the log.
 
         The agent's title rewinds too — it named the session from a
         conversation that is being unsaid."""
@@ -1500,17 +1524,22 @@ class Registry:
         """Put the files, the agent's memory and the agent's title back
         where they stood at ``head``, with the transcript cut at ``seq``.
 
-        One ``restore`` covers the first two: the conversation lives in
+        One ``checkout`` covers the first two: the conversation lives in
         the same branch as the files. The title is a third thing, kept
         in the manifest, so it is put back by hand — the agent named the
         session from a conversation that is being unsaid.
+
+        What the human sees is a rewind; what the branch records is a
+        new commit holding the old content. Nothing is lost either way,
+        and the redo is the same verb said about the commit this one
+        stepped off.
         """
         surviving_title = None
         prior = [e for e in session.events if e["seq"] < seq]
         for _, ev in self._visible(prior):
             if ev.get("type") == "title":
                 surviving_title = ev.get("title") or surviving_title
-        session.ws.restore(head)
+        session.ws.checkout(head)
         # Best-effort within the event window: revert to the last title
         # the agent gave BEFORE the cut. None surviving is ambiguous —
         # never titled, or titled so long ago the event front-trimmed out
@@ -1590,17 +1619,18 @@ class Registry:
         tag = f"pub/{token}/v1"
         title = self.title_of(origin, manifest) if origin else DEFAULT_TITLE
         commit = tree = None
-        ws = workspace(branch, store=self._store)
+        ws = self._store.open(branch)
         try:
             # Opening a branch CREATES it, so "is it still there" cannot
             # be asked by opening. Ask by content instead: an anchor
             # never moved after the fork that made it, so its head is
-            # the checkpoint the manifest recorded — while a branch this
-            # very call invented has a baseline head of its own.
+            # the commit the manifest recorded under `checkpoint` —
+            # while a branch this very call invented has a baseline head
+            # of its own.
             if checkpoint and ws.head == checkpoint:
-                commit = ws.tag(
+                commit = self._store.tags.add(
+                    ws,
                     tag,
-                    scope="store",
                     info={
                         "token": token,
                         "session": origin,
@@ -1608,7 +1638,7 @@ class Registry:
                         "title": title,
                     },
                 )
-                tree = ws.head_tree
+                tree = _head_tree(ws)
         finally:
             ws.close()
         # Either way the anchor branch goes: it was the old serving
@@ -1616,7 +1646,7 @@ class Registry:
         self._delete_branches({branch})
         if commit is None:
             return None
-        src = self._store / "dbs" / f"{origin}.sqlite"
+        src = self._store.path / "dbs" / f"{origin}.sqlite"
         dst = self._app_db_path(token)
         if src.exists():
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1658,7 +1688,7 @@ class Registry:
     # `db`: live state, no history, nothing rewinds it.
 
     def _app_db_path(self, token: str) -> Path:
-        return self._store / "dbs" / "apps" / f"{token}.sqlite"
+        return self._store.path / "dbs" / "apps" / f"{token}.sqlite"
 
     def _app_db(self, entry: dict) -> Db:
         """The app's own db handle, one per app.
@@ -1669,7 +1699,7 @@ class Registry:
         token = entry["token"]
         db = self._app_dbs.get(token)
         if db is None:
-            db = Db(self._store / entry["db"])
+            db = Db(self._store.path / entry["db"])
             self._app_dbs[token] = db
         return db
 
@@ -1758,7 +1788,7 @@ class Registry:
 
         A between-turns verb, like fork: a turn in flight owns the
         workspace, and a tag made over half a turn would name a state
-        no checkpoint ever held.
+        no commit ever held.
         """
         session = self._sessions.get(name)
         if session is None:
@@ -1778,7 +1808,7 @@ class Registry:
         The reservation has to outlive the call for the caller that
         EMITS the marker: a chat request winning the turn lock between
         the tag and the marker would put its `user` event above a
-        landmark whose checkpoint predates it, and restoring to that
+        landmark whose commit predates it, and restoring to that
         marker would then rewind the files under a prompt still on
         screen. So the route holds one reservation across both."""
         name = session.name
@@ -1792,9 +1822,9 @@ class Registry:
             # refuse (a taken name, a name kvgit won't have) — and
             # it commits the session's staged work, so what the tag
             # names is what the human was looking at.
-            commit = session.ws.tag(
+            commit = self._store.tags.add(
+                session.ws,
                 tag,
-                scope="store",
                 info={
                     "token": token,
                     "session": name,
@@ -1822,7 +1852,7 @@ class Registry:
                 entry["versions"][version] = {
                     "tag": tag,
                     "commit": commit,
-                    "tree": session.ws.head_tree,
+                    "tree": _head_tree(session.ws),
                     "created": time.time(),
                 }
                 entry["current"] = version
@@ -1831,7 +1861,7 @@ class Registry:
             except BaseException:
                 # a tag with no manifest entry is a name nothing can
                 # reach and nothing will ever collect
-                session.ws.delete_tag(tag, scope="store")
+                self._store.tags.delete(tag)
                 raise
             self._drop_snapshots(token)
             return {
@@ -1839,7 +1869,7 @@ class Registry:
                 "url": f"/apps/{token}/",
                 "version": version,
                 "title": title,
-                "checkpoint": commit,
+                "commit": commit,
                 "tree": entry["versions"][version]["tree"],
             }
 
@@ -1855,12 +1885,21 @@ class Registry:
 
         Reopening after a restart needs nothing from the origin session,
         which may be long gone: the version is a store-scoped tag and
-        the db is the app's own file. ``at_tag`` does need SOME
-        workspace on the store to look a name up, so a handle on the
-        reserved ``_apps`` branch does the lookup and is closed again
+        the db is the app's own file. Reading a store-scoped tag needs
+        SOME workspace on the store, so a handle on the reserved
+        ``_apps`` branch does the lookup and is closed again
         immediately — the frozen workspace it returns holds its own
         kvgit handle and its own executor, so the parent is scaffolding,
         not part of what serves.
+
+        It is opened THROUGH that handle rather than off the store
+        directly because a snapshot inherits the construction settings
+        of the workspace it is opened through — python config and its
+        live host objects included — and a served app's handlers reach
+        their state through the `db` host object. ``store.tags.at``
+        builds its workspace from the provider alone, so the same app
+        served from it would answer every request with a NameError on
+        `db`.
         """
         served = self._published.get(token)
         if served is not None:
@@ -1876,14 +1915,17 @@ class Registry:
             info = (entry.get("versions") or {}).get(version)
             if info is None:
                 return None
-            parent = workspace(
+            parent = self._store.open(
                 APP_BRANCH,
-                store=self._store,
                 python=self._python_config(self._app_db(entry)),
                 **_ws_kwargs(),
             )
             try:
-                snapshot = parent.at_tag(info["tag"], scope="store")
+                # The store scope through a workspace: the public
+                # namespace on a workspace reads its own session's
+                # tags, and the store's own reader drops the host
+                # objects this app is served with.
+                snapshot = parent._at_tag(info["tag"], scope="store")
             finally:
                 parent.close()
             self._published[token] = (version, snapshot)
@@ -1958,7 +2000,9 @@ class Registry:
         with when it happened, so the tree moves on any write at all,
         anywhere in the workspace. False with ``count`` 0 means "the
         session has moved on, but the app is the same app" — which is
-        the common case after a turn that only touched notes.
+        the common case after a turn that only touched notes, and also
+        what a session reads as once it has been rewound back onto a
+        published state: putting the content back is itself a write.
         """
         current = next(
             (v for v in row["versions"] if v["name"] == row["current"]), None
@@ -1975,7 +2019,7 @@ class Registry:
         return {
             "count": len(paths),
             "paths": paths,
-            "up_to_date": session.ws.head_tree == current.get("tree"),
+            "up_to_date": _head_tree(session.ws) == current.get("tree"),
         }
 
     # -- moving and removing publications ----------------------------------
@@ -2012,7 +2056,7 @@ class Registry:
             if db is not None:
                 db.close()
             self._delete_tags(v["tag"] for v in (entry.get("versions") or {}).values())
-            (self._store / entry["db"]).unlink(missing_ok=True)
+            (self._store.path / entry["db"]).unlink(missing_ok=True)
             self._save_manifest(manifest)
 
     def delete_version(self, token: str, version: str) -> dict:
@@ -2046,24 +2090,19 @@ class Registry:
     def _delete_tags(self, names: Iterable[str]) -> None:
         """Drop store-scoped tags.
 
-        Saying it needs a workspace on the store, and no session owns
-        these names — so it is said through a handle on the reserved
-        ``_apps`` branch, opened for the call and closed again. No
-        executor factory: nothing here runs agent code, and a dud rung
-        would boot a machine to delete a name.
+        No session owns these names, so the store says it directly and
+        no workspace is opened at all — which also means no executor is
+        built, and a dud rung never boots a machine to delete a name.
+
+        Best-effort per name: a tag that will not go is a name nothing
+        reaches any more, and the manifest entry it belonged to is
+        already gone.
         """
-        names = list(names)
-        if not names:
-            return
-        ws = workspace(APP_BRANCH, store=self._store)
-        try:
-            for name in names:
-                try:
-                    ws.delete_tag(name, scope="store")
-                except Exception:
-                    log.warning("publish: could not delete tag %s", name)
-        finally:
-            ws.close()
+        for name in names:
+            try:
+                self._store.tags.delete(name)
+            except Exception:
+                log.warning("publish: could not delete tag %s", name)
 
     # -- branching a version back into a conversation -----------------------
 
@@ -2087,7 +2126,7 @@ class Registry:
             raise KeyError(origin)
         session = self.open(origin)
         # The origin is read, never moved: ``at`` branches the child
-        # from the version's checkpoint and writes its identity on top,
+        # from the version's commit and writes its identity on top,
         # so the parent keeps its head. Still reserved for the call — a
         # turn landing a commit under a fork of its own branch is the
         # half-turn state the fork guard exists for.
@@ -2139,11 +2178,11 @@ class Registry:
         the conversation go back to where they stood when that version
         was tagged.
 
-        The same synchronized rewind an edit does — one ``restore``,
+        The same synchronized rewind an edit does — one ``checkout``,
         because the conversation lives in the branch with the files —
         anchored on the marker's commit instead of a user event's
         pre-turn head. Returns the seq the transcript is cut AFTER: the
-        marker survives its own restore, since the version it names is
+        marker survives its own rewind, since the version it names is
         still there and is still what you came back to.
 
         The commit is always reachable, however far the branch has
@@ -2173,6 +2212,9 @@ class Registry:
             for db in self._app_dbs.values():
                 db.close()
             self._app_dbs.clear()
+            # Last: the store outlives every workspace opened through
+            # it, so it closes once nothing is still holding a branch.
+            self._store.close()
 
 
 def repair_aborted_run(session: Session, run_id: str | None, note: str) -> None:
