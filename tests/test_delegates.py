@@ -248,3 +248,38 @@ def test_a_delegates_answer_reaches_the_parent_on_its_next_turn(registry):
     # delivered once: the next turn has nothing waiting
     assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [0]
     assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok"))
+
+
+def _edit(registry, session, seq, message):
+    """The /edit route's sequence: rewind, cut the transcript, re-run."""
+    session.turn_lock.acquire()  # _run_turn releases it
+    registry.rewind_to_event(session, seq)
+    since = session.next_seq
+
+    async def go():
+        await session.emit({"type": "truncate", "to": seq})
+        await server._run_turn(session, message)
+
+    asyncio.run(go())
+    return [e for e in session.events if e.get("seq", -1) >= since]
+
+
+def test_an_edited_turn_gets_the_delegates_answer_again(registry):
+    """Delivery is a fact of the transcript. An edit unsays the turn the
+    answer landed in — out of the files, out of the agent's memory, out
+    of the visible transcript — so the replacement turn has to carry it
+    again or the rewound conversation is missing it for good."""
+    parent = registry.open("boss")
+    _turn(parent, ASK_ASYNC)
+    _await_delegates(parent)
+
+    delivered = _turn(parent, "what did the scout say?")
+    assert [e["name"] for e in delivered if e["type"] == "delegate"] == ["boss.scout"]
+
+    seq = next(e["seq"] for e in delivered if e["type"] == "user")
+    again = _edit(registry, parent, seq, "actually, what did the scout say?")
+    assert [e["name"] for e in again if e["type"] == "delegate"] == ["boss.scout"]
+
+    # once, though: the turn after it is not a third delivery
+    assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok"))
+    assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [0]
