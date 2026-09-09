@@ -147,10 +147,22 @@ class StudioRunner:
     def __repr__(self) -> str:
         return f"<StudioRunner for {self._parent!r}: {self._turns} turn(s)>"
 
-    def run(self, session: str, task: str, *, budget: Any = None) -> Answer:
+    def run(
+        self,
+        session: str,
+        task: str,
+        *,
+        budget: Any = None,
+        forked_at: str | None = None,
+    ) -> Answer:
         """Run ``task`` as ``session``'s turn(s) and answer with its prose.
 
         ``budget`` caps turns and defaults to the registry's setting.
+        ``forked_at`` is the parent commit this child was forked from,
+        handed over by the caller that did the forking — the header the
+        delegate opens with names it, and the child's own branch cannot
+        be asked, since the fork writes commits of its own on top.
+
         The child's handles are released at the end either way: its
         branch is what the parent merges from, and an agent, a workspace
         and a sqlite connection held open per finished delegate would
@@ -159,7 +171,7 @@ class StudioRunner:
         turns = self._budget(budget)
         child = self._registry.open_delegate(self._parent, session)
         try:
-            prompt = self._brief(child) + task
+            prompt = self._brief(child, forked_at) + task
             for _ in range(turns):
                 text, error = self._turn(child, prompt)
                 # The error first, and always. A turn that streamed prose
@@ -191,29 +203,14 @@ class StudioRunner:
             return self._turns
         return turns if turns > 0 else self._turns
 
-    def _brief(self, child: "Session") -> str:
+    def _brief(self, child: "Session", forked_at: str | None) -> str:
         """The header the delegate's first turn opens with."""
         runtime = child.ws.runtime
         return brief(
             self._parent,
-            self._forked_at(child),
+            forked_at,
             versioning=runtime.supports_commands or runtime.supports_ws_verbs,
         )
-
-    def _forked_at(self, child: "Session") -> str | None:
-        """The commit the child was forked from.
-
-        A fork writes commits of its own onto the new branch — the
-        seeded view and conversation, and the ws-git reset — and every
-        one of them names the session it forked FROM in its commit info.
-        So the fork point is the newest commit on the child's branch
-        that does not name this parent: everything above it belongs to
-        the fork, everything from it down is the parent's own history.
-        """
-        for commit in child.ws.log(limit=4):
-            if (commit.info or {}).get("parent") != self._parent:
-                return commit.id
-        return None
 
     def _turn(self, child: "Session", prompt: str) -> tuple[str, str | None]:
         """One turn, run the way a human's turn runs; its prose and error.
