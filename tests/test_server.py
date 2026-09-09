@@ -399,21 +399,27 @@ def test_preview_dispatches_into_live_runtime(studio):
 def test_publish_freezes_a_snapshot(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
-    _seed_app(registry.get("s1").ws)
+    session = registry.get("s1")
+    _seed_app(session.ws)
     client.post("/preview/s1/api/count")  # live state: n=1
 
     pub = client.post("/api/sessions/s1/publish").json()
     assert pub["url"].startswith("/apps/") and pub["commit"]
 
     # the snapshot serves, read-only: GET works, VFS/cache mutation 500s
-    assert client.get(pub["url"]).status_code == 200
-    assert client.get(f"{pub['url']}api/count").json() == {"n": 1}
+    assert "counter" in client.get(pub["url"]).text
     assert client.post(f"{pub['url']}api/count").status_code == 500
+    # and it carries the app tree, not the session: the live `cache` the
+    # preview has been writing is not in the published commit, so the
+    # handler reads its own default rather than the conversation's state
+    assert client.get(f"{pub['url']}api/count").json() == {"n": 0}
+    assert client.get("/preview/s1/api/count").json() == {"n": 1}
 
-    # the live session keeps moving; the snapshot doesn't
-    client.post("/preview/s1/api/count")  # live n=2
-    assert client.get("/preview/s1/api/count").json() == {"n": 2}
-    assert client.get(f"{pub['url']}api/count").json() == {"n": 1}
+    # the live session keeps moving; the published version doesn't
+    session.ws.files.fs.write("/workspace/app/index.html", b"<h1>moved on</h1>")
+    session.ws.commit()
+    assert "moved on" in client.get("/preview/s1/").text
+    assert "counter" in client.get(pub["url"]).text
 
 
 NAMES_HANDLER = (
@@ -489,8 +495,8 @@ def test_a_second_version_keeps_the_apps_db(studio):
 
 def _store_tags(store) -> dict:
     """Every tag in the kvgit store, as kvgit stores it (scope prefixes
-    included) — the only way to see that a publication really landed in
-    the scope that outlives its session."""
+    included) — the only way to see what a publication really left
+    behind in the scope that outlives its session."""
     import kvgit
 
     handle = kvgit.store(kind="disk", path=str(Path(store) / "kvgit"), branch="probe")
@@ -500,24 +506,39 @@ def _store_tags(store) -> dict:
         handle.versioned.store.close()
 
 
+def _registry(store) -> dict:
+    """nontainer's own publication registry, read off disk — the table
+    the studio's app entries are keyed against."""
+    path = Path(store) / "publications.json"
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
 def _publish(client, session: str, **body) -> dict:
     r = client.post(f"/api/sessions/{session}/publish", json=body)
     assert r.status_code == 200, r.text
     return r.json()
 
 
-def test_publish_tags_the_store_scope_and_marks_the_transcript(scripted, tmp_path):
-    """A version is a store-scoped tag, the app gets a db of its own,
-    and the conversation gets a landmark: the marker carries the
-    commit and tree it was made at, so it can be come back to."""
+def test_publish_makes_a_publication_and_marks_the_transcript(scripted, tmp_path):
+    """A version is a version of a nontainer publication named for the
+    app's token, the app gets a db of its own, and the conversation
+    gets a landmark: the marker carries the SESSION commit and tree it
+    was made at, so it can be come back to."""
     client, registry = scripted
     client.post("/api/sessions", json={"name": "s1"})
     _run(client, "s1", _script("/workspace/app/index.html", "<h1>one</h1>", "built it"))
 
     pub = _publish(client, "s1")
     token = pub["token"]
-    assert f"@store/pub/{token}/v1" in _store_tags(tmp_path)
+    record = _registry(tmp_path)[token]
+    assert record["current"] == "v1"
+    assert f"@store/{token}/v1" in _store_tags(tmp_path)
     assert (tmp_path / "dbs" / "apps" / f"{token}.sqlite").exists()
+    # the studio's half of the table: token -> publication name, route, db
+    entry = registry._manifest()["apps"][token]
+    assert entry["pub"] == token
+    assert entry["db"] == f"dbs/apps/{token}.sqlite"
+    assert entry["versions"]["v1"]["ref"] == record["versions"]["v1"]["ref"]
 
     events = client.get("/api/sessions/s1/events?wait=0").json()["events"]
     marker = next(e for e in events if e["type"] == "publish")
@@ -526,6 +547,31 @@ def test_publish_tags_the_store_scope_and_marks_the_transcript(scripted, tmp_pat
     assert marker["url"] == f"/apps/{token}/"
     assert marker["head"] == pub["commit"] == registry.get("s1").ws.head
     assert marker["tree"] == pub["tree"]
+
+
+def test_a_version_carries_the_app_and_not_the_session(studio):
+    """What a capability URL hands out is the `app/` tree and the rows
+    that describe it — not the notes, the uploads, the skills or the
+    conversation record sitting elsewhere in the session. A handler
+    under a published version can read its whole tree, and an export
+    hands over that whole tree, so "the whole tree" had better be the
+    app."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    session.ws.files.write("/workspace/private-notes.md", "do not ship this")
+    _seed_app(session.ws)
+    pub = _publish(client, "s1")
+
+    served = registry.resolve(pub["token"])
+    seen = served.files.list("/workspace", recursive=True)
+    assert "/workspace/app/index.html" in seen
+    assert not any("private-notes" in p or "/skills/" in p for p in seen)
+    # the session still holds all of it — the version is a derived
+    # commit, not a narrowing of the branch
+    assert "/workspace/private-notes.md" in session.ws.files.list(
+        "/workspace", recursive=True
+    )
 
 
 def test_a_served_version_is_frozen_code_over_a_live_db(studio):
@@ -649,7 +695,7 @@ def test_make_current_repoints_the_url(studio):
     )
 
 
-def test_unpublish_removes_tags_db_and_manifest(studio, tmp_path):
+def test_unpublish_removes_the_publication_db_and_manifest(studio, tmp_path):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     _seed_app(registry.get("s1").ws)
@@ -661,7 +707,9 @@ def test_unpublish_removes_tags_db_and_manifest(studio, tmp_path):
     assert client.delete(f"/api/apps/{token}").json() == {"ok": True}
 
     assert client.get(pub["url"]).status_code == 404
-    assert not any(t.startswith(f"@store/pub/{token}/") for t in _store_tags(tmp_path))
+    # both versions go, the current one last, and the record with them
+    assert token not in _registry(tmp_path)
+    assert not any(t.startswith(f"@store/{token}/") for t in _store_tags(tmp_path))
     assert not (tmp_path / "dbs" / "apps" / f"{token}.sqlite").exists()
     assert client.get("/api/apps").json()["apps"] == []
     assert client.delete(f"/api/apps/{token}").status_code == 404
@@ -738,6 +786,53 @@ def test_app_selection_and_version_names(studio):
         client.post("/api/sessions/s1/publish", json={"app": "not-a-token"}).status_code
         == 404
     )
+
+
+def test_a_version_whose_record_fails_is_taken_back_down(studio, tmp_path):
+    """A published version with no manifest row is a URL nothing can
+    reach and a branch nothing will ever collect. Taking it back down
+    means moving the pointer back first, since publishing had already
+    moved it onto the version being removed."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_app(session.ws)
+    pub = _publish(client, "s1")
+    token = pub["token"]
+
+    def boom(*a, **k):
+        raise RuntimeError("the record could not be written")
+
+    original = sessions_mod._head_tree
+    sessions_mod._head_tree = boom
+    try:
+        session.ws.files.write("/workspace/app/index.html", "<h1>v2</h1>")
+        with pytest.raises(RuntimeError):
+            registry.publish("s1")
+    finally:
+        sessions_mod._head_tree = original
+
+    record = _registry(tmp_path)[token]
+    assert sorted(record["versions"]) == ["v1"] and record["current"] == "v1"
+    app = client.get("/api/apps").json()["apps"][0]
+    assert [v["name"] for v in app["versions"]] == ["v1"]
+    assert client.get(pub["url"]).status_code == 200
+    # and the name is free again, because nothing of it was left behind
+    assert _publish(client, "s1")["version"] == "v2"
+
+
+def test_publishing_a_session_with_no_app_is_refused(studio):
+    """A version IS the `app/` tree, so a session that has not built one
+    has no version to make — and the refusal is the caller's to fix,
+    not a server fault."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    registry.get("s1").ws.files.write("/workspace/notes.md", "thinking about it")
+
+    r = client.post("/api/sessions/s1/publish")
+    assert r.status_code == 400
+    assert "no files under 'app/'" in r.json()["error"]
+    assert client.get("/api/apps").json()["apps"] == []
 
 
 def test_publish_refuses_a_turn_in_flight(studio):
@@ -903,7 +998,7 @@ def test_old_shape_publications_migrate_on_load(studio, tmp_path, caplog):
             r = client2.get("/apps/live-token/api/names")
             assert r.json() == {"names": ["shared"]}
         assert reborn._manifest()["published"] == {}
-        assert "@store/pub/live-token/v1" in _store_tags(tmp_path)
+        assert _registry(tmp_path)["live-token"]["current"] == "v1"
     finally:
         reborn.close()
     text = "\n".join(caplog.messages)
@@ -2830,6 +2925,7 @@ def test_executor_factory_plumbed_on_open_and_resolve(tmp_path, monkeypatch):
     try:
         session = registry.create()
         assert isinstance(session.ws.runtime.executor, MarkedExecutor)
+        _seed_app(session.ws)
         published = registry.publish(session.name)
         token = published["token"]
         # drop the cached snapshot so resolve takes the cold path — the

@@ -49,7 +49,7 @@ from nontainer import (
 from nontainer.adapters.agno import WorkspaceTools
 from nontainer.adapters.agno_db import KvgitStoreDb, fork_session
 from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
-from nontainer.errors import JobRunning, SessionsError
+from nontainer.errors import JobRunning, SessionsError, WorkspaceError
 from nontainer.sessions import Sessions
 from nontainer.wsgit import register_wsgit
 
@@ -411,6 +411,20 @@ def _ws_kwargs() -> dict[str, Any]:
     nothing but its python config, and nontainer picks the executor."""
     factory = _executor_factory()
     return {"executor_factory": factory} if factory is not None else {}
+
+
+def _pub_name(entry: dict, token: str) -> str:
+    """The nontainer publication name for one studio app.
+
+    The token IS the name: ``mint_token`` draws from
+    ``secrets.token_urlsafe``, whose alphabet is a subset of the
+    session-id shape a publication name must match, so nothing has to
+    be derived or escaped. The manifest records it anyway, because the
+    mapping is the studio's half of the contract — nontainer's registry
+    is generic and carries no token, no route and no db, and an app
+    entry is where all three live.
+    """
+    return entry.get("pub") or token
 
 
 def _head_tree(ws: Workspace) -> str | None:
@@ -975,7 +989,8 @@ class Registry:
         delegate because the studio wrote it down when it opened one,
         never because of what its name looks like.
 
-        ``apps`` is the publication registry (see :meth:`publish`);
+        ``apps`` maps a capability token to the app's publication name,
+        db and versions (see :meth:`publish`);
         ``published`` is the anchor-branch shape that preceded it and
         is empty after :meth:`_migrate_published` has run once."""
         try:
@@ -1681,10 +1696,11 @@ class Registry:
         branch, the session's app db, the transcript, the agent's chat
         record. Caller ensures not busy.
 
-        Its published APPS are not among them. An app owns its db and
-        its versions are store-scoped tags, which is the scope that
-        survives a session's deletion — so the URLs someone was handed
-        keep serving after the conversation that built them is gone.
+        Its published APPS are not among them. An app owns its db, and
+        each of its versions is a publication version on a branch of
+        its own that belongs to no session — so the URLs someone was
+        handed keep serving after the conversation that built them is
+        gone.
         Taking one down is ``unpublish``, said about the app.
 
         Its DELEGATES are. A delegate has no row in the rail of its own
@@ -1729,8 +1745,9 @@ class Registry:
     def _delete_branches(self, names: set[str]) -> None:
         """Remove sessions from the store. Deletion is nontainer's: the
         store deletes the branches it opened, and takes each branch's
-        session-scoped tags with it while leaving store-scoped ones —
-        which is what keeps a published app up after its session is
+        session-scoped tags with it while leaving the store scope
+        alone — and a publication lives on a branch of its own, which
+        is what keeps a published app up after its session is
         deleted. It is a store-level verb, not a live-session one, so
         every caller closes the session's workspace first: an open
         handle pins its branch."""
@@ -1832,11 +1849,12 @@ class Registry:
         A publish used to fork an anchor branch and serve it over the
         session's live db, so the token named a BRANCH and the state was
         the session's. An app now owns its db and its versions are
-        store-scoped tags — so each old entry becomes an app holding one
-        version, ``v1``, tagged at the anchor branch's head, over a copy
-        of the origin session's db. A copy is the closest state there
-        is: the two were sharing one db, and the app has to stop sharing
-        it here or deleting the session would take the app's state.
+        nontainer publications — so each old entry becomes an app
+        holding one version, ``v1``, published from the anchor branch's
+        head, over a copy of the origin session's db. A copy is the
+        closest state there is: the two were sharing one db, and the
+        app has to stop sharing it here or deleting the session would
+        take the app's state.
 
         An entry whose anchor branch is gone is dropped. A token that
         names no state serves nothing, and leaving it in the manifest
@@ -1873,9 +1891,8 @@ class Registry:
         origin = old.get("session")
         if not branch:
             return None
-        tag = f"pub/{token}/v1"
         title = self.title_of(origin, manifest) if origin else DEFAULT_TITLE
-        commit = tree = None
+        commit = tree = ref = None
         ws = self._store.open(branch)
         try:
             # Opening a branch CREATES it, so "is it still there" cannot
@@ -1885,23 +1902,26 @@ class Registry:
             # while a branch this very call invented has a baseline head
             # of its own.
             if checkpoint and ws.head == checkpoint:
-                commit = self._store.tags.add(
+                published = self._store.publish(
                     ws,
-                    tag,
-                    info={
-                        "token": token,
-                        "session": origin,
-                        "version": "v1",
-                        "title": title,
-                    },
+                    token,
+                    version="v1",
+                    info={"token": token, "session": origin, "title": title},
                 )
+                ref = str(published.version("v1").ref)
+                commit = ws.head
                 tree = _head_tree(ws)
+        except WorkspaceError as e:
+            # An anchor holding no `app/` tree is an entry whose URL
+            # could only ever have 404ed; it is dropped like a missing
+            # branch rather than recorded as an app that serves nothing.
+            log.warning("publish: %s cannot be published from %r: %s", token, branch, e)
         finally:
             ws.close()
         # Either way the anchor branch goes: it was the old serving
-        # mechanism, and the tag (store-scoped) outlives it.
+        # mechanism, and the publication outlives it.
         self._delete_branches({branch})
-        if commit is None:
+        if ref is None:
             return None
         src = self._store.path / "dbs" / f"{origin}.sqlite"
         dst = self._app_db_path(token)
@@ -1914,6 +1934,7 @@ class Registry:
                 db.close()
         return {
             "token": token,
+            "pub": token,
             "session": origin,
             "title": title,
             "created": time.time(),
@@ -1921,7 +1942,7 @@ class Registry:
             "current": "v1",
             "versions": {
                 "v1": {
-                    "tag": tag,
+                    "ref": ref,
                     "commit": commit,
                     "tree": tree,
                     "created": time.time(),
@@ -1933,9 +1954,19 @@ class Registry:
     #
     # An APP is a publication with a stable URL: one capability token,
     # one db of its own, and a growing set of VERSIONS. A version is a
-    # store-scoped nontainer tag over the origin session's branch, which
-    # is the scope that outlives a session — so deleting the session
-    # that built an app leaves the app up.
+    # version of a nontainer PUBLICATION — a derived commit holding the
+    # files under `app/` and the filesystem rows that describe them,
+    # on a branch of its own that belongs to no session. So the URL
+    # freezes the app and not the conversation that built it: the
+    # notes, the uploads, the skills and the transcript sitting outside
+    # `app/` are not in what a capability URL hands out, and deleting
+    # the session leaves every version of the app exactly as it was.
+    #
+    # nontainer's registry is generic — a name, its versions, and which
+    # one is current. The token, the route and the db are the studio's,
+    # and live in the app entry here, keyed by token: the publication
+    # is named for the token (see `_pub_name`), which is what ties the
+    # two tables together.
     #
     # The app owns its db from its first version: the session's live db
     # is copied once (through SQLite's backup API) into
@@ -1965,9 +1996,19 @@ class Registry:
         """The name this version gets: the caller's, or the next free
         ``vN`` in the app.
 
+        The default counts the app's VERSIONS rather than its
+        ``v``-numbers, so a named version pushes the next number along
+        instead of being overwritten by it. nontainer's own default
+        counts only ``v``-numbers, so studio names every version
+        explicitly rather than letting the store pick one.
+
         ``/`` is refused on top of kvgit's own rule (non-empty, no
-        ``%``) because a version's tag is ``pub/<token>/<version>`` — a
-        slash in the name would make the tag say something else."""
+        ``%``) because a version is half of ``<name>/<version>``, the
+        tag a publication carries — a slash in the name would make that
+        say something else. The already-taken check is studio's own
+        even though nontainer refuses a reused version too: it refuses
+        with a ``WorkspaceError``, which the route would answer 500 to
+        rather than 400."""
         taken = set((entry or {}).get("versions", {}))
         if asked is None:
             n = len(taken) + 1
@@ -2032,7 +2073,8 @@ class Registry:
     ) -> dict:
         """Publish the session's current state as a new version of an app.
 
-        The version is a store-scoped tag, so it is durable and
+        The version is a nontainer publication version — the `app/`
+        tree on a branch of its own — so it is durable and
         session-independent from the moment it exists; the app's URL
         then points at it (``current``), which is what makes publishing
         a new version the everyday verb and rolling back a pointer move
@@ -2043,9 +2085,13 @@ class Registry:
         published app or a new one. ``version`` names it; the default is
         ``v1``, ``v2``, ... within the app.
 
+        A session holding nothing under ``<root>/app`` is refused: a
+        version is that tree, and an empty one is a URL that could only
+        ever 404.
+
         A between-turns verb, like fork: a turn in flight owns the
-        workspace, and a tag made over half a turn would name a state
-        no commit ever held.
+        workspace, and a version published over half a turn would hold
+        a state no commit ever held.
         """
         session = self._sessions.get(name)
         if session is None:
@@ -2064,7 +2110,7 @@ class Registry:
 
         The reservation has to outlive the call for the caller that
         EMITS the marker: a chat request winning the turn lock between
-        the tag and the marker would put its `user` event above a
+        the version and the marker would put its `user` event above a
         landmark whose commit predates it, and restoring to that
         marker would then rewind the files under a prompt still on
         screen. So the route holds one reservation across both."""
@@ -2074,27 +2120,46 @@ class Registry:
             token, entry = self._target_app(name, app, manifest["apps"])
             version = self._version_name(version, entry)
             title = self.title_of(name, manifest)
-            tag = f"pub/{token}/{version}"
-            # The tag first, because it is the only step that can
-            # refuse (a taken name, a name kvgit won't have) — and
-            # it commits the session's staged work, so what the tag
-            # names is what the human was looking at.
-            commit = self._store.tags.add(
-                session.ws,
-                tag,
-                info={
-                    "token": token,
-                    "session": name,
-                    "version": version,
-                    "title": title,
-                },
-            )
+            pub = _pub_name(entry, token)
+            serving = entry.get("current")
+            # Publishing names a commit and refuses staged work, so the
+            # session's is landed here first — what the version holds
+            # is then what the human was looking at. Safe under the
+            # caller's turn-lock reservation and nowhere else: that is
+            # what says no half-turn is sitting in the buffer.
+            if session.ws.uncommitted:
+                session.ws.commit(info={"tool": "publish", "app": token})
+            commit = session.ws.head
+            # nontainer serializes its publication registry under a
+            # per-path threading.Lock, plus an `flock` on
+            # `publications.lock` where fcntl exists so a second PROCESS
+            # cannot pick the same version number. The studio is one
+            # process and holds `_lock` across this whole
+            # read-decide-write, so there is nothing to add here.
+            try:
+                published = self._store.publish(
+                    session.ws,
+                    pub,
+                    version=version,
+                    # Studio's own provenance. `tool`, `name`, `version`
+                    # and `published_from` are nontainer's to write into
+                    # the commit and are refused here rather than
+                    # overridden, which is why `version` is not among them.
+                    info={"token": token, "session": name, "title": title},
+                )
+            except WorkspaceError as e:
+                # A session with nothing under `app/` is the everyday
+                # one: there is no app here yet. The refusal is the
+                # caller's to fix, so it leaves as a ValueError and the
+                # route answers 400 rather than 500.
+                raise ValueError(str(e)) from e
             try:
                 if not entry:
                     self._app_db_path(token).parent.mkdir(parents=True, exist_ok=True)
                     session.db.copy_to(self._app_db_path(token))
                     entry = {
                         "token": token,
+                        "pub": pub,
                         "session": name,
                         "created": time.time(),
                         "db": f"dbs/apps/{token}.sqlite",
@@ -2106,19 +2171,31 @@ class Registry:
                 # should rename the app, not leave it under a name
                 # nobody uses any more
                 entry["title"] = title
+                row = published.version(version)
                 entry["versions"][version] = {
-                    "tag": tag,
+                    # Two commits, because they answer two questions.
+                    # `ref` is the publication's own derived commit —
+                    # the app, and what the URL serves. `commit` is the
+                    # SESSION's, which is what a publish marker
+                    # restores to and what `changed_since` measures the
+                    # live workspace against.
+                    "ref": str(row.ref),
                     "commit": commit,
                     "tree": _head_tree(session.ws),
-                    "created": time.time(),
+                    "created": row.created,
                 }
                 entry["current"] = version
                 manifest["apps"][token] = entry
                 self._save_manifest(manifest)
             except BaseException:
-                # a tag with no manifest entry is a name nothing can
-                # reach and nothing will ever collect
-                self._store.tags.delete(tag)
+                # A version with no manifest entry is a URL nothing can
+                # reach and a branch nothing will ever collect, so it
+                # goes back down. The pointer moves back first: a
+                # publication refuses to drop the version it points at
+                # while others remain, and publishing pointed it here.
+                if serving and serving != version:
+                    self._store.set_current(pub, serving)
+                self._unpublish_version(pub, version)
                 raise
             self._drop_snapshots(token)
             return {
@@ -2141,12 +2218,11 @@ class Registry:
         token AND version, and repointing simply drops the old entry.
 
         Reopening after a restart needs nothing from the origin session,
-        which may be long gone: the version is a store-scoped tag and
-        the db is the app's own file. It needs no session at all, in
-        fact — a store-scoped read anchors itself, minting the store's
-        own reserved branch when there is no session and no publication
-        to lend a handle, so the studio keeps no branch of its own for
-        an app to be served through.
+        which may be long gone: a publication version lives on a branch
+        of its own and the db is the app's own file. So the studio
+        keeps no branch of its own for an app to be served through, and
+        an app whose session was deleted opens exactly as one whose
+        session is still there does.
 
         A commit holds the tree and nothing else, so the live objects
         the app's handlers call are supplied at the open rather than
@@ -2169,8 +2245,16 @@ class Registry:
             info = (entry.get("versions") or {}).get(version)
             if info is None:
                 return None
-            snapshot = self._store.tags.at(
-                info["tag"],
+            publication = self._store.publication(_pub_name(entry, token))
+            if publication is None:
+                return None
+            # The version by name, not the registry's own `current`:
+            # what the rail shows and what the URL serves have to be
+            # one answer, and the manifest is where the studio keeps
+            # it. The open re-reads nontainer's registry either way, so
+            # a version unpublished since is refused rather than served.
+            snapshot = publication.open(
+                version,
                 python=self._python_config(self._app_db(entry)),
                 **_ws_kwargs(),
             )
@@ -2239,7 +2323,7 @@ class Registry:
         its URL serves — two answers, because they are two questions.
 
         ``count`` / ``paths`` are the CONTENT question: files under
-        ``<root>/app`` whose bytes differ from the tagged state. A file
+        ``<root>/app`` whose bytes differ from the published state. A file
         re-saved with the bytes it already had is not in them.
 
         ``up_to_date`` is the WRITE question: kvgit stamps every write
@@ -2272,8 +2356,12 @@ class Registry:
 
     def set_current(self, token: str, version: str) -> dict:
         """Repoint an app's URL at one of its versions — a rollback or a
-        roll forward. Tags never move; the pointer does, which is the
-        whole reason the URL is the app's and not a version's."""
+        roll forward. Versions never move; the pointer does, which is
+        the whole reason the URL is the app's and not a version's.
+
+        A CODE move only. Rows the versions' handlers wrote live in the
+        app's db, which is outside every version and rolls back with
+        none of them."""
         with self._lock:
             manifest = self._manifest()
             entry = manifest["apps"].get(token)
@@ -2281,14 +2369,21 @@ class Registry:
                 raise KeyError(token)
             if version not in (entry.get("versions") or {}):
                 raise ValueError(f"this app has no version {version!r}")
+            self._store.set_current(_pub_name(entry, token), version)
             entry["current"] = version
             self._save_manifest(manifest)
             self._drop_snapshots(token)
             return self._app_row(entry)
 
     def unpublish(self, token: str) -> None:
-        """Take an app down: every version's tag, its db, its cached
+        """Take an app down: every version, its db, its cached
         snapshots and its manifest entry.
+
+        The db goes WITH the last version. It holds one app's rows and
+        nothing but this entry could name the file again — the token is
+        gone from the manifest and no other app is ever minted onto it
+        — so keeping it would leave a sqlite file on disk that no verb
+        in the studio can reach, read or delete.
 
         The origin session is untouched — an app was never the session's
         state, only a named copy of it."""
@@ -2301,7 +2396,18 @@ class Registry:
             db = self._app_dbs.pop(token, None)
             if db is not None:
                 db.close()
-            self._delete_tags(v["tag"] for v in (entry.get("versions") or {}).values())
+            pub = _pub_name(entry, token)
+            versions = list(entry.get("versions") or {})
+            current = entry.get("current")
+            # The current version goes LAST: nontainer refuses to
+            # remove the one a publication points at while others
+            # remain (something is being served off it and there is no
+            # obvious successor), and allows it as the last one, where
+            # it takes the publication's record with it.
+            for name in [v for v in versions if v != current] + [
+                v for v in versions if v == current
+            ]:
+                self._unpublish_version(pub, name)
             (self._store.path / entry["db"]).unlink(missing_ok=True)
             self._save_manifest(manifest)
 
@@ -2329,12 +2435,29 @@ class Registry:
                     "this is the app's only version — unpublish the app instead"
                 )
             self._drop_snapshots(token, version)
-            self._delete_tags([versions.pop(version)["tag"]])
+            versions.pop(version)
+            self._unpublish_version(_pub_name(entry, token), version)
             self._save_manifest(manifest)
             return self._app_row(entry)
 
+    def _unpublish_version(self, pub: str, version: str) -> None:
+        """Remove one published version: its tag, its branch, its record
+        in nontainer's registry.
+
+        Best-effort. A version that will not go is one no manifest row
+        reaches any more, and refusing to finish the manifest write
+        over it would leave the two halves disagreeing in the other
+        direction — a row pointing at something the studio believes it
+        deleted.
+        """
+        try:
+            self._store.unpublish(pub, version)
+        except Exception:
+            log.warning("publish: could not unpublish %s/%s", pub, version)
+
     def _delete_tags(self, names: Iterable[str]) -> None:
-        """Drop store-scoped tags.
+        """Drop store-scoped tags — the shape a version had before
+        publications, removed by the migration that replaces it.
 
         No session owns these names, so the store says it directly and
         no workspace is opened at all — which also means no executor is
@@ -2358,8 +2481,8 @@ class Registry:
         conversation as they stood at that publish.
 
         Raises ``KeyError`` when the origin session is gone: the app's
-        files are still served from the tag, but a conversation cannot
-        be branched out of a branch that no longer exists.
+        files are still served from the publication, but a conversation
+        cannot be branched out of a branch that no longer exists.
         """
         entry = self._manifest()["apps"].get(token)
         if entry is None:
@@ -2422,7 +2545,7 @@ class Registry:
     def restore_to_publish(self, session: Session, seq: int) -> int:
         """Rewind a session to one of its own publishes: the files and
         the conversation go back to where they stood when that version
-        was tagged.
+        was published.
 
         The same synchronized rewind an edit does — one ``checkout``,
         because the conversation lives in the branch with the files —
@@ -2432,9 +2555,11 @@ class Registry:
         still there and is still what you came back to.
 
         The commit is always reachable, however far the branch has
-        wandered since — a tag is a garbage-collection root, so
-        publishing is what keeps that state alive even after an edit
-        rewound past it.
+        wandered since: a rewind CHECKS OUT rather than moves the head,
+        appending a commit whose content equals the target, so nothing
+        the session ever held stops being an ancestor of where it is
+        now. The version the marker names is a publication of its own
+        and outlives the session either way.
         """
         event = next((e for e in session.events if e.get("seq") == seq), None)
         head = event.get("head") if event else None
