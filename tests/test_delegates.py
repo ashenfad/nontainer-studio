@@ -6,10 +6,12 @@ standing in for the LLM, so a delegate's `!tool` directives execute for
 real against its own branch.
 """
 
+import asyncio
+
 import pytest
 from nontainer.sessions import Sessions
 
-from nontainer_studio import delegates
+from nontainer_studio import delegates, server
 from nontainer_studio import sessions as sessions_mod
 from nontainer_studio.dummy import DummyModel
 
@@ -156,3 +158,48 @@ def test_deleting_a_session_takes_its_delegates_with_it(registry):
     assert child not in registry._store.sessions()
     assert not (registry._store.path / "dbs" / f"{child}.sqlite").exists()
     assert not (registry._store.path / "events" / f"{child}.jsonl").exists()
+
+
+# -- the sessions tool, end to end ------------------------------------------
+
+
+def _turn(session, message):
+    """One turn, run exactly as the server runs a human's."""
+    session.turn_lock.acquire()  # _run_turn releases it
+    since = session.next_seq
+    asyncio.run(server._run_turn(session, message))
+    return [e for e in session.events if e.get("seq", -1) >= since]
+
+
+def _tool_results(events, name):
+    return [
+        e["result"] for e in events if e["type"] == "tool_end" and e["name"] == name
+    ]
+
+
+ASK = (
+    '!tool sessions {"action": "ask", "name": "scout", "wait": true, '
+    '"task": "!tool file_write {\\"path\\": \\"/workspace/scouted.md\\", '
+    '\\"content\\": \\"found it\\"}\\n!text Found it."}\n'
+    "!text Sent a scout."
+)
+
+
+def test_the_agent_delegates_and_merges_the_work_back(registry):
+    parent = registry.open("boss")
+
+    asked = _turn(parent, ASK)
+    result = _tool_results(asked, "sessions")[0]
+    assert "Found it." in result
+    # the tool's own next step, spelled for the terminal
+    assert "ws-git merge boss.scout" in result
+    # and nothing landed here: a delegate works on a branch of its own
+    assert not parent.ws.files.fs.exists("/workspace/scouted.md")
+
+    merged = _turn(
+        parent,
+        '!tool terminal {"command": "ws-git merge boss.scout"}\n'
+        "!text Merged the scout's work.",
+    )
+    assert _tool_results(merged, "terminal")
+    assert parent.ws.files.fs.read("/workspace/scouted.md") == b"found it"
