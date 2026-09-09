@@ -71,8 +71,9 @@
 
     // A publish marker is an anchor, like a user message: restoring to
     // one rewinds the files and the agent's memory to where that
-    // version was tagged and cuts everything after it. Armed on the
-    // first tap, like the rail's delete — it unsays turns.
+    // version was tagged and cuts the transcript after it. Armed on
+    // the first tap, like the rail's delete — it unsays turns, even
+    // though the workspace's own history keeps every one of them.
     let armedRestore = $state(null)
 
     // What the marker's app is NOW. The marker itself is a history
@@ -195,7 +196,7 @@
                     <button
                         class="restore"
                         class:armed={armedRestore === msg.seq}
-                        title="rewind the files and the agent's memory to this publish, dropping everything after it"
+                        title="rewind the files and the agent's memory to this publish — the turns after it leave the transcript, and stay in the workspace's history"
                         onclick={() => restore(msg)}
                         >{armedRestore === msg.seq
                             ? 'really restore'

@@ -2,7 +2,7 @@
     // The composer: one rounded card holding chips + auto-growing
     // textarea + an in-card toolbar (attach left; model picker + send
     // right) — the agex-studio / Claude.ai shape. Files upload
-    // immediately (each is a checkpointed workspace write under
+    // immediately (each is a committed workspace write under
     // /uploads/); the chips just decide what the NEXT message mentions.
     import { uploadFiles } from './api.js'
     import ModelPicker from './ModelPicker.svelte'
