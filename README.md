@@ -2,7 +2,7 @@
 
 A local AI workbench over [nontainer](https://github.com/ashenfad/nontainer):
 chat with an agent that works inside a **versioned workspace** — files,
-sandboxed Python, a live app preview — where every turn is a checkpoint
+sandboxed Python, a live app preview — where every turn is a commit
 you can rewind, fork, or publish.
 
 - **Edit = synchronized time travel.** Hover any of your messages and
@@ -11,7 +11,8 @@ you can rewind, fork, or publish.
   is replaced, and no post-rewind gaslighting where the agent remembers
   work the files no longer show. They rewind together because they are
   one thing: the conversation lives in the same versioned branch as the
-  files, so the rewind is a single `restore`.
+  files, so the rewind is a single `checkout`. History is append-only:
+  what you rewound off is still in the branch, so an undo can be undone.
 - **Background sessions.** Turns run server-side, decoupled from the
   browser. Switch sessions, reload, or close the tab mid-turn; the work
   continues and the rail dots show what's running (pulsing) and what
@@ -165,7 +166,7 @@ Three kinds of state, on purpose:
 |---|---|---|---|---|
 | **workspace** (files, cache, cwd) | kvgit branch per session | rewinds | branches (O(1)) | a version — a store-scoped tag, frozen and read-only |
 | **app `db`** (live SQLite host object) | file per session | untouched — external state has no history | copied | copied ONCE, at the app's first version; the app owns it from then on |
-| **conversation** | agno's session in the same kvgit branch (+ a jsonl transcript) | rewinds with the files — one `restore`, not two writes that can disagree; an `edit` trims the visible transcript too | `inherit` or `fresh` | a marker in the transcript you can restore to, or branch from |
+| **conversation** | agno's session in the same kvgit branch (+ a jsonl transcript) | rewinds with the files — one `checkout`, not two writes that can disagree; an `edit` trims the visible transcript too | `inherit` or `fresh` | a marker in the transcript you can restore to, or branch from |
 
 An **app** is a publication lineage: one URL, one `db`, and a growing
 list of versions. The URL serves whichever version is *current*, so
@@ -221,7 +222,7 @@ SSE cursor into the server's per-session event log. The shell is just a
 projection of the foreground runtime — that's what makes background
 turns and instant session switching work. The server-side halves live in
 `nontainer_studio/server.py` (routes, agno-stream → event mapping) and
-`nontainer_studio/sessions.py` (registry, synchronized restore, publish,
+`nontainer_studio/sessions.py` (registry, synchronized rewind, publish,
 durable transcript).
 
 ## Tests
