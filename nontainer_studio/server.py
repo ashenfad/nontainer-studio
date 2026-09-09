@@ -867,10 +867,11 @@ def build_app(registry: Registry) -> Starlette:
         return JSONResponse({"ok": True, "model": spec})
 
     # -- publish: a version of an app, behind a capability URL -----------
-    # An app is a publication lineage: one token, one URL, one db of its
-    # own, and a growing set of versions (store-scoped tags). The URL
-    # serves whichever version is current, so publishing again moves it
-    # forward and `POST /api/apps/{token}/current` moves it back.
+    # An app is a nontainer publication: one token, one URL, one db of
+    # its own, and a growing set of versions, each an immutable commit
+    # of the `app/` tree alone. The URL serves whichever version is
+    # current, so publishing again moves it forward and `POST
+    # /api/apps/{token}/current` moves it back.
 
     @with_session
     async def publish(request: Any, session: Any) -> JSONResponse:
@@ -888,7 +889,7 @@ def build_app(registry: Registry) -> Starlette:
             return JSONResponse({"error": "name must be a string"}, status_code=400)
         if app is not None and not isinstance(app, str):
             return JSONResponse({"error": "app must be a token"}, status_code=400)
-        # ONE reservation across the tag and the marker. Publishing
+        # ONE reservation across the version and the marker. Publishing
         # under its own lock and emitting after it would let a chat
         # request slip between them: its `user` event would sit above a
         # landmark whose commit predates the turn, and restoring to
@@ -1014,7 +1015,7 @@ def build_app(registry: Registry) -> Starlette:
     @with_session
     async def restore(request: Any, session: Any) -> JSONResponse:
         """Rewind to one of this session's own publishes: files, agent
-        memory and title go back to where that version was tagged, and
+        memory and title go back to where that version was published, and
         the transcript is cut after the marker. The same machinery an
         edit uses — one checkout, because the conversation lives in the
         branch — with no new turn started."""

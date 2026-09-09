@@ -72,7 +72,7 @@
 
     // A publish marker is an anchor, like a user message: restoring to
     // one rewinds the files and the agent's memory to where that
-    // version was tagged and cuts the transcript after it. Armed on
+    // version was published and cuts the transcript after it. Armed on
     // the first tap, like the rail's delete — it unsays turns, even
     // though the workspace's own history keeps every one of them.
     let armedRestore = $state(null)

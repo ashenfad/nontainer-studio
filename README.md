@@ -19,11 +19,12 @@ you can rewind, fork, or publish.
   finished while you were away (green).
 - **Live preview → publish.** Anything the agent writes under
   `/workspace/app` serves live in the preview pane as it takes shape.
-  `publish` freezes the current state as a **version** of an **app**: a
+  `publish` freezes that tree as a **version** of an **app**: a
   capability URL that keeps serving while your session keeps moving.
   Publishing again adds `v2` under the same URL, and the pointer moves
-  back as easily as forward. An app owns its `db` from its first
-  version, and its versions are store-scoped tags — so a session can be
+  back as easily as forward. A version is `/workspace/app` and nothing
+  else — the notes, the uploads and the conversation stay behind — and
+  an app owns its `db` from its first version, so a session can be
   deleted without taking its apps down.
 - **Rich replies.** The agent can drop plots, tables, images, and HTML
   into its answers via `ui = {...}` — rendered inline, themed by the
@@ -114,7 +115,7 @@ memory.
 
 The bytes are committed, like the frontend build, so nothing is fetched at
 install or run time. They stay out of the workspace — no session, fork, or
-published snapshot carries a copy — and the agent is told what it has in
+published version carries a copy — and the agent is told what it has in
 the terminal tool's description rather than being left to guess.
 
 `./scripts/fetch-appassets.sh` regenerates them (pinned versions and
@@ -168,16 +169,30 @@ Three kinds of state, on purpose:
 
 | state | durability | restore | fork | publish |
 |---|---|---|---|---|
-| **workspace** (files, cache, cwd) | kvgit branch per session | rewinds | branches (O(1)) | a version — a store-scoped tag, frozen and read-only |
+| **workspace** (files, cache, cwd) | kvgit branch per session | rewinds | branches (O(1)) | `app/` only — a publication version, frozen and read-only |
 | **app `db`** (live SQLite host object) | file per session | untouched — external state has no history | copied (a delegate's too) | copied ONCE, at the app's first version; the app owns it from then on |
 | **conversation** | agno's session in the same kvgit branch (+ a jsonl transcript) | rewinds with the files — one `checkout`, not two writes that can disagree; an `edit` trims the visible transcript too | `inherit` or `fresh` | a marker in the transcript you can restore to, or branch from |
 
-An **app** is a publication lineage: one URL, one `db`, and a growing
-list of versions. The URL serves whichever version is *current*, so
-publishing moves it forward and `make current` moves it back — the link
-you handed someone never changes. Versions are store-scoped nontainer
-tags, the scope that outlives a branch, so nothing an app serves depends
-on the session that built it still existing.
+An **app** is a nontainer **publication**: one URL, one `db`, and a
+growing list of versions. The URL serves whichever version is *current*,
+so publishing moves it forward and `make current` moves it back — the
+link you handed someone never changes.
+
+A version is a derived commit holding the files under `/workspace/app`
+and the filesystem rows that describe them, on a branch of its own that
+belongs to no session. Two things follow. The capability URL hands out
+the app and not the conversation — a handler under it can read its whole
+tree, and so can anyone the link reaches, so the notes, the uploads, the
+skills and the transcript are not in it. And the version outlives its
+session by construction: where it came from is recorded as a soft
+reference, so deleting the session leaves every version of it exactly as
+it was. The corollary is that `cache` does not travel — it is workspace
+state, not a file — so precompute into a file under `app/`, or use `db`.
+
+nontainer's publication registry is generic (a name, its versions, which
+one is current). The capability token, the route and the `db` are the
+studio's, kept in its own manifest and keyed by token; the publication
+is named for the token, which is what ties the two tables together.
 
 The `db` copy is what makes that true of the *state* as well as the
 code. A published app's users write rows; so does the session's live

@@ -88,6 +88,16 @@ dependencies = [
     # the child was forked from, so the provenance header a delegate
     # opens with names the fork point instead of studio reading the
     # child's log to guess which commit that was.
+    #
+    # 0.6.2 also carries `store.publish` and the publication registry,
+    # which an app version now IS. A tag named a commit of the whole
+    # session, so the capability URL froze the notes, the uploads and
+    # the conversation record behind it; a publication is a derived
+    # commit of `app/` and its filesystem rows, on a branch of its own,
+    # so what the URL hands out is the app. It also ends the anchoring
+    # question outright — a publication belongs to no session, so
+    # nothing has to lend it a branch — and `Publication.open(version,
+    # python=...)` is where the app's live `db` goes in.
     "nontainer[agno,apps]>=0.6.2",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title

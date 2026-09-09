@@ -17,8 +17,8 @@
 
     // Branching needs the origin session's branch, which delete takes
     // with it. The app itself is untouched by that — it owns its db and
-    // its versions are store tags — so the row says why the one verb is
-    // gone rather than hiding it.
+    // each version lives on a branch of its own — so the row says why
+    // the one verb is gone rather than hiding it.
     const alive = (app) => rail.sessions.some((s) => s.name === app.session)
 
     function arm(key) {
