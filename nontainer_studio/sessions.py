@@ -2409,10 +2409,16 @@ class Registry:
         return seq + 1
 
     def close(self) -> None:
+        # Sessions go OUTSIDE the lock. Closing one joins its delegate
+        # workers, and a delegate still running is inside `open_delegate`
+        # on a thread of its own, waiting for this same lock — holding it
+        # across the join is a deadlock between the two.
         with self._lock:
-            for session in self._sessions.values():
-                self._close_session(session)
+            live = list(self._sessions.values())
             self._sessions.clear()
+        for session in live:
+            self._close_session(session)
+        with self._lock:
             for _, snapshot in self._published.values():
                 snapshot.close()
             self._published.clear()
