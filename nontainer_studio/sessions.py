@@ -50,6 +50,9 @@ from nontainer.adapters.agno import WorkspaceTools
 from nontainer.adapters.agno_db import KvgitStoreDb, fork_session
 from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
 from nontainer.errors import SessionIdError
+from nontainer.sessions import SEPARATOR
+
+from .delegates import DELEGATE_TURNS
 
 log = logging.getLogger(__name__)
 
@@ -690,9 +693,14 @@ class Registry:
         store: Path | str | None = None,
         default_model: str | None = None,
         apps: AppsConfig | None = None,
+        delegate_turns: int = DELEGATE_TURNS,
     ) -> None:
         self._model_factory = model_factory  # (spec) -> agno Model
         self._default_model = default_model
+        # The budget every delegate runs under unless its asker names
+        # one. A studio setting, not nontainer's: nontainer passes the
+        # value through and never interprets it (see delegates.py).
+        self._delegate_turns = delegate_turns
         # The store is the object that owns what outlives a session:
         # opening one, deleting one, and the tag scope that belongs to
         # none of them. Studio's own bookkeeping (the app dbs, the
@@ -767,6 +775,11 @@ class Registry:
         Sessions with no birthday (pre-`created` manifests) sort last."""
         manifest = self._manifest()
         names = set(manifest["sessions"]) | set(self._sessions)
+        # Delegates are the parent's business, not the rail's: they are
+        # forked by a tool call, answered on a later turn, and deleted
+        # with the session that asked. Listing them would put a row in
+        # the rail for every question an agent ever farmed out.
+        names = {n for n in names if not self.is_delegate(n, names)}
         created = manifest["created"]
         rows = [
             {
@@ -779,6 +792,23 @@ class Registry:
         ]
         rows.sort(key=lambda r: (-created.get(r["name"], 0), r["name"]))
         return rows
+
+    def is_delegate(self, name: str, known: "set[str] | None" = None) -> bool:
+        """Whether ``name`` is a session somebody forked as a delegate.
+
+        nontainer scopes a child under the session that asked for it —
+        ``analyst.sleepy-otter``, dot-separated because a session id is
+        a branch name and holds no path separator — and a slug the
+        studio mints is hyphenated petname words with no dot in them.
+        So a dotted name whose prefix names a session here was forked by
+        that session, and a dotted name a human typed is a session like
+        any other. ``known`` supplies the pool to check against, for a
+        caller that already has one.
+        """
+        if SEPARATOR not in name:
+            return False
+        pool = self.known() if known is None else known
+        return any(name.startswith(p + SEPARATOR) for p in pool if p != name)
 
     # -- titles: display only, never identity ------------------------------
 
@@ -1314,6 +1344,56 @@ class Registry:
             exponential_backoff=True,
         )
 
+    # -- delegates: sessions the registry did not create ----------------------
+
+    def open_delegate(self, parent: str, name: str) -> Session:
+        """Assemble a session over a branch ``ws.fork`` already made.
+
+        A fork is a BRANCH. A branch is not a model, a toolkit, a python
+        config or an app db, and a delegate needs all four to be an
+        agent at all — so the child is opened the way every other
+        session is, and gets what every other session gets.
+
+        The exception is the app db, which is copied from the parent
+        first. It is live external state that never versions, so the
+        fork does not carry it, and a delegate sent to work on an app
+        over an empty db would be testing a different program than the
+        one its parent is looking at. Copied and not shared, for the
+        reason :meth:`fork` copies it: two universes must not write over
+        each other's rows.
+        """
+        dst = self._store.path / "dbs" / f"{name}.sqlite"
+        with self._lock:
+            source = self._sessions.get(parent)
+        if source is not None and not dst.exists():
+            source.db.copy_to(dst)
+        return self.open(name)
+
+    def release(self, name: str) -> None:
+        """Close a session's live handles and leave everything on disk.
+
+        :meth:`delete`'s opposite number: the branch, the app db and the
+        transcript all stay, and reopening the name rebuilds the session
+        over them. This is what a finished delegate wants — its branch
+        is what the parent merges from, and an agent, a workspace handle
+        and a sqlite connection per delegate that has already answered
+        outlive every reason to hold them.
+        """
+        with self._lock:
+            session = self._sessions.pop(name, None)
+        if session is None:
+            return
+        self._close_session(session)
+
+    @staticmethod
+    def _close_session(session: Session) -> None:
+        """Release one session's handles, in dependency order."""
+        close_runtime = getattr(session.runtime, "close", None)
+        if callable(close_runtime):  # reap dispatch workers
+            close_runtime()
+        session.ws.close()
+        session.db.close()
+
     # -- fork: branch the whole universe --------------------------------------
 
     def fork(self, session: Session, *, conversation: str = "inherit") -> Session:
@@ -1436,36 +1516,44 @@ class Registry:
         its versions are store-scoped tags, which is the scope that
         survives a session's deletion — so the URLs someone was handed
         keep serving after the conversation that built them is gone.
-        Taking one down is ``unpublish``, said about the app."""
+        Taking one down is ``unpublish``, said about the app.
+
+        Its DELEGATES are. A delegate is scoped under the session that
+        asked for it, has no row in the rail of its own, and exists to
+        answer that session — so it goes when that session goes, by
+        prefix, and the whole subtree with it (a delegate may delegate).
+        """
         name = session.name
-        # Before the session leaves the registry: the db reaches the
-        # conversation through workspace_for, which would otherwise
-        # reopen the session it is being asked to erase. Best-effort —
-        # the branch deletion below takes the conversation with it
-        # either way, and nothing may block a delete.
-        try:
-            self.db.delete_session(name)
-        except Exception:
-            pass
-        with self._lock:
-            self._sessions.pop(name, None)
-            manifest = self._manifest()
-            manifest["sessions"] = [s for s in manifest["sessions"] if s != name]
-            manifest["models"].pop(name, None)
-            # titles/created go too, or a later mint that happens to draw
-            # this slug (it's free again once `sessions` forgets it) would
-            # inherit a dead session's name and birthday
-            manifest["titles"].pop(name, None)
-            manifest["created"].pop(name, None)
-            self._save_manifest(manifest)
-        close_runtime = getattr(session.runtime, "close", None)
-        if callable(close_runtime):  # reap dispatch workers
-            close_runtime()
-        session.ws.close()  # before branch deletion: it holds the branch
-        session.db.close()
-        self._delete_branches({name})
-        (self._store.path / "dbs" / f"{name}.sqlite").unlink(missing_ok=True)
-        (self._store.path / "events" / f"{name}.jsonl").unlink(missing_ok=True)
+        doomed = [name] + sorted(
+            n for n in self.known() if n.startswith(name + SEPARATOR)
+        )
+        for victim in doomed:
+            # Before the session leaves the registry: the db reaches the
+            # conversation through workspace_for, which would otherwise
+            # reopen the session it is being asked to erase. Best-effort
+            # — the branch deletion below takes the conversation with it
+            # either way, and nothing may block a delete.
+            try:
+                self.db.delete_session(victim)
+            except Exception:
+                pass
+            with self._lock:
+                live = self._sessions.pop(victim, None)
+                manifest = self._manifest()
+                manifest["sessions"] = [s for s in manifest["sessions"] if s != victim]
+                manifest["models"].pop(victim, None)
+                # titles/created go too, or a later mint that happens to
+                # draw this slug (it's free again once `sessions` forgets
+                # it) would inherit a dead session's name and birthday
+                manifest["titles"].pop(victim, None)
+                manifest["created"].pop(victim, None)
+                self._save_manifest(manifest)
+            if live is not None:
+                # before branch deletion: an open workspace holds its branch
+                self._close_session(live)
+            (self._store.path / "dbs" / f"{victim}.sqlite").unlink(missing_ok=True)
+            (self._store.path / "events" / f"{victim}.jsonl").unlink(missing_ok=True)
+        self._delete_branches(set(doomed))
 
     def _delete_branches(self, names: set[str]) -> None:
         """Remove sessions from the store. Deletion is nontainer's: the
@@ -2197,11 +2285,7 @@ class Registry:
     def close(self) -> None:
         with self._lock:
             for session in self._sessions.values():
-                close_runtime = getattr(session.runtime, "close", None)
-                if callable(close_runtime):  # reap dispatch workers
-                    close_runtime()
-                session.ws.close()
-                session.db.close()
+                self._close_session(session)
             self._sessions.clear()
             for _, snapshot in self._published.values():
                 snapshot.close()
