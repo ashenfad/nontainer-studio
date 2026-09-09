@@ -80,7 +80,32 @@ def provenance_header(parent: str, commit: str | None) -> str:
         f"reaches `{parent}` unless it merges your branch, and nothing it "
         "does from here reaches you. Your reply is the whole of what it "
         "reads back, so answer with what you did and what you found.\n\n"
-        "The task follows.\n\n"
+    )
+
+
+VERSIONING = (
+    "Your work arrives as a NAMED commit only if you run `ws-git commit`, "
+    "and what you staged is taken as exactly that: anything you wrote past "
+    "your last commit is reported to the session that asked as left out, "
+    "never committed on your behalf, and a merge of your branch is refused "
+    "while that is true. If you never touch ws-git at all, your branch head "
+    "is your result — every write is already there. Either way the session "
+    "that asked brings the work back itself, with `ws-git merge <your "
+    "branch>` for all of it or `ws-git checkout <your branch> -- <paths>` "
+    "for some.\n\n"
+)
+
+
+def brief(parent: str, commit: str | None, *, versioning: bool) -> str:
+    """The whole frame a delegated task carries, ready to prepend.
+
+    ``versioning`` follows ``register_wsgit``'s own gate: an executor
+    with no terminal verbs would be taught a spelling it cannot run.
+    """
+    return (
+        provenance_header(parent, commit)
+        + (VERSIONING if versioning else "")
+        + "The task follows.\n\n"
     )
 
 
@@ -113,7 +138,7 @@ class StudioRunner:
         turns = self._budget(budget)
         child = self._registry.open_delegate(self._parent, session)
         try:
-            prompt = provenance_header(self._parent, self._forked_at(child)) + task
+            prompt = self._brief(child) + task
             error = None
             for _ in range(turns):
                 text, error = self._turn(child, prompt)
@@ -141,6 +166,15 @@ class StudioRunner:
         except (TypeError, ValueError):
             return self._turns
         return turns if turns > 0 else self._turns
+
+    def _brief(self, child: "Session") -> str:
+        """The header the delegate's first turn opens with."""
+        runtime = child.ws.runtime
+        return brief(
+            self._parent,
+            self._forked_at(child),
+            versioning=runtime.supports_commands or runtime.supports_ws_verbs,
+        )
 
     def _forked_at(self, child: "Session") -> str | None:
         """The commit the child was forked from.
