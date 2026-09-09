@@ -365,8 +365,9 @@ def test_busy_session_409s_chat(studio):
 
 
 def test_the_app_branch_name_is_reserved(studio):
-    """`_apps` is the branch published apps are served through, so it
-    cannot also be a session — the two would share a branch."""
+    """`_apps` is the branch a store tag is read through when no
+    session is left to lend a handle, so it cannot also be a session —
+    deleting that session would take the anchor with it."""
     client, registry = studio
     r = client.post("/api/sessions", json={"name": "_apps"})
     assert r.status_code == 400 and "reserved" in r.json()["error"]

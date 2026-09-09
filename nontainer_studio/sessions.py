@@ -56,16 +56,14 @@ log = logging.getLogger(__name__)
 DEFAULT_STORE = Path.home() / ".nontainer-studio"
 
 APP_BRANCH = "_apps"
-"""The reserved branch published apps are served THROUGH.
+"""The reserved branch a published app's state is READ THROUGH.
 
-A store-scoped tag belongs to no session, so opening the state it names
-needs a workspace that stands for no session either — and one built
-with the app's own python config, since the frozen snapshot inherits
-its host objects from the workspace it is opened through and a served
-app talks to its `db`. This branch is that workspace: it is never in
-the manifest, so it is never in the rail, never opened as a session,
-and never deleted with one; nothing is ever committed to it beyond the
-empty baseline opening a branch writes."""
+kvgit has no handle without a branch, so reading a store-scoped tag
+borrows a live one — and a published app is exactly the thing meant to
+outlive every session that could lend it. This branch is the lender of
+last resort: it is never in the manifest, so it is never in the rail,
+never opened as a session, and never deleted with one; nothing is ever
+committed to it beyond the empty baseline opening a branch writes."""
 
 MAX_EVENTS = 10_000  # in-MEMORY tail window, not a lifetime cap
 
@@ -930,10 +928,10 @@ class Registry:
         """Create-or-return. Raises SessionIdError for bad names."""
         if name == APP_BRANCH:
             # A valid session id, and the one branch a session must not
-            # be: published apps are served through it (see resolve), so
-            # a session here would share a branch with every publication
-            # on the store. Minting can't produce it — the guard is for
-            # a name that came in over the API.
+            # be: it is the store's anchor for reading published state,
+            # and deleting the session would take it with them. Minting
+            # can't produce it — the guard is for a name that came in
+            # over the API.
             raise SessionIdError(f"{APP_BRANCH!r} is reserved for published apps")
         with self._lock:
             existing = self._sessions.get(name)
@@ -1885,20 +1883,13 @@ class Registry:
 
         Reopening after a restart needs nothing from the origin session,
         which may be long gone: the version is a store-scoped tag and
-        the db is the app's own file. Reading a store-scoped tag needs
-        SOME workspace on the store, so a handle on the reserved
-        ``_apps`` branch does the lookup and is closed again
-        immediately — the frozen workspace it returns holds its own
-        kvgit handle and its own executor, so the parent is scaffolding,
-        not part of what serves.
+        the db is the app's own file.
 
-        It is opened THROUGH that handle rather than off the store
-        directly because a snapshot inherits the construction settings
-        of the workspace it is opened through — python config and its
-        live host objects included — and a served app's handlers reach
-        their state through the `db` host object. ``store.tags.at``
-        builds its workspace from the provider alone, so the same app
-        served from it would answer every request with a NameError on
+        A commit holds the tree and nothing else, so the live objects
+        the app's handlers call are supplied at the open rather than
+        inherited: `python` carries the app's own `db`, and the
+        executor factory carries the selected backend. Without them a
+        served handler would answer every request with a NameError on
         `db`.
         """
         served = self._published.get(token)
@@ -1915,21 +1906,27 @@ class Registry:
             info = (entry.get("versions") or {}).get(version)
             if info is None:
                 return None
-            parent = self._store.open(
-                APP_BRANCH,
+            self._ensure_anchor()
+            snapshot = self._store.tags.at(
+                info["tag"],
                 python=self._python_config(self._app_db(entry)),
                 **_ws_kwargs(),
             )
-            try:
-                # The store scope through a workspace: the public
-                # namespace on a workspace reads its own session's
-                # tags, and the store's own reader drops the host
-                # objects this app is served with.
-                snapshot = parent._at_tag(info["tag"], scope="store")
-            finally:
-                parent.close()
             self._published[token] = (version, snapshot)
             return snapshot
+
+    def _ensure_anchor(self) -> None:
+        """Guarantee the store has a live branch to read a tag through.
+
+        Any session will do — the tag is store-wide, so which branch
+        lends the handle does not matter. When the last one is gone,
+        the reserved ``_apps`` branch is the lender: opening it creates
+        it, and the empty workspace is closed again immediately, since
+        the frozen snapshot the caller wants holds a kvgit handle and
+        an executor of its own. Caller holds ``_lock``."""
+        if self._store.sessions():
+            return
+        self._store.open(APP_BRANCH).close()
 
     def _drop_snapshots(self, token: str, version: str | None = None) -> None:
         """Forget an app's cached snapshot — unconditionally, or only if
