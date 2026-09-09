@@ -172,9 +172,19 @@ def get(req):
   published: a version is the `app/` tree and its rows, so a published
   handler finds an empty cache. A GET cannot WRITE `cache` either
   (read-only; writing 500s).
-- Shared backend code goes in /helpers/<mod>.py, imported QUALIFIED:
-  `from helpers.mymod import fn`. Imports resolve from the workspace
-  root — a bare `import mymod` will not find it.
+- Everything a published app RUNS from lives under app/. Publishing
+  takes that tree and nothing else, so a module anywhere else imports
+  fine in the preview and raises ImportError on every request once the
+  app is published. The run_python tool description tells you to put
+  shared modules in /workspace/helpers; for an app, don't — and move
+  any you already have, since nothing moves them for you.
+- Shared backend code goes in app/api/_shared.py (any `_`-prefixed
+  name there), imported QUALIFIED from the workspace root:
+  `from app.api._shared import fn`. A bare `import _shared` will not
+  find it. `_`-prefixed files under app/api/ are importable and
+  reachable by nobody — the api/ prefix routes only to a bare handler
+  name, and static serving refuses everything under app/api/ — so the
+  module is as private as handler source.
 - Handlers are VERB functions only: get/post/put/delete/patch. A
   `def query(req)` or `def search(req)` is NEVER called by requests —
   read filters from req.params inside a verb instead. (Dispatch notes
