@@ -70,7 +70,14 @@ dependencies = [
     # checkout APPENDS a commit whose content equals the target instead
     # of moving the head backward, so an edit's rewind is now
     # undo-able and nothing it stepped off is ever collected.
-    "nontainer[agno,apps]>=0.6.0",
+    #
+    # 0.6.1 makes the frozen opens take execution settings:
+    # `store.tags.at(tag, python=...)` builds the snapshot with the
+    # embedder's live host objects instead of from the provider alone.
+    # That is the whole of how a published app reaches its `db`, so
+    # below this floor serving one is a NameError per request — and
+    # studio would have to reach a private method to avoid it.
+    "nontainer[agno,apps]>=0.6.1",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",
