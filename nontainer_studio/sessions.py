@@ -1970,7 +1970,14 @@ class Registry:
 
         Versions never move, so this runs once per install: an app
         whose every version row already names a publication ref is
-        already migrated and is not looked at again.
+        already migrated and is not looked at again. But "once" is the
+        happy path, not a guarantee — the process can stop between the
+        publish and the manifest write — so this is written to be
+        RESUMABLE. Each app's row is saved before its legacy tags are
+        dropped, so a crash leaves the tags that can re-derive it; and
+        a version already published under its own name is adopted
+        rather than published again, since a retry would otherwise
+        collide with the work the interrupted run had finished.
         """
         with self._lock:
             manifest = self._manifest()
@@ -2001,7 +2008,18 @@ class Registry:
                         ", ".join(migrated["versions"]),
                         migrated["current"],
                     )
-            self._save_manifest(manifest)
+                # Save, THEN drop the tags — per app, not once at the
+                # end. A tag is the only thing a version that never
+                # reached the manifest can be re-derived from, so it
+                # outlives the row that replaces it; a crash the other
+                # way round leaves a version with neither a row nor a
+                # tag, and an app that cannot be recovered by anything.
+                self._save_manifest(manifest)
+                self._delete_tags(
+                    row["tag"]
+                    for row in (entry.get("versions") or {}).values()
+                    if row.get("tag")
+                )
 
     def _migrate_app(self, token: str, entry: dict) -> dict | None:
         """One tag-shaped app entry -> the same app over a publication,
@@ -2024,7 +2042,6 @@ class Registry:
             migrated[version] = {k: v for k, v in row.items() if k != "tag"} | {
                 "ref": ref
             }
-        self._delete_tags(r["tag"] for r in rows.values() if r.get("tag"))
         if not migrated:
             return None
         current = entry.get("current")
@@ -2033,7 +2050,11 @@ class Registry:
             # The newest one that could is the closest thing to what
             # was being served, and a publication must point somewhere.
             current = max(migrated, key=lambda v: migrated[v].get("created", 0))
-        self._store.set_current(pub, current)
+        published = self._store.publication(pub)
+        if published is not None and published.current != current:
+            # Skipped when it already agrees, so a resumed migration
+            # that got this far last time asks for nothing.
+            self._store.set_current(pub, current)
         return dict(entry, pub=pub, current=current, versions=migrated)
 
     def _republish(self, pub: str, version: str, entry: dict, row: dict) -> str | None:
@@ -2049,10 +2070,27 @@ class Registry:
         The studio's own ``session`` key carries the origin either way,
         which is what the rail and ``branch_from_version`` read.
 
+        A version already published under this name is ADOPTED rather
+        than published again. It is the same content by construction —
+        the same session commit through the same paths — and it can
+        only be there because an earlier run of this migration
+        published it and stopped before the manifest write. Publishing
+        again would be refused (versions are immutable), and treating
+        that refusal as a failure is what would drop the app.
+
         No execution settings are passed: nothing runs here, only
         reads, so this takes nontainer's default executor rather than
         booting a selected backend once per version.
         """
+        already = self._store.publication(pub)
+        landed = already.version(version) if already is not None else None
+        if landed is not None:
+            log.info(
+                "publish: adopted %s/%s from an interrupted migration",
+                pub,
+                version,
+            )
+            return str(landed.ref)
         origin = entry.get("session")
         commit = row.get("commit")
         tag = row.get("tag")
