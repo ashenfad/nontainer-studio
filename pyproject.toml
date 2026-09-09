@@ -77,7 +77,18 @@ dependencies = [
     # That is the whole of how a published app reaches its `db`, so
     # below this floor serving one is a NameError per request — and
     # studio would have to reach a private method to avoid it.
-    "nontainer[agno,apps]>=0.6.1",
+    #
+    # 0.6.2 takes two chores off studio. A store-scoped read anchors
+    # itself: `store.tags.at(tag)` mints the store's own `@store/anchor`
+    # when no session and no publication can lend a branch, so a
+    # published app is served with every session deleted without studio
+    # keeping a lender of its own — and `Store.delete` refuses a
+    # `@store/...` name, so no session id can take that anchor out.
+    # And `SessionRunner.run` is handed `forked_at`, the parent commit
+    # the child was forked from, so the provenance header a delegate
+    # opens with names the fork point instead of studio reading the
+    # child's log to guess which commit that was.
+    "nontainer[agno,apps]>=0.6.2",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",
