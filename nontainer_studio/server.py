@@ -362,7 +362,7 @@ async def _run_turn(session: Any, message: str) -> None:
     attempts = 0
     try:
         # head here = the workspace BEFORE this turn: the user event's
-        # stamp is the undo anchor (restore to it = unwind this turn)
+        # stamp is the undo anchor (check it out = unwind this turn)
         await session.emit({"type": "user", "text": message, "head": session.ws.head})
         async for ev in session.agent.arun(message, stream=True, stream_events=True):
             run_id = getattr(ev, "run_id", None) or run_id
@@ -423,8 +423,8 @@ async def _run_turn(session: Any, message: str) -> None:
         # source of truth (replays reconstruct it forever), so a next
         # turn's `user` event must never precede this turn's `done`.
         # It carries the turn's agno run_id and the workspace head at
-        # turn end — the checkpoint <-> conversation mapping that lets
-        # restore rewind the agent's memory in sync with the files.
+        # turn end — the commit <-> conversation mapping that lets a
+        # rewind put the agent's memory back in sync with the files.
         session.run_id = None
         await session.emit({"type": "done", "run_id": run_id, "head": session.ws.head})
         session.turn_lock.release()
@@ -543,7 +543,7 @@ def build_app(registry: Registry) -> Starlette:
     @with_session
     async def cancel(request: Any, session: Any) -> Any:
         """Stop the running turn GRACEFULLY: agno's cancel-by-run-id
-        raises at the loop's next checkpoint (a mid-flight tool call
+        raises at the loop's next cancellation point (a mid-flight tool call
         finishes first), the run persists with its partial work, and
         the turn ends with a RunCancelled event -> 'turn stopped'
         notice. Nothing is torn down — the next prompt just works."""
@@ -609,7 +609,7 @@ def build_app(registry: Registry) -> Starlette:
         def read_bytes(path: str) -> bytes | None:
             try:
                 with session.ws.lock:
-                    return session.ws.fs.read(path)
+                    return session.ws.files.fs.read(path)
             except Exception:
                 return None
 
@@ -652,7 +652,7 @@ def build_app(registry: Registry) -> Starlette:
 
     # -- upload: browser file -> workspace write ---------------------------
     # Raw body, not multipart (the browser sends File bytes natively).
-    # Each upload is a write_file: checkpointed, so an edit's rewind
+    # Each upload is a workspace file write: committed, so an edit's rewind
     # extends to uploads for free. Multi-file drops are N parallel requests —
     # the workspace lock serializes them safely. Same-name uploads
     # overwrite (idempotent re-drops).
@@ -678,7 +678,7 @@ def build_app(registry: Registry) -> Starlette:
                 status_code=413,
             )
         dest = f"{session.ws.root}/uploads/{filename}"
-        out = await anyio.to_thread.run_sync(session.ws.write_file, dest, data)
+        out = await anyio.to_thread.run_sync(session.ws.files.write, dest, data)
         await session.emit(
             {"type": "notice", "text": f"uploaded {dest} ({out.size:,} bytes)"}
         )
@@ -695,9 +695,9 @@ def build_app(registry: Registry) -> Starlette:
                 def walk(d: str, depth: int = 0) -> None:
                     if depth > 32:
                         return
-                    for entry in sorted(session.ws.fs.list(d)):
+                    for entry in sorted(session.ws.files.fs.list(d)):
                         full = f"{d.rstrip('/')}/{entry}"
-                        if session.ws.fs.isdir(full):
+                        if session.ws.files.fs.isdir(full):
                             walk(full, depth + 1)
                         else:
                             paths.append(full)
@@ -713,7 +713,7 @@ def build_app(registry: Registry) -> Starlette:
 
         def read() -> bytes:
             with session.ws.lock:
-                return session.ws.fs.read(path)
+                return session.ws.files.fs.read(path)
 
         try:
             data = await anyio.to_thread.run_sync(read)
@@ -730,7 +730,7 @@ def build_app(registry: Registry) -> Starlette:
         The app db is copied, since live state has no history.
 
         409 while a turn is in flight or the workspace holds staged
-        changes: a fork of half a turn would be a state no checkpoint
+        changes: a fork of half a turn would be a state no commit
         ever held."""
         try:
             body = await request.json()
@@ -772,7 +772,7 @@ def build_app(registry: Registry) -> Starlette:
 
         def check() -> bool:
             with session.ws.lock:
-                return bool(session.ws.fs.isdir(f"{session.ws.root}/app"))
+                return bool(session.ws.files.fs.isdir(f"{session.ws.root}/app"))
 
         return JSONResponse({"exists": await anyio.to_thread.run_sync(check)})
 
@@ -871,7 +871,7 @@ def build_app(registry: Registry) -> Starlette:
         # ONE reservation across the tag and the marker. Publishing
         # under its own lock and emitting after it would let a chat
         # request slip between them: its `user` event would sit above a
-        # landmark whose checkpoint predates the turn, and restoring to
+        # landmark whose commit predates the turn, and restoring to
         # that marker would rewind the files under a prompt still on
         # screen.
         if not session.turn_lock.acquire(blocking=False):
@@ -905,7 +905,7 @@ def build_app(registry: Registry) -> Starlette:
                 "version": published["version"],
                 "title": published["title"],
                 "url": published["url"],
-                "head": published["checkpoint"],
+                "head": published["commit"],
                 "tree": published["tree"],
             }
         )
@@ -996,7 +996,7 @@ def build_app(registry: Registry) -> Starlette:
         """Rewind to one of this session's own publishes: files, agent
         memory and title go back to where that version was tagged, and
         the transcript is cut after the marker. The same machinery an
-        edit uses — one restore, because the conversation lives in the
+        edit uses — one checkout, because the conversation lives in the
         branch — with no new turn started."""
         body = await request.json()
         seq = body.get("seq")

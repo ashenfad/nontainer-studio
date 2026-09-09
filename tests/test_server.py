@@ -76,12 +76,12 @@ def post(req):
 
 
 def _seed_app(ws):
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write(
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write(
         "/workspace/app/index.html", b"<html><body><h1>counter</h1></body></html>"
     )
-    ws.fs.write("/workspace/app/api/count.py", HANDLER.encode())
-    ws.checkpoint()
+    ws.files.fs.write("/workspace/app/api/count.py", HANDLER.encode())
+    ws.commit()
 
 
 # -- chat: background turns + transcript --------------------------------------
@@ -238,12 +238,12 @@ def test_new_sessions_seed_skills(studio):
 
     # creation-only: a reseed must not clobber the session's copies
     session = registry.get("s1")
-    session.ws.write_file("/workspace/skills/building-apps/SKILL.md", "agent-edited")
+    session.ws.files.write("/workspace/skills/building-apps/SKILL.md", "agent-edited")
     registry.close()
     registry._sessions.clear()
     session2 = registry.open("s1")
     assert (
-        session2.ws.fs.read("/workspace/skills/building-apps/SKILL.md")
+        session2.ws.files.fs.read("/workspace/skills/building-apps/SKILL.md")
         == b"agent-edited"
     )
 
@@ -262,10 +262,10 @@ def test_seeded_skill_teaches_curl_only_where_it_exists(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "sk"})
     session = registry.get("sk")
-    text = session.ws.fs.read("/workspace/skills/building-apps/SKILL.md").decode()
+    text = session.ws.files.fs.read("/workspace/skills/building-apps/SKILL.md").decode()
 
     # the studio fixture runs the default (Local) executor
-    assert session.ws.supports_commands
+    assert session.ws.runtime.supports_commands
     assert "curl api/x" in text
     assert "There is no `curl` builtin" not in text
     # markers are resolved away, never seeded raw
@@ -405,7 +405,7 @@ def test_publish_freezes_a_snapshot(studio):
     client.post("/preview/s1/api/count")  # live state: n=1
 
     pub = client.post("/api/sessions/s1/publish").json()
-    assert pub["url"].startswith("/apps/") and pub["checkpoint"]
+    assert pub["url"].startswith("/apps/") and pub["commit"]
 
     # the snapshot serves, read-only: GET works, VFS/cache mutation 500s
     assert client.get(pub["url"]).status_code == 200
@@ -427,9 +427,9 @@ NAMES_HANDLER = (
 
 def _seed_db_app(session):
     """An app whose only content is a handler reading the app db."""
-    session.ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    session.ws.fs.write("/workspace/app/api/names.py", NAMES_HANDLER)
-    session.ws.checkpoint()
+    session.ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    session.ws.files.fs.write("/workspace/app/api/names.py", NAMES_HANDLER)
+    session.ws.commit()
 
 
 def test_published_app_owns_its_db_from_its_first_version(studio):
@@ -451,7 +451,7 @@ def test_published_app_owns_its_db_from_its_first_version(studio):
     session.db.execute("INSERT INTO t VALUES ('after-publish')")
     # ...and stops there: the two universes no longer write over each other
     assert client.get(f"{pub['url']}api/names").json() == {"names": ["at-publish"]}
-    assert (registry._store / "dbs" / "apps" / f"{pub['token']}.sqlite").exists()
+    assert (registry._store.path / "dbs" / "apps" / f"{pub['token']}.sqlite").exists()
 
 
 def test_a_second_version_keeps_the_apps_db(studio):
@@ -466,14 +466,14 @@ def test_a_second_version_keeps_the_apps_db(studio):
     assert client.get(f"{pub['url']}api/names").json() == {"names": []}
 
     app_db = sessions_mod.Db(
-        registry._store / "dbs" / "apps" / f"{pub['token']}.sqlite"
+        registry._store.path / "dbs" / "apps" / f"{pub['token']}.sqlite"
     )
     app_db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
     app_db.execute("INSERT INTO t VALUES ('a user typed this')")
     app_db.close()
 
-    session.ws.fs.write("/workspace/app/index.html", b"<h1>v2</h1>")
-    session.ws.checkpoint()
+    session.ws.files.fs.write("/workspace/app/index.html", b"<h1>v2</h1>")
+    session.ws.commit()
     v2 = client.post("/api/sessions/s1/publish", json={}).json()
     assert v2["token"] == pub["token"] and v2["version"] == "v2"
 
@@ -526,7 +526,7 @@ def test_publish_tags_the_store_scope_and_marks_the_transcript(scripted, tmp_pat
     assert marker["token"] == token
     assert marker["version"] == "v1"
     assert marker["url"] == f"/apps/{token}/"
-    assert marker["head"] == pub["checkpoint"] == registry.get("s1").ws.head
+    assert marker["head"] == pub["commit"] == registry.get("s1").ws.head
     assert marker["tree"] == pub["tree"]
 
 
@@ -541,18 +541,18 @@ def test_a_served_version_is_frozen_code_over_a_live_db(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    session.ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    session.ws.fs.write(
+    session.ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    session.ws.files.fs.write(
         "/workspace/app/api/note.py",
         b"def post(req):\n"
         b"    open('/workspace/app/scribble.txt', 'w').write('nope')\n"
         b"    return {'ok': True}\n",
     )
-    session.ws.fs.write(
+    session.ws.files.fs.write(
         "/workspace/app/api/counter.py",
         b"def post(req):\n    cache['n'] = 1\n    return {'ok': True}\n",
     )
-    session.ws.fs.write(
+    session.ws.files.fs.write(
         "/workspace/app/api/tally.py",
         NAMES_HANDLER + b"\n\n"
         b"def post(req):\n"
@@ -560,7 +560,7 @@ def test_a_served_version_is_frozen_code_over_a_live_db(studio):
         b"    db.execute(\"INSERT INTO t VALUES ('from the app')\")\n"
         b"    return {'ok': True}\n",
     )
-    session.ws.checkpoint()
+    session.ws.commit()
     pub = _publish(client, "s1")
 
     assert client.post(f"{pub['url']}api/counter").status_code == 500
@@ -568,7 +568,7 @@ def test_a_served_version_is_frozen_code_over_a_live_db(studio):
     assert client.get(f"{pub['url']}scribble.txt").status_code == 404
     snapshot = registry.resolve(pub["token"])
     assert snapshot.frozen
-    assert not snapshot.fs.exists("/workspace/app/scribble.txt")
+    assert not snapshot.files.fs.exists("/workspace/app/scribble.txt")
 
     assert client.post(f"{pub['url']}api/tally").json() == {"ok": True}
     assert client.get(f"{pub['url']}api/tally").json() == {"names": ["from the app"]}
@@ -586,8 +586,8 @@ def test_a_published_app_is_readable_from_a_sandboxed_iframe(studio):
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
     _seed_app(session.ws)
-    session.ws.fs.write("/workspace/app/app.jsx", b"export default 1\n")
-    session.ws.checkpoint()
+    session.ws.files.fs.write("/workspace/app/app.jsx", b"export default 1\n")
+    session.ws.commit()
     pub = _publish(client, "s1")
 
     for path in ("", "app.jsx", "api/count"):
@@ -626,12 +626,12 @@ def test_make_current_repoints_the_url(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    session.ws.fs.makedirs("/workspace/app", exist_ok=True)
-    session.ws.fs.write("/workspace/app/index.html", b"<h1>one</h1>")
-    session.ws.checkpoint()
+    session.ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    session.ws.files.fs.write("/workspace/app/index.html", b"<h1>one</h1>")
+    session.ws.commit()
     pub = _publish(client, "s1")
-    session.ws.fs.write("/workspace/app/index.html", b"<h1>two</h1>")
-    session.ws.checkpoint()
+    session.ws.files.fs.write("/workspace/app/index.html", b"<h1>two</h1>")
+    session.ws.commit()
     v2 = _publish(client, "s1")
     assert client.get(pub["url"]).text == "<h1>two</h1>"
 
@@ -757,7 +757,7 @@ def test_publish_refuses_a_turn_in_flight(studio):
 def test_the_marker_lands_under_the_same_reservation_as_the_tag(scripted):
     """The publish route holds ONE reservation across the tag and the
     marker. A chat request that won the turn lock in between would put
-    its `user` event above a landmark whose checkpoint predates it — and
+    its `user` event above a landmark whose commit predates it — and
     restoring to that marker would then rewind the files out from under
     a prompt still on screen. So a chat racing a publish is refused,
     and the marker is always the last event of the two."""
@@ -832,12 +832,12 @@ def test_changed_since_answers_content_and_writes_apart(studio):
 
     assert status() == {"count": 0, "paths": [], "up_to_date": True}
 
-    session.ws.write_file("/workspace/notes.md", "not an app file")
+    session.ws.files.write("/workspace/notes.md", "not an app file")
     fresh = status()
     assert fresh["count"] == 0 and fresh["paths"] == []
     assert fresh["up_to_date"] is False  # written to, same app
 
-    session.ws.write_file("/workspace/app/index.html", "<h1>changed</h1>")
+    session.ws.files.write("/workspace/app/index.html", "<h1>changed</h1>")
     changed = status()
     assert changed["count"] == 1
     assert changed["paths"] == ["/workspace/app/index.html"]
@@ -925,13 +925,13 @@ def test_restore_to_a_publish_rewinds_files_and_conversation(scripted):
     marker = next(e for e in events if e["type"] == "publish")
     _run(client, "s1", _script("/workspace/app/index.html", "two", "made two"))
     session = registry.get("s1")
-    assert session.ws.fs.read("/workspace/app/index.html") == b"two"
+    assert session.ws.files.fs.read("/workspace/app/index.html") == b"two"
     assert len(_run_ids(registry, "s1")) == 2
 
     r = client.post("/api/sessions/s1/restore", json={"seq": marker["seq"]})
     assert r.status_code == 200, r.text
 
-    assert session.ws.fs.read("/workspace/app/index.html") == b"one"
+    assert session.ws.files.fs.read("/workspace/app/index.html") == b"one"
     assert len(_run_ids(registry, "s1")) == 1  # the second turn was unsaid
     after = client.get("/api/sessions/s1/events?wait=0").json()["events"]
     cut = next(e for e in after if e["type"] == "truncate")
@@ -968,19 +968,19 @@ def test_branch_from_a_version_opens_where_it_was_published(scripted):
     # the origin is READ, not moved — staged work and all
     origin = registry.get("s1")
     head = origin.ws.head
-    origin.ws.fs.write("/workspace/scratch.txt", b"mid-thought")
-    assert origin.ws.dirty
+    origin.ws.files.fs.write("/workspace/scratch.txt", b"mid-thought")
+    assert origin.ws.uncommitted
 
     r = client.post(f"/api/apps/{pub['token']}/versions/v1/branch")
     assert r.status_code == 200, r.text
     child = registry.get(r.json()["name"])
-    assert child.ws.fs.read("/workspace/app/index.html") == b"one"
+    assert child.ws.files.fs.read("/workspace/app/index.html") == b"one"
     assert len(_run_ids(registry, child.name)) == 1
-    assert not child.ws.fs.exists("/workspace/scratch.txt")
+    assert not child.ws.files.fs.exists("/workspace/scratch.txt")
     # nothing about the origin moved: not its head, not its staged work
     assert origin.ws.head == head
-    assert origin.ws.dirty
-    assert origin.ws.fs.read("/workspace/app/index.html") == b"two"
+    assert origin.ws.uncommitted
+    assert origin.ws.files.fs.read("/workspace/app/index.html") == b"two"
     origin.ws.discard()  # so the delete below isn't testing a dirty branch
 
     client.delete("/api/sessions/s1")
@@ -1017,10 +1017,10 @@ def test_branching_survives_an_edit_that_hid_the_marker(scripted):
     # neither did the edit's replacement — both happened after the fork
     assert sum(1 for e in shown if e["type"] == "user") == 2
     assert not any("instead" in (e.get("text") or "") for e in shown)
-    assert child.ws.fs.read("/workspace/a.txt") == b"one"
-    assert child.ws.fs.read("/workspace/app/index.html") == b"app"
-    assert not child.ws.fs.exists("/workspace/b.txt")
-    assert not child.ws.fs.exists("/workspace/c.txt")
+    assert child.ws.files.fs.read("/workspace/a.txt") == b"one"
+    assert child.ws.files.fs.read("/workspace/app/index.html") == b"app"
+    assert not child.ws.files.fs.exists("/workspace/b.txt")
+    assert not child.ws.files.fs.exists("/workspace/c.txt")
 
 
 # -- files ----------------------------------------------------------------------
@@ -1030,14 +1030,14 @@ def test_files_tree_and_raw(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     ws = registry.get("s1").ws
-    ws.fs.makedirs("/workspace/app/screenshots", exist_ok=True)
-    ws.fs.write("/workspace/notes.md", b"# hi")
+    ws.files.fs.makedirs("/workspace/app/screenshots", exist_ok=True)
+    ws.files.fs.write("/workspace/notes.md", b"# hi")
     png = bytes.fromhex(
         "89504e470d0a1a0a0000000d494844520000000100000001080200000090"
         "7753de0000000c49444154089963f8cfc000000301010018dd8db0000000"
         "0049454e44ae426082"
     )
-    ws.fs.write("/workspace/app/screenshots/shot-1.png", png)
+    ws.files.fs.write("/workspace/app/screenshots/shot-1.png", png)
 
     files = client.get("/api/sessions/s1/files").json()["files"]
     assert (
@@ -1063,7 +1063,7 @@ def test_files_tree_and_raw(studio):
 # -- upload ---------------------------------------------------------------------
 
 
-def test_upload_lands_checkpointed_with_notice(studio):
+def test_upload_lands_committed_with_notice(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
@@ -1071,9 +1071,9 @@ def test_upload_lands_checkpointed_with_notice(studio):
     r = client.post("/api/sessions/s1/upload?name=data.csv", content=b"a,b\n1,2\n")
     assert r.status_code == 200
     assert r.json() == {"ok": True, "path": "/workspace/uploads/data.csv", "size": 8}
-    assert session.ws.fs.read("/workspace/uploads/data.csv") == b"a,b\n1,2\n"
-    # checkpointed: an edit's rewind extends to uploads
-    assert any(c.info.get("tool") == "file_write" for c in session.ws.history(limit=3))
+    assert session.ws.files.fs.read("/workspace/uploads/data.csv") == b"a,b\n1,2\n"
+    # committed: an edit's rewind extends to uploads
+    assert any(c.info.get("tool") == "file_write" for c in session.ws.log(limit=3))
     # transcript notice
     assert any(
         e["type"] == "notice" and "/workspace/uploads/data.csv" in e["text"]
@@ -1098,7 +1098,7 @@ def test_upload_multi_file_parallel(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    before = len(list(session.ws.history()))
+    before = len(list(session.ws.log()))
 
     def up(i: int):
         return client.post(
@@ -1110,9 +1110,10 @@ def test_upload_multi_file_parallel(studio):
     assert codes == [200] * 6
     for i in range(6):
         assert (
-            session.ws.fs.read(f"/workspace/uploads/f{i}.txt") == f"file {i}".encode()
+            session.ws.files.fs.read(f"/workspace/uploads/f{i}.txt")
+            == f"file {i}".encode()
         )
-    assert len(list(session.ws.history())) == before + 6  # one commit per file
+    assert len(list(session.ws.log())) == before + 6  # one commit per file
 
 
 def test_upload_size_cap(studio):
@@ -1134,7 +1135,7 @@ def test_data_stack_granted_when_installed(studio):
     pytest.importorskip("matplotlib")
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
-    cfg = registry.get("s1").ws.python_config
+    cfg = registry.get("s1").ws.runtime.python_config
     names = {
         getattr(g, "module", None).__name__ for group in cfg.modules for g in group
     }
@@ -1227,9 +1228,9 @@ def test_session_manifest_survives_restart(studio, tmp_path):
         {"name": "s1", "title": "New session", "busy": False, "model": None}
     ]
     # and it opens lazily with its files intact
-    registry.get("s1").ws.write_file("keep.txt", "here")
+    registry.get("s1").ws.files.write("keep.txt", "here")
     session = reborn.open("s1")
-    assert session.ws.fs.read("keep.txt") == b"here"
+    assert session.ws.files.fs.read("keep.txt") == b"here"
     reborn.close()
 
 
@@ -1446,9 +1447,9 @@ def test_edit_rewinds_files_and_memory_in_one_restore(scripted):
         == 200
     )
 
-    assert session.ws.fs.read("/workspace/a.txt") == b"A"
-    assert not session.ws.fs.exists("/workspace/b.txt")
-    assert session.ws.fs.read("/workspace/c.txt") == b"C"
+    assert session.ws.files.fs.read("/workspace/a.txt") == b"A"
+    assert not session.ws.files.fs.exists("/workspace/b.txt")
+    assert session.ws.files.fs.read("/workspace/c.txt") == b"C"
 
     after = _run_ids(registry, "s1")
     assert after[0] == before[0]  # the kept turn is the same run
@@ -1478,8 +1479,8 @@ def test_edit_the_first_message_leaves_nothing_behind(scripted):
         == 200
     )
 
-    assert not session.ws.fs.exists("/workspace/a.txt")
-    assert session.ws.fs.read("/workspace/z.txt") == b"Z"
+    assert not session.ws.files.fs.exists("/workspace/a.txt")
+    assert session.ws.files.fs.read("/workspace/z.txt") == b"Z"
     after = _run_ids(registry, "s1")
     assert len(after) == 1 and after != before
 
@@ -1512,10 +1513,10 @@ def test_a_second_edit_rewinds_to_its_own_anchor(scripted):
         == 200
     )
 
-    assert session.ws.fs.read("/workspace/a.txt") == b"A"
+    assert session.ws.files.fs.read("/workspace/a.txt") == b"A"
     for gone in ("b.txt", "v2.txt"):
-        assert not session.ws.fs.exists(f"/workspace/{gone}")
-    assert session.ws.fs.read("/workspace/v3.txt") == b"3"
+        assert not session.ws.files.fs.exists(f"/workspace/{gone}")
+    assert session.ws.files.fs.read("/workspace/v3.txt") == b"3"
     after = _run_ids(registry, "s1")
     assert len(after) == 2 and after[0] == kept
 
@@ -1563,7 +1564,7 @@ def test_the_conversation_survives_a_restart(scripted, tmp_path):
         model_factory=lambda spec=None: DummyModel(), store=tmp_path
     )
     assert _run_ids(reborn, "s1") == ids
-    assert reborn.open("s1").ws.fs.read("/workspace/a.txt") == b"A"
+    assert reborn.open("s1").ws.files.fs.read("/workspace/a.txt") == b"A"
     reborn.close()
 
 
@@ -1584,7 +1585,7 @@ def test_fork_inherits_files_conversation_and_a_copy_of_the_db(scripted):
     assert name != "s1"
     child = registry.get(name)
 
-    assert child.ws.fs.read("/workspace/a.txt") == b"A"
+    assert child.ws.files.fs.read("/workspace/a.txt") == b"A"
     assert _run_ids(registry, name) == _run_ids(registry, "s1")
     assert registry.db.get_session(name).session_id == name
     assert [e["type"] for e in child.events] == [e["type"] for e in parent.events]
@@ -1594,7 +1595,7 @@ def test_fork_inherits_files_conversation_and_a_copy_of_the_db(scripted):
     assert parent.db.query("SELECT t FROM notes") == [("parent",)]
 
     # the parent kept its own universe, whole
-    assert parent.ws.fs.read("/workspace/a.txt") == b"A"
+    assert parent.ws.files.fs.read("/workspace/a.txt") == b"A"
     assert registry.db.get_session("s1").session_id == "s1"
     assert {row["name"] for row in registry.list()} == {"s1", name}
 
@@ -1607,7 +1608,7 @@ def test_fork_fresh_keeps_the_files_and_drops_the_chat(scripted):
     r = client.post("/api/sessions/s1/fork", json={"conversation": "fresh"})
     assert r.status_code == 200
     child = registry.get(r.json()["name"])
-    assert child.ws.fs.read("/workspace/a.txt") == b"A"
+    assert child.ws.files.fs.read("/workspace/a.txt") == b"A"
     assert _run_ids(registry, child.name) == []
     assert child.events == []
     # and the fork is a working session, not a husk
@@ -1617,15 +1618,15 @@ def test_fork_fresh_keeps_the_files_and_drops_the_chat(scripted):
 
 def test_fork_refuses_a_turn_in_flight_a_dirty_workspace_and_a_bad_mode(scripted):
     """kvgit refuses to fork a branch with staged changes, and a fork of
-    half a turn would be a state no checkpoint ever held."""
+    half a turn would be a state no commit ever held."""
     client, registry = scripted
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
 
-    session.ws.fs.write("/workspace/staged.txt", b"mid-turn")
-    assert session.ws.dirty
+    session.ws.files.fs.write("/workspace/staged.txt", b"mid-turn")
+    assert session.ws.uncommitted
     assert client.post("/api/sessions/s1/fork", json={}).status_code == 409
-    session.ws.checkpoint()
+    session.ws.commit()
 
     session.turn_lock.acquire()
     try:
@@ -1703,7 +1704,9 @@ def test_a2ui_projects_a_turn_into_a_v0_9_surface(studio):
     # real bytes in the workspace so read_bytes finds the spec (the
     # projection reads the file to build the Chart + data model)
     spec = {"data": [{"x": [1], "y": [2]}], "layout": {"title": "hi"}}
-    session.ws.fs.write("/workspace/ui/fig.plotly.json", _json.dumps(spec).encode())
+    session.ws.files.fs.write(
+        "/workspace/ui/fig.plotly.json", _json.dumps(spec).encode()
+    )
 
     client.post("/api/sessions/s1/chat", json={"message": "plot it"})
     events = _collect_until_done(client, "s1")
@@ -1986,7 +1989,14 @@ def test_retry_rewind_hook_keeps_files_in_step_with_memory(studio):
     the prompt, dropping the failed attempt's tool calls. The files those
     calls wrote must go with them, or the model builds a second version
     beside work it can't remember doing. pre_hooks run per ATTEMPT under a
-    stable run_id, which is what makes the rewind placeable at all."""
+    stable run_id, which is what makes the rewind placeable at all.
+
+    A rewind is a checkout, and a checkout APPENDS: the head moves
+    forward onto a commit holding the pre-turn content rather than back
+    onto the pre-turn commit itself. So the assertion is about content
+    — the file is gone and nothing differs from the anchor — and the
+    anchor is still in the log, which is what keeps it a usable anchor
+    for the next retry and for the human's own undo."""
     import asyncio
 
     client, registry = studio
@@ -1997,20 +2007,24 @@ def test_retry_rewind_hook_keeps_files_in_step_with_memory(studio):
 
     asyncio.run(hook(ctx))  # attempt 1: records the pre-turn head
     start = ws.head
-    ws.write_file("/workspace/app/index.html", "half an app")
+    ws.files.write("/workspace/app/index.html", "half an app")
     assert ws.head != start, "the write should have moved the head"
 
     asyncio.run(hook(ctx))  # attempt 2 under the same run: a retry
-    assert ws.head == start
-    assert not ws.fs.isfile("/workspace/app/index.html")
+    assert not ws.files.fs.isfile("/workspace/app/index.html")
+    assert not ws.changed_since(start).paths, "the content is back at the anchor"
+    assert ws.head != start, "the rewind landed a commit rather than dropping one"
+    assert start in {c.id for c in ws.log()}, "the anchor is still reachable"
+    rewound = ws.head
 
     # a NEW run is a new turn, not a retry — it re-anchors and rewinds
     # nothing, or the next turn would undo the previous one's work
-    ws.write_file("/workspace/keep.txt", "second turn")
+    ws.files.write("/workspace/keep.txt", "second turn")
     after_write = ws.head
     asyncio.run(hook(SimpleNamespace(run_id="run-2")))
     assert ws.head == after_write
-    assert ws.fs.isfile("/workspace/keep.txt")
+    assert ws.files.fs.isfile("/workspace/keep.txt")
+    assert rewound != after_write
 
 
 def test_run_restart_is_surfaced_as_a_notice(studio):
@@ -2132,10 +2146,10 @@ def test_ui_dir_exists_from_the_start(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     ws = registry.get("s1").ws
-    assert ws.fs.isdir("/workspace/ui")
+    assert ws.files.fs.isdir("/workspace/ui")
     result = ws.run_python("open('/workspace/ui/x.png', 'wb').write(b'png-ish')")
     assert not result.error
-    assert ws.fs.read("/workspace/ui/x.png") == b"png-ish"
+    assert ws.files.fs.read("/workspace/ui/x.png") == b"png-ish"
 
 
 def test_error_truncation_keeps_the_exception_line(studio):
@@ -2187,7 +2201,7 @@ def test_delete_removes_the_whole_universe(studio, tmp_path):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    session.ws.write_file("keep.txt", "data")
+    session.ws.files.write("keep.txt", "data")
     _seed_app(session.ws)
     client.post("/api/sessions/s1/upload?name=u.txt", content=b"x")
     assert (tmp_path / "dbs" / "s1.sqlite").exists()
@@ -2204,8 +2218,8 @@ def test_delete_removes_the_whole_universe(studio, tmp_path):
     # (an orphaned branch would resurrect the old files here)
     client.post("/api/sessions", json={"name": "s1"})
     reborn = registry.get("s1")
-    assert not reborn.ws.fs.exists("keep.txt")
-    assert not reborn.ws.fs.exists("/workspace/app/index.html")
+    assert not reborn.ws.files.fs.exists("keep.txt")
+    assert not reborn.ws.files.fs.exists("/workspace/app/index.html")
 
 
 def test_delete_busy_409s_and_unknown_404s(studio):
@@ -2224,12 +2238,12 @@ def test_delete_leaves_other_sessions_alone(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     client.post("/api/sessions", json={"name": "s2"})
-    registry.get("s2").ws.write_file("mine.txt", "s2 data")
+    registry.get("s2").ws.files.write("mine.txt", "s2 data")
     client.delete("/api/sessions/s1")
     assert client.get("/api/sessions").json()["sessions"] == [
         {"name": "s2", "title": "New session", "busy": False, "model": None}
     ]
-    assert registry.get("s2").ws.fs.read("mine.txt") == b"s2 data"
+    assert registry.get("s2").ws.files.fs.read("mine.txt") == b"s2 data"
 
 
 # -- models: registry, per-session switching --------------------------------------
@@ -2334,9 +2348,9 @@ def test_dummy_model_drives_real_agent(tmp_path):
         )  # structured through agno
         reply = "".join(e["delta"] for e in events if e["type"] == "text")
         assert reply == "Wrote your note."
-        # the tool REALLY ran: the workspace has the file, checkpointed
+        # the tool REALLY ran: the workspace has the file, committed
         ws = registry.get("s1").ws
-        assert ws.fs.read("/workspace/notes.md") == b"scripted"
+        assert ws.files.fs.read("/workspace/notes.md") == b"scripted"
         # and the done event carries the run mapping for undo
         done = next(e for e in events if e["type"] == "done")
         assert done["run_id"] and done["head"]
@@ -2781,7 +2795,7 @@ def test_dud_vm_defaults_the_pool_cap(monkeypatch):
 def test_executor_factory_plumbed_on_open_and_resolve(tmp_path, monkeypatch):
     """The regression this branch exists to prevent: BOTH workspace
     creation paths — session open and publish-snapshot resolve (the
-    restart path) — must hand workspace() the selected factory. A
+    restart path) — must hand Store.open() the selected factory. A
     dropped **_ws_kwargs() would silently fall back to LocalExecutor
     and every other test would stay green."""
     from nontainer.executor import LocalExecutor
@@ -2795,7 +2809,7 @@ def test_executor_factory_plumbed_on_open_and_resolve(tmp_path, monkeypatch):
     registry = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     try:
         session = registry.create()
-        assert isinstance(session.ws._executor, MarkedExecutor)
+        assert isinstance(session.ws.runtime.executor, MarkedExecutor)
         published = registry.publish(session.name)
         token = published["token"]
         # drop the cached snapshot so resolve takes the cold path — the
@@ -2803,7 +2817,7 @@ def test_executor_factory_plumbed_on_open_and_resolve(tmp_path, monkeypatch):
         registry._published.pop(token, None)
         snapshot = registry.resolve(token)
         assert snapshot is not None
-        assert isinstance(snapshot._executor, MarkedExecutor)
+        assert isinstance(snapshot.runtime.executor, MarkedExecutor)
     finally:
         registry.close()
 
@@ -2956,7 +2970,7 @@ def test_vendored_assets_stay_out_of_the_workspace(studio):
     _seed_app(ws)
     assert client.get("/preview/s1/vendor/plotly.min.js").status_code == 200
 
-    assert not ws.fs.exists("/workspace/app/vendor")
+    assert not ws.files.fs.exists("/workspace/app/vendor")
     files = client.get("/api/sessions/s1/files").json()["files"]
     assert not any("vendor/" in f for f in files)
 
@@ -3001,8 +3015,8 @@ def test_vendored_stack_actually_runs_in_a_browser(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    session.ws.fs.makedirs("/workspace/app", exist_ok=True)
-    session.ws.fs.write(
+    session.ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    session.ws.files.fs.write(
         "/workspace/app/index.html",
         b"""<!doctype html>
 <html><head>
@@ -3017,7 +3031,7 @@ Plotly.react('chart', [{x:[1,2,3], y:[2,4,8], type:'scatter'}], {})
 </script>
 </body></html>""",
     )
-    session.ws.checkpoint()
+    session.ws.commit()
 
     result = session.runtime.test_app(
         [
@@ -3100,11 +3114,11 @@ def _reference_app(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     ws = registry.get("s1").ws
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", (refs / "app.html").read_bytes())
-    ws.fs.write("/workspace/app/app.jsx", (refs / "app.jsx").read_bytes())
-    ws.fs.write("/workspace/app/api/summary.py", REFERENCE_HANDLER)
-    ws.checkpoint()
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", (refs / "app.html").read_bytes())
+    ws.files.fs.write("/workspace/app/app.jsx", (refs / "app.jsx").read_bytes())
+    ws.files.fs.write("/workspace/app/api/summary.py", REFERENCE_HANDLER)
+    ws.commit()
     return registry.get("s1")
 
 
@@ -3190,10 +3204,10 @@ def test_the_reference_app_wears_the_shell_palette(studio):
 
 
 def _jsx_app(ws, html: bytes, jsx: bytes):
-    ws.fs.makedirs("/workspace/app", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", html)
-    ws.fs.write("/workspace/app/app.jsx", jsx)
-    ws.checkpoint()
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", html)
+    ws.files.fs.write("/workspace/app/app.jsx", jsx)
+    ws.commit()
 
 
 BARE_IMPORT_JSX = b"""import { useState } from 'react';
@@ -3383,9 +3397,9 @@ def test_theme_assets_serve_to_preview_and_publish(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     ws = registry.get("s1").ws
-    ws.fs.makedirs("/workspace/app", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", b"<h1>hi</h1>")
-    ws.checkpoint()
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", b"<h1>hi</h1>")
+    ws.commit()
 
     mapped = (
         "vendor/theme.css",
@@ -3426,8 +3440,8 @@ def test_the_reference_handler_survives_nulls(studio):
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
     ws = session.ws
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.makedirs("/workspace/app/data", exist_ok=True)
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.makedirs("/workspace/app/data", exist_ok=True)
     ws.run_python(
         "import pandas as pd\n"
         'pd.DataFrame({"category": ["a", "b", None],\n'
@@ -3436,7 +3450,9 @@ def test_the_reference_handler_survives_nulls(studio):
         '              "value": [1.0, None, None]}\n'
         ').to_parquet("/workspace/app/data/records.parquet")\n'
     )
-    ws.fs.write("/workspace/app/api/summary.py", (refs / "api-handler.py").read_bytes())
+    ws.files.fs.write(
+        "/workspace/app/api/summary.py", (refs / "api-handler.py").read_bytes()
+    )
 
     response = session.runtime.dispatch(nt_request("GET", "/api/summary"))
     assert response.status == 200, response.text
@@ -3574,15 +3590,17 @@ def test_the_reference_handler_survives_a_null_year(studio):
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
     ws = session.ws
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.makedirs("/workspace/app/data", exist_ok=True)
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.makedirs("/workspace/app/data", exist_ok=True)
     ws.run_python(
         "import pandas as pd\n"
         'pd.DataFrame({"category": ["a", "b"], "region": ["north", "south"],\n'
         '              "year": [2020, None], "value": [1.0, 3.0]}\n'
         ').to_parquet("/workspace/app/data/records.parquet")\n'
     )
-    ws.fs.write("/workspace/app/api/summary.py", (refs / "api-handler.py").read_bytes())
+    ws.files.fs.write(
+        "/workspace/app/api/summary.py", (refs / "api-handler.py").read_bytes()
+    )
 
     response = session.runtime.dispatch(nt_request("GET", "/api/summary"))
     assert response.status == 200, response.text
@@ -3601,8 +3619,10 @@ def test_the_loader_does_not_mistake_another_stylesheet_for_the_house_one(studio
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    session.ws.fs.makedirs("/workspace/app", exist_ok=True)
-    session.ws.fs.write("/workspace/app/custom-theme.css", b".mine { color: red }\n")
+    session.ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    session.ws.files.fs.write(
+        "/workspace/app/custom-theme.css", b".mine { color: red }\n"
+    )
     _jsx_app(
         session.ws,
         b"""<html><head>
