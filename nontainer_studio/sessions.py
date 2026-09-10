@@ -844,6 +844,9 @@ class Registry:
         self._migrate_published()
         self._migrate_publications()
         self._reconcile_pointers()
+        # Last: the migrations above write rows that name db files, and
+        # a file named by nothing is only an orphan once they have.
+        self.sweep_dbs()
 
     def workspace_for(self, name: str) -> Workspace:
         """The LIVE workspace for a session — the store db's ``open``.
@@ -1143,6 +1146,42 @@ class Registry:
         db = self._dbs.pop(rel, None)
         if db is not None:
             db.close()
+
+    def sweep_dbs(self) -> list[str]:
+        """Delete every db file no session row and no app entry names,
+        and return what went.
+
+        Nothing else in the studio deletes a db. A file may be a fork's
+        store, a delegate's, or the one a published app is serving
+        over, so a session's deletion drops its row and stops there —
+        and this reads the whole manifest once instead of four verbs
+        each counting referrers correctly. Runs when the registry
+        opens, and can be called outright.
+
+        A file this registry still holds a handle to is logged and left
+        for the next sweep. Unlinking under an open connection fails
+        nothing: the writes simply go nowhere.
+        """
+        with self._lock:
+            manifest = self._manifest()
+            named = {row.get("db") for row in manifest["sessions"].values()}
+            named |= {entry.get("db") for entry in manifest["apps"].values()}
+            root = self._store.path
+            swept = []
+            for path in sorted(root.glob("dbs/*.sqlite")) + sorted(
+                root.glob("dbs/apps/*.sqlite")
+            ):
+                rel = path.relative_to(root).as_posix()
+                if rel in named:
+                    continue
+                if rel in self._dbs:
+                    log.info("dbs: %s is named by nothing but open; leaving it", rel)
+                    continue
+                path.unlink(missing_ok=True)
+                swept.append(rel)
+            if swept:
+                log.info("dbs: swept %s", ", ".join(swept))
+            return swept
 
     def _migrate_db_rows(self) -> None:
         """Write down where each session's db already is, once, at

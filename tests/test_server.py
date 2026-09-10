@@ -2855,6 +2855,90 @@ def test_delete_removes_the_whole_universe(studio, tmp_path):
     assert not reborn.ws.files.fs.exists("/workspace/app/index.html")
 
 
+def test_the_sweep_collects_the_db_files_no_row_names(studio, tmp_path):
+    """Deleting a session drops its row, not its file — the file may be
+    a fork's store or the one an app is serving over, and counting
+    referrers at every delete is a rule that has to be got right in
+    four places. The sweep is the one place instead: it reads the
+    manifest, keeps what it names, and removes the rest."""
+    client, registry = studio
+    for name in ("keeper", "doomed"):
+        client.post("/api/sessions", json={"name": name})
+    _seed_app(registry.get("keeper").ws)
+    token = _publish(client, "keeper")["token"]
+    kept = _db_of(registry, "keeper")
+    gone = _db_of(registry, "doomed")
+
+    assert client.delete("/api/sessions/doomed").json() == {"ok": True}
+    assert (tmp_path / gone).exists()  # a deletion never removes a db
+
+    assert registry.sweep_dbs() == [gone]
+
+    assert not (tmp_path / gone).exists()
+    # the live session's file stays, and so does the one the app names
+    assert (tmp_path / kept).exists()
+    assert _app_db_of(registry, token) == kept
+    assert registry.sweep_dbs() == []
+
+
+def test_the_sweep_keeps_a_db_a_fork_still_names(studio, tmp_path):
+    """The rule the sweep exists to make simple: the origin is deleted
+    while its fork's row still names the file, so the file is not an
+    orphan and the fork keeps reading it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    origin = registry.get("s1")
+    origin.db.execute("CREATE TABLE notes (t TEXT)")
+    origin.db.execute("INSERT INTO notes VALUES (?)", ("the fork's rows",))
+    fork = registry.get(client.post("/api/sessions/s1/fork", json={}).json()["name"])
+    shared = _db_of(registry, "s1")
+
+    assert client.delete("/api/sessions/s1").json() == {"ok": True}
+    assert registry.sweep_dbs() == []
+
+    assert (tmp_path / shared).exists()
+    assert fork.db.query("SELECT t FROM notes") == [("the fork's rows",)]
+
+
+def test_the_sweep_leaves_a_file_it_still_holds_open(studio, tmp_path, caplog):
+    """A handle in the map is a connection something asked for.
+    Unlinking the file under it would not fail anything — the writes
+    would simply go nowhere — so an unnamed file that is open is
+    logged and left for the next sweep, which takes it once the
+    connection is closed."""
+    client, registry = studio
+    stray = "dbs/deadbeefdeadbeef.sqlite"
+    with registry._lock:
+        registry._db_handle(stray).execute("CREATE TABLE t (v TEXT)")
+
+    with caplog.at_level("INFO", logger="nontainer_studio.sessions"):
+        assert registry.sweep_dbs() == []
+    assert stray in "\n".join(caplog.messages)
+    assert (tmp_path / stray).exists()
+
+    with registry._lock:
+        registry._dbs.pop(stray).close()
+    assert registry.sweep_dbs() == [stray]
+    assert not (tmp_path / stray).exists()
+
+
+def test_the_sweep_runs_when_the_registry_opens(studio, tmp_path):
+    """Every restart tidies up: the files a previous run's deletions
+    left behind are collected before anything is served."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    orphan = _db_of(registry, "s1")
+    assert client.delete("/api/sessions/s1").json() == {"ok": True}
+    assert (tmp_path / orphan).exists()
+    registry.close()
+
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    try:
+        assert not (tmp_path / orphan).exists()
+    finally:
+        reborn.close()
+
+
 def test_delete_busy_409s_and_unknown_404s(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
