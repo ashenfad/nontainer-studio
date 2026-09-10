@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import sys
@@ -601,19 +602,6 @@ class Db:
             self._c.executemany(sql, rows)
             self._c.commit()
 
-    def copy_to(self, path: str | Path) -> None:
-        """A consistent copy of the whole database at ``path``, through
-        SQLite's backup API under this store's lock. A plain file copy
-        could read pages mid-commit: app handlers write here outside
-        any turn, so nothing else serializes them with a fork."""
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with self._lock:
-            dst = sqlite3.connect(str(path))
-            try:
-                self._c.backup(dst)
-            finally:
-                dst.close()
-
     def query(self, sql: str, params: tuple = ()) -> list:
         """A read (SELECT); returns a list of row tuples."""
         with self._lock:
@@ -826,9 +814,12 @@ class Registry:
         # disk on the hot path — one dict lookup per served request,
         # the manifest read only on a miss.
         self._published: dict[str, tuple[str, Workspace]] = {}
-        # token -> the app's own db handle, shared by every version of
-        # that app: the versions are different code over one live state.
-        self._app_dbs: dict[str, Db] = {}
+        # store-relative db path -> the ONE open handle to that file.
+        # A fork, a delegate and a published app name the db of the
+        # session they came from, so several rows name one file;
+        # handing them one object is what serializes their writes (see
+        # _db_handle).
+        self._dbs: dict[str, Db] = {}
         # Workspaces mid-construction, by name. ``workspace_for`` has to
         # answer for a session that does not exist yet: building its
         # agent constructs the toolkit, which asks the db whether it owns
@@ -848,6 +839,8 @@ class Registry:
             open=self.workspace_for,
             db_path=str(self._store.path / "agno"),
         )
+        # First: everything below reads a session's db off its row.
+        self._migrate_db_rows()
         self._migrate_published()
         self._migrate_publications()
         self._reconcile_pointers()
@@ -983,11 +976,16 @@ class Registry:
         return self._store.path / "sessions.json"
 
     def _manifest(self) -> dict:
-        """{"sessions": [...], "apps": {token: app}, "published":
+        """{"sessions": {name: {db}}, "apps": {token: app}, "published":
         {token: {branch, session, checkpoint}}, "models": {name: spec},
         "titles": {name: {user, agent}}, "created": {name: epoch},
-        "delegates": {child: parent}} — tolerant of the v1 bare-list
-        format, and of any key simply being absent.
+        "delegates": {child: parent}} — tolerant of the older formats
+        that wrote ``sessions`` as a bare list, and of any key simply
+        being absent.
+
+        A session ROW names the db file that session opens, and an app
+        entry names the one it serves over. Nothing else decides a db
+        path: see :meth:`_mint_db_path`.
 
         ``delegates`` is who forked whom (see :meth:`open_delegate`).
         It is a RECORD and not a naming rule: a session is somebody's
@@ -1004,8 +1002,11 @@ class Registry:
             data = {}
         if isinstance(data, list):  # v1: just session names
             data = {"sessions": data}
+        sessions = data.get("sessions") or {}
+        if isinstance(sessions, list):  # a list of names, no db written down
+            sessions = {name: {} for name in sessions}
         return {
-            "sessions": data.get("sessions", []),
+            "sessions": sessions,
             "apps": data.get("apps", {}),
             "published": data.get("published", {}),
             "models": data.get("models", {}),
@@ -1027,10 +1028,21 @@ class Registry:
         tmp.write_text(json.dumps(manifest, indent=1))
         tmp.replace(path)
 
-    def _record(self, name: str, model: str | None = None) -> None:
-        """Add to the durable session manifest (caller holds _lock)."""
+    def _record(
+        self, name: str, model: str | None = None, db: str | None = None
+    ) -> None:
+        """Add to the durable session manifest (caller holds _lock).
+
+        ``db`` is the store-relative path of the file this session's
+        ``db`` host object opens. Every row carries one — its own, or
+        the one it took from the session it was forked from — because
+        a path is never derived from a name.
+        """
         manifest = self._manifest()
-        manifest["sessions"] = sorted(set(manifest["sessions"]) | {name})
+        row = dict(manifest["sessions"].get(name) or {})
+        if db is not None:
+            row["db"] = db
+        manifest["sessions"] = dict(sorted({**manifest["sessions"], name: row}.items()))
         if model is not None:
             manifest["models"][name] = model
         # birthday, stamped once: slugs carry no order, so this is the
@@ -1045,12 +1057,113 @@ class Registry:
         later mint drawing this slug must not inherit a ghost's
         birthday."""
         manifest = self._manifest()
-        manifest["sessions"] = [s for s in manifest["sessions"] if s != name]
+        manifest["sessions"].pop(name, None)
         manifest["models"].pop(name, None)
         manifest["titles"].pop(name, None)
         manifest["created"].pop(name, None)
         manifest["delegates"].pop(name, None)
         self._save_manifest(manifest)
+
+    # -- the db: a store with an id of its own ------------------------------
+    #
+    # `db` stands in for the production database an agent acts on, and
+    # nobody clones that when they open a branch. So a new session
+    # mints a db with an ID of its own, and a fork, a delegate and a
+    # published app NAME that same file in their own row.
+    #
+    # The id is minted, never derived from a session name. A name is
+    # handed back the moment its session is deleted, while the file can
+    # outlive it in a fork's row or a publication's — and a path spelled
+    # from a name would hand the next holder of that slug somebody
+    # else's rows. So the manifest is the only thing that says where a
+    # db is, and every row says it.
+
+    @staticmethod
+    def _db_of(name: str, manifest: dict) -> str | None:
+        """The db file session ``name`` opens, store-relative, or None
+        for a name that is not a session."""
+        return (manifest["sessions"].get(name) or {}).get("db")
+
+    def _mint_db_path(self, manifest: dict) -> str:
+        """A db file for a session starting empty (caller holds
+        ``_lock``): ``dbs/<id>.sqlite`` under an id nothing else holds.
+
+        The id is random rather than the session's name, so that
+        deleting a session frees its slug without freeing the store a
+        fork or an app may still be serving over.
+        """
+        while True:
+            rel = f"dbs/{secrets.token_hex(8)}.sqlite"
+            if (self._store.path / rel).exists():
+                continue
+            if any(row.get("db") == rel for row in manifest["sessions"].values()):
+                continue
+            if any(e.get("db") == rel for e in manifest["apps"].values()):
+                continue
+            return rel
+
+    def _db_handle(self, rel: str) -> Db:
+        """The one open handle to the db file at ``rel`` (caller holds
+        ``_lock``).
+
+        ONE handle, not one connection each. ``Db`` serializes its own
+        calls under a lock, so sessions sharing an object queue behind
+        each other and every write lands; two connections to one file
+        would queue in SQLite instead, where the default rollback
+        journal takes an exclusive lock for a write and hands the loser
+        a ``database is locked`` after the busy timeout. A turn, or a
+        request to a published app, is not a place to discover that.
+        """
+        db = self._dbs.get(rel)
+        if db is None:
+            db = Db(self._store.path / rel)
+            self._dbs[rel] = db
+        return db
+
+    def _db_held(self, rel: str) -> bool:
+        """Whether a live session or a cached publication snapshot is
+        running over the handle to ``rel``. Caller holds ``_lock``."""
+        manifest = self._manifest()
+        if any(self._db_of(n, manifest) == rel for n in self._sessions):
+            return True
+        apps = manifest["apps"]
+        return any((apps.get(t) or {}).get("db") == rel for t in self._published)
+
+    def _forget_db(self, rel: str) -> None:
+        """Close and drop the handle to ``rel`` when nothing live is
+        running over it (caller holds ``_lock``). The FILE stays.
+
+        A delegate's db is its parent's file, so closing on the way out
+        of every session would be a delegate finishing its work by
+        breaking the connection the session that asked is mid-
+        conversation with.
+        """
+        if self._db_held(rel):
+            return
+        db = self._dbs.pop(rel, None)
+        if db is not None:
+            db.close()
+
+    def _migrate_db_rows(self) -> None:
+        """Write down where each session's db already is, once, at
+        startup.
+
+        A row from before db ids has no ``db`` field, and its file is at
+        ``dbs/<name>.sqlite`` because the name WAS the path. Filling
+        that in is the whole migration: no file moves and no copy is
+        merged, and afterwards there is one shape — every row names its
+        file, and a name never decides a path again.
+        """
+        with self._lock:
+            manifest = self._manifest()
+            filled = 0
+            for name, row in manifest["sessions"].items():
+                if not row.get("db"):
+                    row["db"] = f"dbs/{name}.sqlite"
+                    filled += 1
+            if filled:
+                self._save_manifest(manifest)
+                log.info("dbs: wrote down the file for %d session row(s)", filled)
 
     # -- create: mint an identity, then open it ----------------------------
 
@@ -1066,7 +1179,10 @@ class Registry:
         is NOT reentrant."""
         with self._lock:
             name = self._mint_name()
-            self._record(name)  # reserve the name against a racing mint
+            # Reserve the name against a racing mint, and mint the db
+            # in the same breath: the name is free again after a
+            # delete, the db id never is.
+            self._record(name, db=self._mint_db_path(self._manifest()))
         try:
             return self.open(name)
         except BaseException:
@@ -1105,8 +1221,13 @@ class Registry:
             existing = self._sessions.get(name)
             if existing is not None:
                 return existing
-            model = self._manifest()["models"].get(name) or self._default_model
-            db = Db(self._store.path / "dbs" / f"{name}.sqlite")
+            manifest = self._manifest()
+            model = manifest["models"].get(name) or self._default_model
+            # A name that is already a session opens the file its row
+            # names — its own, or a parent's. A name that is not is
+            # starting empty, and mints a db of its own.
+            rel = self._db_of(name, manifest) or self._mint_db_path(manifest)
+            db = self._db_handle(rel)
             ws = self._store.open(
                 name,
                 python=self._python_config(db),
@@ -1137,7 +1258,7 @@ class Registry:
                 self._sessions[name] = session
             finally:
                 self._opening.pop(name, None)
-            self._record(name, model)
+            self._record(name, model, db=rel)
             return session
 
     @staticmethod
@@ -1518,13 +1639,12 @@ class Registry:
         agent at all — so the child is opened the way every other
         session is, and gets what every other session gets.
 
-        The exception is the app db, which is copied from the parent
-        first. It is live external state that never versions, so the
-        fork does not carry it, and a delegate sent to work on an app
-        over an empty db would be testing a different program than the
-        one its parent is looking at. Copied and not shared, for the
-        reason :meth:`fork` copies it: two universes must not write over
-        each other's rows.
+        The exception is the app db, which the fork does not carry: it
+        is live external state that never versions. The child's row
+        NAMES the parent's file instead of getting a copy of it — `db`
+        stands in for a production store, and a delegate sent to work
+        on an app writes to the store its parent is looking at, the way
+        a real subagent does.
 
         This is also the one moment the studio knows both halves of
         ``child -> parent``, so it is where that is written down. Only
@@ -1535,14 +1655,13 @@ class Registry:
         that no parent's deletion takes with it, and that becomes an
         ordinary session if a later ``open`` is ever asked for its name.
         """
-        dst = self._store.path / "dbs" / f"{name}.sqlite"
         with self._lock:
-            source = self._sessions.get(parent)
             manifest = self._manifest()
             manifest["delegates"][name] = parent
             self._save_manifest(manifest)
-        if source is not None and not dst.exists():
-            source.db.copy_to(dst)
+            # The row before the open that reads it: `open` builds the
+            # child's python config over the file its row names.
+            self._record(name, db=self._db_of(parent, manifest))
         try:
             return self.open(name)
         except BaseException:
@@ -1562,12 +1681,19 @@ class Registry:
         is what the parent merges from, and an agent, a workspace handle
         and a sqlite connection per delegate that has already answered
         outlive every reason to hold them.
+
+        The db handle goes only if nothing live is running over it: a
+        delegate's db is the file its parent's row names too.
         """
         with self._lock:
             session = self._sessions.pop(name, None)
+            rel = self._db_of(name, self._manifest())
         if session is None:
             return
         self._close_session(session)
+        if rel is not None:
+            with self._lock:
+                self._forget_db(rel)
 
     @staticmethod
     def _close_session(session: Session) -> None:
@@ -1581,7 +1707,9 @@ class Registry:
         if callable(close_runtime):  # reap dispatch workers
             close_runtime()
         session.ws.close()
-        session.db.close()
+        # NOT the db: the handle belongs to the registry, because the
+        # file behind it is named by other rows — a fork's, a
+        # delegate's, a published app's — that may still be running.
 
     # -- fork: branch the whole universe --------------------------------------
 
@@ -1596,8 +1724,10 @@ class Registry:
         visible transcript to match it; ``"fresh"`` drops both, giving a
         clean chat over the forked files.
 
-        The app db is COPIED, not shared: it is live external state with
-        no history, so the two universes must not write over each other.
+        The app db is NAMED, not copied: it is a handle to an external
+        store, and branching a session no more clones that store than
+        branching a repo clones production. Both universes write to the
+        one file.
 
         Forking is a between-turns verb. A turn in flight owns the
         workspace, and kvgit refuses to fork a branch with staged
@@ -1648,18 +1778,18 @@ class Registry:
             raise RuntimeError("can't fork mid-turn: the workspace has staged changes")
         with self._lock:
             name = self._mint_name()
-            self._record(name, session.model)
+            rel = self._db_of(session.name, self._manifest())
+            self._record(name, session.model, db=rel)
         try:
             child_ws = fork_session(session.ws, name, conversation=conversation, at=at)
             # The fork inherits the PARENT's python config, and with it
-            # the parent's `db` host object. Let it go and build the
-            # child's own handle over the copied file below — two
-            # universes sharing one app db is the state this copy exists
-            # to prevent.
+            # a `db` host object built for another session's workspace.
+            # Let it go and reopen over a config of the child's own —
+            # naming the same FILE, through the same handle, so the two
+            # universes' writes queue rather than race.
             child_ws.close()
-            dst = self._store.path / "dbs" / f"{name}.sqlite"
-            session.db.copy_to(dst)
-            db = Db(dst)
+            with self._lock:
+                db = self._db_handle(rel)
             ws = self._store.open(
                 name,
                 python=self._python_config(db),
@@ -1698,14 +1828,20 @@ class Registry:
 
     def delete(self, session: Session) -> None:
         """Delete a session and everything it owns: the workspace
-        branch, the session's app db, the transcript, the agent's chat
-        record. Caller ensures not busy.
+        branch, the transcript, the agent's chat record. Caller ensures
+        not busy.
 
-        Its published APPS are not among them. An app owns its db, and
-        each of its versions is a publication version on a branch of
-        its own that belongs to no session — so the URLs someone was
-        handed keep serving after the conversation that built them is
-        gone.
+        Its DB is not among them, and no deletion removes one. It is a
+        handle to an external store that a fork, a delegate or a
+        published app may name too; a file no row names any more is
+        collected by :meth:`sweep_dbs`, which reads the whole manifest
+        rather than guessing from here.
+
+        Its published APPS are not among them either. Each version is a
+        publication version on a branch of its own that belongs to no
+        session, and the app's row goes on naming the db — so the URLs
+        someone was handed keep serving, over the same store, after the
+        conversation that built them is gone.
         Taking one down is ``unpublish``, said about the app.
 
         Its DELEGATES are. A delegate has no row in the rail of its own
@@ -1731,7 +1867,8 @@ class Registry:
             with self._lock:
                 live = self._sessions.pop(victim, None)
                 manifest = self._manifest()
-                manifest["sessions"] = [s for s in manifest["sessions"] if s != victim]
+                rel = self._db_of(victim, manifest)
+                manifest["sessions"].pop(victim, None)
                 manifest["models"].pop(victim, None)
                 # titles/created go too, or a later mint that happens to
                 # draw this slug (it's free again once `sessions` forgets
@@ -1743,7 +1880,9 @@ class Registry:
             if live is not None:
                 # before branch deletion: an open workspace holds its branch
                 self._close_session(live)
-            (self._store.path / "dbs" / f"{victim}.sqlite").unlink(missing_ok=True)
+            if rel is not None:
+                with self._lock:
+                    self._forget_db(rel)
             (self._store.path / "events" / f"{victim}.jsonl").unlink(missing_ok=True)
         self._delete_branches(set(doomed))
 
@@ -1932,22 +2071,18 @@ class Registry:
         self._delete_branches({branch})
         if ref is None:
             return None
-        src = self._store.path / "dbs" / f"{origin}.sqlite"
-        dst = self._app_db_path(token)
-        if src.exists():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            db = Db(src)
-            try:
-                db.copy_to(dst)
-            finally:
-                db.close()
+        # The anchor shape served over the origin session's live db, so
+        # the migrated app names that same file. Nothing is copied: a
+        # migration is not the moment to invent a second store. An
+        # entry whose session is gone gets a db of its own, empty.
+        db = self._db_of(origin, manifest) or self._mint_db_path(manifest)
         return {
             "token": token,
             "pub": token,
             "session": origin,
             "title": title,
             "created": time.time(),
-            "db": f"dbs/apps/{token}.sqlite",
+            "db": db,
             "current": "v1",
             "versions": {
                 "v1": {
@@ -2158,28 +2293,28 @@ class Registry:
     # is named for the token (see `_pub_name`), which is what ties the
     # two tables together.
     #
-    # The app owns its db from its first version: the session's live db
-    # is copied once (through SQLite's backup API) into
-    # dbs/apps/<token>.sqlite, and every later version of that app keeps
-    # it. Schema migration across versions is the app's own business,
-    # which is exactly what the DB_PRIMER already tells the agent about
-    # `db`: live state, no history, nothing rewinds it.
-
-    def _app_db_path(self, token: str) -> Path:
-        return self._store.path / "dbs" / "apps" / f"{token}.sqlite"
+    # The app NAMES a db, it does not own one. `db` is a handle to an
+    # external store, and a published app is a deployment against that
+    # store: the app entry records the file the session was using,
+    # every version of the app serves over it, and that row is what
+    # keeps the file from being swept once the session is deleted.
+    # Schema migration across versions is the app's own business, as it
+    # is in any deployment — which is what the DB_PRIMER tells the
+    # agent about `db`: live state, no history, nothing rewinds it.
+    #
+    # An app published before db ids holds a COPY at
+    # dbs/apps/<token>.sqlite. Its row names that file, so it opens,
+    # serves and is collected exactly like any other — a copy already
+    # made is a fact, and merging its rows into anything is not the
+    # studio's to do.
 
     def _app_db(self, entry: dict) -> Db:
-        """The app's own db handle, one per app.
+        """The handle to the db this app's row names.
 
-        Shared by every version of that app on purpose: the versions are
-        different code over ONE live state, the same way the preview and
-        the session share one db."""
-        token = entry["token"]
-        db = self._app_dbs.get(token)
-        if db is None:
-            db = Db(self._store.path / entry["db"])
-            self._app_dbs[token] = db
-        return db
+        One handle for the file, so every version of the app, the
+        session that published it and any fork of that session are all
+        talking to one store through one lock."""
+        return self._db_handle(entry["db"])
 
     @staticmethod
     def _version_name(asked: str | None, entry: dict | None) -> str:
@@ -2341,14 +2476,16 @@ class Registry:
             )
             try:
                 if not entry:
-                    self._app_db_path(token).parent.mkdir(parents=True, exist_ok=True)
-                    session.db.copy_to(self._app_db_path(token))
                     entry = {
                         "token": token,
                         "pub": pub,
                         "session": name,
                         "created": time.time(),
-                        "db": f"dbs/apps/{token}.sqlite",
+                        # The session's file, named and not copied: the
+                        # app is a deployment against that store, and
+                        # this row is also what keeps the file once the
+                        # session is gone.
+                        "db": self._db_of(name, manifest),
                         "versions": {},
                     }
                 entry = dict(entry, versions=dict(entry["versions"]))
@@ -2569,17 +2706,16 @@ class Registry:
             return self._app_row(entry)
 
     def unpublish(self, token: str) -> None:
-        """Take an app down: every version, its db, its cached
-        snapshots and its manifest entry.
+        """Take an app down: every version, its cached snapshots and
+        its manifest entry.
 
-        The db goes WITH the last version. It holds one app's rows and
-        nothing but this entry could name the file again — the token is
-        gone from the manifest and no other app is ever minted onto it
-        — so keeping it would leave a sqlite file on disk that no verb
-        in the studio can reach, read or delete.
+        Not its db. The entry was a NAME for a file the session that
+        published it is very likely still writing to, so dropping the
+        row drops the app's claim and nothing else; a file no row names
+        any more is collected by :meth:`sweep_dbs`.
 
         The origin session is untouched — an app was never the session's
-        state, only a named copy of it."""
+        state, only a version of its `app/` tree over the same store."""
         with self._lock:
             # nontainer keeps the version it points at while others
             # remain, so a pointer left behind an earlier publish would
@@ -2591,9 +2727,7 @@ class Registry:
             if entry is None:
                 raise KeyError(token)
             self._drop_snapshots(token)
-            db = self._app_dbs.pop(token, None)
-            if db is not None:
-                db.close()
+            self._forget_db(entry["db"])
             pub = _pub_name(entry, token)
             versions = list(entry.get("versions") or {})
             current = entry.get("current")
@@ -2606,7 +2740,6 @@ class Registry:
                 v for v in versions if v == current
             ]:
                 self._unpublish_version(pub, name)
-            (self._store.path / entry["db"]).unlink(missing_ok=True)
             self._save_manifest(manifest)
 
     def delete_version(self, token: str, version: str) -> dict:
@@ -2843,9 +2976,9 @@ class Registry:
             for _, snapshot in self._published.values():
                 snapshot.close()
             self._published.clear()
-            for db in self._app_dbs.values():
+            for db in self._dbs.values():
                 db.close()
-            self._app_dbs.clear()
+            self._dbs.clear()
             # Last: the store outlives every workspace opened through
             # it, so it closes once nothing is still holding a branch.
             self._store.close()

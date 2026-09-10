@@ -4,6 +4,7 @@ lifecycle, preview/publish, time travel — exercised with a fake agent
 
 import json
 import re
+import shutil
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -429,6 +430,16 @@ NAMES_HANDLER = (
 )
 
 
+def _db_of(registry, name: str) -> str:
+    """Where a session's db is: the manifest row says so, and nothing
+    else may — a name never decides a path."""
+    return registry._manifest()["sessions"][name]["db"]
+
+
+def _app_db_of(registry, token: str) -> str:
+    return registry._manifest()["apps"][token]["db"]
+
+
 def _seed_db_app(session):
     """An app whose only content is a handler reading the app db."""
     session.ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
@@ -436,10 +447,12 @@ def _seed_db_app(session):
     session.ws.commit()
 
 
-def test_published_app_owns_its_db_from_its_first_version(studio):
-    """The app db is COPIED at the first publish and belongs to the app
-    from then on: the session's later writes don't reach it, and the
-    app's users' writes don't reach the session."""
+def test_a_published_app_serves_over_the_sessions_live_db(studio):
+    """`db` is a handle to an external store, and publishing is a
+    deployment against that store rather than a snapshot of it: the
+    app's row names the session's db, so the session's later writes
+    are there for its users and its users' writes are there for the
+    session."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
@@ -449,19 +462,21 @@ def test_published_app_owns_its_db_from_its_first_version(studio):
 
     pub = client.post("/api/sessions/s1/publish").json()
     assert pub["version"] == "v1" and pub["url"] == f"/apps/{pub['token']}/"
-    # the copy carries the state the session had when it published
     assert client.get(f"{pub['url']}api/names").json() == {"names": ["at-publish"]}
 
     session.db.execute("INSERT INTO t VALUES ('after-publish')")
-    # ...and stops there: the two universes no longer write over each other
-    assert client.get(f"{pub['url']}api/names").json() == {"names": ["at-publish"]}
-    assert (registry._store.path / "dbs" / "apps" / f"{pub['token']}.sqlite").exists()
+    assert client.get(f"{pub['url']}api/names").json() == {
+        "names": ["at-publish", "after-publish"]
+    }
+    # the app names the session's db; nothing was copied anywhere
+    assert _app_db_of(registry, pub["token"]) == _db_of(registry, "s1")
+    assert not (registry._store.path / "dbs" / "apps").exists()
 
 
-def test_a_second_version_keeps_the_apps_db(studio):
-    """Versions are code; the db is the app's. A row written into the
-    app db between publishes is still there under v2, and the session's
-    own db never saw it."""
+def test_a_second_version_serves_over_the_same_db(studio):
+    """Versions are code; the store is one. A row written through the
+    app between publishes is still there under v2 — and it is in the
+    session's db, because that is the file the app serves over."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
@@ -469,12 +484,8 @@ def test_a_second_version_keeps_the_apps_db(studio):
     pub = client.post("/api/sessions/s1/publish").json()
     assert client.get(f"{pub['url']}api/names").json() == {"names": []}
 
-    app_db = sessions_mod.Db(
-        registry._store.path / "dbs" / "apps" / f"{pub['token']}.sqlite"
-    )
-    app_db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
-    app_db.execute("INSERT INTO t VALUES ('a user typed this')")
-    app_db.close()
+    session.db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
+    session.db.execute("INSERT INTO t VALUES ('a user typed this')")
 
     session.ws.files.fs.write("/workspace/app/index.html", b"<h1>v2</h1>")
     session.ws.commit()
@@ -486,8 +497,6 @@ def test_a_second_version_keeps_the_apps_db(studio):
     assert client.get(f"{v2['url']}api/names").json() == {
         "names": ["a user typed this"]
     }
-    # the session's own db is untouched by all of it
-    assert session.db.query("SELECT name FROM sqlite_master WHERE name='t'") == []
 
 
 # -- apps: versions, the app's db, the registry ---------------------------------
@@ -521,9 +530,9 @@ def _publish(client, session: str, **body) -> dict:
 
 def test_publish_makes_a_publication_and_marks_the_transcript(scripted, tmp_path):
     """A version is a version of a nontainer publication named for the
-    app's token, the app gets a db of its own, and the conversation
-    gets a landmark: the marker carries the SESSION commit and tree it
-    was made at, so it can be come back to."""
+    app's token, the app's row names the session's db, and the
+    conversation gets a landmark: the marker carries the SESSION commit
+    and tree it was made at, so it can be come back to."""
     client, registry = scripted
     client.post("/api/sessions", json={"name": "s1"})
     _run(client, "s1", _script("/workspace/app/index.html", "<h1>one</h1>", "built it"))
@@ -533,11 +542,10 @@ def test_publish_makes_a_publication_and_marks_the_transcript(scripted, tmp_path
     record = _registry(tmp_path)[token]
     assert record["current"] == "v1"
     assert f"@store/{token}/v1" in _store_tags(tmp_path)
-    assert (tmp_path / "dbs" / "apps" / f"{token}.sqlite").exists()
     # the studio's half of the table: token -> publication name, route, db
     entry = registry._manifest()["apps"][token]
     assert entry["pub"] == token
-    assert entry["db"] == f"dbs/apps/{token}.sqlite"
+    assert entry["db"] == _db_of(registry, "s1")
     assert entry["versions"]["v1"]["ref"] == record["versions"]["v1"]["ref"]
 
     events = client.get("/api/sessions/s1/events?wait=0").json()["events"]
@@ -675,8 +683,9 @@ def test_a_served_version_is_frozen_code_over_a_live_db(studio):
 
     assert client.post(f"{pub['url']}api/tally").json() == {"ok": True}
     assert client.get(f"{pub['url']}api/tally").json() == {"names": ["from the app"]}
-    # nothing the app did reached the session's own db
-    assert session.db.query("SELECT name FROM sqlite_master WHERE name='t'") == []
+    # and it landed in the store the session holds: the app's write is
+    # a write to the live db, which is the point of one
+    assert session.db.query("SELECT v FROM t") == [("from the app",)]
 
 
 def test_a_published_app_is_readable_from_a_sandboxed_iframe(studio):
@@ -760,10 +769,16 @@ def test_make_current_repoints_the_url(studio, tmp_path):
     )
 
 
-def test_unpublish_removes_the_publication_db_and_manifest(studio, tmp_path):
+def test_unpublish_removes_the_publication_and_manifest(studio, tmp_path):
+    """Taking the app down drops its row, and with it the app's claim
+    on the db. The FILE is not unpublish's to remove — the session
+    that made it is still writing there — and no verb but the sweep
+    ever removes one."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
-    _seed_app(registry.get("s1").ws)
+    session = registry.get("s1")
+    _seed_app(session.ws)
+    session.db.execute("CREATE TABLE t (v TEXT)")
     pub = _publish(client, "s1")
     _publish(client, "s1", name="release")
     token = pub["token"]
@@ -775,9 +790,12 @@ def test_unpublish_removes_the_publication_db_and_manifest(studio, tmp_path):
     # both versions go, the current one last, and the record with them
     assert token not in _registry(tmp_path)
     assert not any(t.startswith(f"@store/{token}/") for t in _store_tags(tmp_path))
-    assert not (tmp_path / "dbs" / "apps" / f"{token}.sqlite").exists()
     assert client.get("/api/apps").json()["apps"] == []
     assert client.delete(f"/api/apps/{token}").status_code == 404
+    # the session's store is untouched, and still named by its row
+    assert (tmp_path / _db_of(registry, "s1")).exists()
+    session.db.execute("INSERT INTO t VALUES ('still here')")
+    assert session.db.query("SELECT v FROM t") == [("still here",)]
 
 
 def test_delete_version_refuses_the_current_and_the_last(studio):
@@ -799,12 +817,21 @@ def test_delete_version_refuses_the_current_and_the_last(studio):
 
 def test_deleting_the_origin_session_leaves_the_app_served(studio, tmp_path):
     """The publication promise: a store-scoped tag outlives the branch
-    that made it, and the app's db is its own file — so the URL keeps
-    working after the conversation behind it is gone."""
+    that made it, and the app's row still names the db — so the URL
+    keeps working, and keeps WRITING, after the conversation behind it
+    is gone."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
     _seed_db_app(session)
+    session.ws.files.fs.write(
+        "/workspace/app/api/add.py",
+        b"def post(req):\n"
+        b'    db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")\n'
+        b"    db.execute(\"INSERT INTO t VALUES ('after the session went')\")\n"
+        b"    return {'ok': True}\n",
+    )
+    session.ws.commit()
     session.db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
     session.db.execute("INSERT INTO t VALUES ('published')")
     pub = _publish(client, "s1")
@@ -814,7 +841,10 @@ def test_deleting_the_origin_session_leaves_the_app_served(studio, tmp_path):
 
     # cold path too: nothing cached, no session to reopen
     registry._published.clear()
-    assert client.get(f"{pub['url']}api/names").json() == {"names": ["published"]}
+    assert client.post(f"{pub['url']}api/add").json() == {"ok": True}
+    assert client.get(f"{pub['url']}api/names").json() == {
+        "names": ["published", "after the session went"]
+    }
     assert client.get("/api/apps").json()["apps"][0]["session"] == "s1"
 
 
@@ -1152,8 +1182,8 @@ def test_apps_registry_lists_every_app(studio):
 def test_old_shape_publications_migrate_on_load(studio, tmp_path, caplog):
     """The anchor-branch shape: a token naming a forked branch, served
     over the session's live db. On load each becomes an app with a v1
-    tag and a db copy, and the anchor branch goes; an entry whose branch
-    is gone is dropped rather than left 404ing."""
+    naming that same db, and the anchor branch goes; an entry whose
+    branch is gone is dropped rather than left 404ing."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
@@ -1179,15 +1209,83 @@ def test_old_shape_publications_migrate_on_load(studio, tmp_path, caplog):
             apps = client2.get("/api/apps").json()["apps"]
             assert [row["token"] for row in apps] == ["live-token"]
             assert apps[0]["current"] == "v1"
-            # the db came across, and it is the app's own copy now
+            # the same live db it was served over before, named
+            # rather than copied
             r = client2.get("/apps/live-token/api/names")
             assert r.json() == {"names": ["shared"]}
+            assert _app_db_of(reborn, "live-token") == _db_of(reborn, "s1")
         assert reborn._manifest()["published"] == {}
         assert _registry(tmp_path)["live-token"]["current"] == "v1"
     finally:
         reborn.close()
     text = "\n".join(caplog.messages)
     assert "migrated live-token" in text and "dropped dead-token" in text
+
+
+def test_a_manifest_in_the_old_shape_is_filled_in_and_serves(studio, tmp_path):
+    """Where a db is used to be its session's NAME, so an old install
+    holds `dbs/<name>.sqlite` for every session and a copy at
+    `dbs/apps/<token>.sqlite` for every app. Opening the registry
+    writes those paths down as rows — nothing moves, no copy is
+    merged — and after that one fill there is a single shape: every
+    row names its file, and a name never decides a path again."""
+    client, registry = studio
+    for name in ("s1", "s1.helper"):
+        client.post("/api/sessions", json={"name": name})
+    session = registry.get("s1")
+    _seed_db_app(session)
+    session.db.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
+    session.db.execute("INSERT INTO t VALUES ('in the copy')")
+    token = _publish(client, "s1")["token"]
+
+    # rewrite the install into the shape that predates db ids: files
+    # named for their sessions, an app holding a copy of its own, and
+    # a manifest that records none of it
+    manifest = registry._manifest()
+    for name in ("s1", "s1.helper"):
+        shutil.copyfile(
+            tmp_path / _db_of(registry, name), tmp_path / "dbs" / f"{name}.sqlite"
+        )
+    copy = tmp_path / "dbs" / "apps" / f"{token}.sqlite"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(tmp_path / _db_of(registry, "s1"), copy)
+    for name in ("s1", "s1.helper"):
+        (tmp_path / _db_of(registry, name)).unlink()
+    manifest["sessions"] = ["s1", "s1.helper"]  # the bare-list shape
+    manifest["apps"][token]["db"] = f"dbs/apps/{token}.sqlite"
+    manifest["delegates"]["s1.helper"] = "s1"
+    registry._save_manifest(manifest)
+    registry.close()
+
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    reborn._build_agent = lambda *a, **k: FakeAgent()
+    try:
+        rows = reborn._manifest()["sessions"]
+        assert rows["s1"]["db"] == "dbs/s1.sqlite"
+        assert rows["s1.helper"]["db"] == "dbs/s1.helper.sqlite"
+        assert _app_db_of(reborn, token) == f"dbs/apps/{token}.sqlite"
+
+        with TestClient(server.build_app(reborn)) as client2:
+            url = f"/apps/{token}/"
+            assert client2.get(f"{url}api/names").json() == {"names": ["in the copy"]}
+            # the copy is the app's own db, and the session's is its
+            # own: a copy already made is a fact, and merging its rows
+            # into anything is not the studio's to do
+            live = reborn.open("s1")
+            live.db.execute("INSERT INTO t VALUES ('after the fill')")
+            assert client2.get(f"{url}api/names").json() == {"names": ["in the copy"]}
+            assert live.db.query("SELECT v FROM t") == [
+                ("in the copy",),
+                ("after the fill",),
+            ]
+
+            # deletes as before: the rows go, the files stay for the
+            # sweep, and the app's copy is nobody's to take
+            assert client2.delete("/api/sessions/s1").json() == {"ok": True}
+            assert client2.get("/api/sessions").json()["sessions"] == []
+            assert client2.get(f"{url}api/names").json() == {"names": ["in the copy"]}
+    finally:
+        reborn.close()
 
 
 def _tagged_app(registry, session, token, versions, current=None) -> dict:
@@ -1217,7 +1315,7 @@ def _tagged_app(registry, session, token, versions, current=None) -> dict:
         }
     db = registry._store.path / "dbs" / "apps" / f"{token}.sqlite"
     db.parent.mkdir(parents=True, exist_ok=True)
-    session.db.copy_to(db)
+    shutil.copyfile(registry._store.path / _db_of(registry, session.name), db)
     manifest = registry._manifest()
     entry = {
         "token": token,
@@ -2025,10 +2123,11 @@ def test_the_conversation_survives_a_restart(scripted, tmp_path):
     reborn.close()
 
 
-def test_fork_inherits_files_conversation_and_a_copy_of_the_db(scripted):
+def test_fork_inherits_files_conversation_and_the_parents_db(scripted):
     """One kvgit operation carries files, cache, cwd and the agent's
     memory; the transcript is copied so the human reads what the agent
-    remembers; the app db is copied because live state has no history."""
+    remembers; the app db is NAMED, not copied, because it is a handle
+    to an external store and a branch does not clone production."""
     client, registry = scripted
     client.post("/api/sessions", json={"name": "s1"})
     parent = registry.get("s1")
@@ -2047,14 +2146,88 @@ def test_fork_inherits_files_conversation_and_a_copy_of_the_db(scripted):
     assert registry.db.get_session(name).session_id == name
     assert [e["type"] for e in child.events] == [e["type"] for e in parent.events]
 
+    assert child.db is parent.db  # one handle per file, so writes queue
     assert child.db.query("SELECT t FROM notes") == [("parent",)]
     child.db.execute("INSERT INTO notes VALUES (?)", ("child",))
-    assert parent.db.query("SELECT t FROM notes") == [("parent",)]
+    assert parent.db.query("SELECT t FROM notes") == [("parent",), ("child",)]
+    # the child's row names the parent's file: no copy, and no path
+    # invented out of either name
+    assert _db_of(registry, name) == _db_of(registry, "s1")
 
     # the parent kept its own universe, whole
     assert parent.ws.files.fs.read("/workspace/a.txt") == b"A"
     assert registry.db.get_session("s1").session_id == "s1"
     assert {row["name"] for row in registry.list()} == {"s1", name}
+
+
+def test_a_fork_of_a_fork_keeps_naming_the_root_db(scripted):
+    """A db id is minted once, at the root of the lineage: a chain of
+    forks names one file and not a chain of copies."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    root = registry.get("s1")
+    root.db.execute("CREATE TABLE IF NOT EXISTS notes (t TEXT)")
+
+    child = registry.get(client.post("/api/sessions/s1/fork", json={}).json()["name"])
+    grandchild = registry.get(
+        client.post(f"/api/sessions/{child.name}/fork", json={}).json()["name"]
+    )
+
+    grandchild.db.execute("INSERT INTO notes VALUES (?)", ("grandchild",))
+    assert root.db.query("SELECT t FROM notes") == [("grandchild",)]
+    rel = _db_of(registry, "s1")
+    assert _db_of(registry, child.name) == rel
+    assert _db_of(registry, grandchild.name) == rel
+
+
+def test_a_new_session_starts_with_a_clean_db_under_an_id_of_its_own(studio, tmp_path):
+    """Only a fork names somebody else's store. A session opened by
+    name mints an id for its db — an id, not the name: a slug is
+    reused the moment its session is deleted, and a path that is a
+    slug would hand the next holder a dead session's rows."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    registry.get("s1").db.execute("CREATE TABLE t (v TEXT)")
+
+    client.post("/api/sessions", json={"name": "s2"})
+    other = registry.get("s2")
+    assert other.db.query("SELECT name FROM sqlite_master WHERE name='t'") == []
+
+    rel = _db_of(registry, "s2")
+    assert re.fullmatch(r"dbs/[0-9a-f]{16}\.sqlite", rel), rel
+    assert rel != _db_of(registry, "s1")
+    assert (tmp_path / rel).exists()
+    assert not (tmp_path / "dbs" / "s2.sqlite").exists()
+
+
+def test_a_reborn_name_starts_empty_beside_the_fork_that_kept_the_store(
+    scripted, tmp_path
+):
+    """The whole reason a db has an id. The origin is deleted while its
+    fork still names the file, so the file stays and the slug goes
+    free — and the next session to draw that slug mints an id of its
+    own, reads nothing, and cannot write into what the fork is still
+    reading."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    origin = registry.get("s1")
+    origin.db.execute("CREATE TABLE notes (t TEXT)")
+    origin.db.execute("INSERT INTO notes VALUES (?)", ("the fork's rows",))
+    fork = registry.get(client.post("/api/sessions/s1/fork", json={}).json()["name"])
+    shared = _db_of(registry, "s1")
+
+    assert client.delete("/api/sessions/s1").json() == {"ok": True}
+    assert (tmp_path / shared).exists()  # the fork still names it
+
+    client.post("/api/sessions", json={"name": "s1"})
+    reborn = registry.get("s1")
+    assert _db_of(registry, "s1") != shared
+    assert reborn.db is not fork.db
+    assert reborn.db.query("SELECT name FROM sqlite_master WHERE name='notes'") == []
+
+    reborn.db.execute("CREATE TABLE notes (t TEXT)")
+    reborn.db.execute("INSERT INTO notes VALUES (?)", ("mine",))
+    assert fork.db.query("SELECT t FROM notes") == [("the fork's rows",)]
 
 
 def test_fork_fresh_keeps_the_files_and_drops_the_chat(scripted):
@@ -2652,23 +2825,26 @@ def test_error_event_tail_survives_capping(studio):
 
 
 def test_delete_removes_the_whole_universe(studio, tmp_path):
-    """Delete takes the workspace branch, the session's app db, the
-    transcript and the chat record. Its published apps are NOT part of
-    that universe — see the next test."""
+    """Delete takes the workspace branch, the transcript and the chat
+    record. Not the db: it is an external store this session may share
+    with a fork or a published app, so no deletion removes one. Its
+    published apps are NOT part of that universe either — see the next
+    test."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
     session.ws.files.write("keep.txt", "data")
     _seed_app(session.ws)
     client.post("/api/sessions/s1/upload?name=u.txt", content=b"x")
-    assert (tmp_path / "dbs" / "s1.sqlite").exists()
+    db = tmp_path / _db_of(registry, "s1")
+    assert db.exists()
     assert (tmp_path / "events" / "s1.jsonl").exists()
 
     assert client.delete("/api/sessions/s1").json() == {"ok": True}
 
     assert client.get("/api/sessions").json()["sessions"] == []
     assert client.get("/api/sessions/s1/events?wait=0").status_code == 404
-    assert not (tmp_path / "dbs" / "s1.sqlite").exists()
+    assert db.exists()  # nobody names it now; the sweep is what collects it
     assert not (tmp_path / "events" / "s1.jsonl").exists()
 
     # recreating the name is a FRESH universe — the branch really died
