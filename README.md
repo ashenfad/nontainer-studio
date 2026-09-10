@@ -24,8 +24,8 @@ you can rewind, fork, or publish.
   Publishing again adds `v2` under the same URL, and the pointer moves
   back as easily as forward. A version is `/workspace/app` and nothing
   else — the notes, the uploads and the conversation stay behind — and
-  an app owns its `db` from its first version, so a session can be
-  deleted without taking its apps down.
+  an app keeps serving over the session's live `db`, so a session can
+  be deleted without taking its apps down.
 - **Rich replies.** The agent can drop plots, tables, images, and HTML
   into its answers via `ui = {...}` — rendered inline, themed by the
   shell.
@@ -34,7 +34,8 @@ you can rewind, fork, or publish.
   conversation. `inherit` (the rail's ⑂) opens the child exactly where
   the parent stands — same transcript, same memory, its own universe
   from there; `fresh` keeps the files and starts the chat over. The app
-  db is copied either way, since live state has no history.
+  db is not copied either way: it is a handle to an external store,
+  and both universes write to the one file.
 - **Delegate = a fork with an agent on it.** The agent can hand a task
   to a fork of itself and collect the answer a turn or two later. The
   delegate works on a branch of its own, so nothing it writes touches
@@ -170,7 +171,7 @@ Three kinds of state, on purpose:
 | state | durability | restore | fork | publish |
 |---|---|---|---|---|
 | **workspace** (files, cache, cwd) | kvgit branch per session | rewinds | branches (O(1)) | `app/` only — a publication version, frozen and read-only |
-| **app `db`** (live SQLite host object) | file per session | untouched — external state has no history | copied (a delegate's too) | copied ONCE, at the app's first version; the app owns it from then on |
+| **app `db`** (live SQLite host object) | one file under an id of its own, named by every row that shares it | untouched — external state has no history | named, not copied (a delegate's too) | named; every version of the app serves over it |
 | **conversation** | agno's session in the same kvgit branch (+ a jsonl transcript) | rewinds with the files — one `checkout`, not two writes that can disagree; an `edit` trims the visible transcript too | `inherit` or `fresh` | a marker in the transcript you can restore to, or branch from |
 
 An **app** is a nontainer **publication**: one URL, one `db`, and a
@@ -194,14 +195,37 @@ one is current). The capability token, the route and the `db` are the
 studio's, kept in its own manifest and keyed by token; the publication
 is named for the token, which is what ties the two tables together.
 
-The `db` copy is what makes that true of the *state* as well as the
-code. A published app's users write rows; so does the session's live
-preview; sharing one file would mean deleting the session took the app's
-data with it, and every rewind of the conversation happened underneath
-strangers. So the app takes a copy at its first version and owns it —
-and a later version of that app therefore meets whatever schema the
-previous one left (`CREATE TABLE IF NOT EXISTS`, tolerant reads; the
-agent is told).
+The `db` is the exception, and deliberately. It is a handle to an
+external store — the production database a real agent acts on — and
+nobody clones that when they open a branch, so a fork, a delegate and
+a published app all *reference* the file the session was using. A
+published app's users write rows; so does the session's live preview;
+they are the same rows, the way a deployment and its author share one
+database. A later version of the app therefore meets whatever schema
+the previous one left (`CREATE TABLE IF NOT EXISTS`, tolerant reads;
+the agent is told).
+
+Two rules hold the whole of it up.
+
+**A db has an id of its own.** It is minted when a session first needs
+one — `dbs/<hex>.sqlite` — and never spelled from a session name: a
+slug is handed back the moment its session is deleted, while the file
+lives on in a fork's row or a publication's, and a path spelled from a
+name would hand the next holder of that slug somebody else's rows.
+Every manifest row, session and app alike, names the file it opens, so
+nothing anywhere derives a path from a name.
+
+**Deleting a session never deletes a db.** `sweep_dbs()` removes every
+file no session row and no app entry names; it runs when the registry
+opens and can be called outright. That is one place reading the
+manifest, rather than delete, release, delegate cleanup and unpublish
+each counting referrers correctly. Installs from before ids hold files
+named for their sessions and app copies at `dbs/apps/<token>.sqlite`;
+opening the registry writes those paths into the rows and moves
+nothing — a copy already made is a fact, and merging its rows into
+another store is not the studio's to do. Where isolation is genuinely
+wanted, a read-only handle is the seam, and it is not built until a
+case needs it.
 
 agno's cross-session tables — user memories, metrics — sit at
 `store/agno` and never version: a memory spans conversations, so it
@@ -223,10 +247,10 @@ sessions cancel / keep
 A delegate is a fork with an agent on it. `ask` forks this session
 under a name scoped to it (`analyst.sleepy-otter`), and the studio
 assembles that branch the way it assembles any session — same model,
-same tools, same python config, and a copy of the app db, because live
-state versions with nothing and a delegate sent to work on an app over
-an empty db would be testing a different program. Then it runs the task
-as that session's turn, exactly as a human's turn runs.
+same tools, same python config, and the same app db, because a
+delegate works against the store its parent is looking at, the way a
+real subagent does. Then it runs the task as that session's turn,
+exactly as a human's turn runs.
 
 **Nothing comes back on its own.** The delegate's files are on its own
 branch, and the parent takes them itself, in the terminal:

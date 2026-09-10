@@ -3236,6 +3236,16 @@ def test_primer_teaches_when_to_title(studio):
     assert "New session" in sessions_mod.STUDIO_PRIMER
 
 
+def test_the_db_primer_says_the_store_is_shared():
+    """An agent told its db is a copy would trust rows nobody else can
+    see, and would not defend a handler against a concurrent writer."""
+    assert "HANDLE to one external store" in sessions_mod.DB_PRIMER
+    assert "a fork" in sessions_mod.DB_PRIMER
+    assert "delegate" in sessions_mod.DB_PRIMER
+    assert "copies it" not in sessions_mod.DB_PRIMER
+    assert "the published app owns" not in sessions_mod.STUDIO_PRIMER
+
+
 class TitlingAgent(FakeAgent):
     """Calls recommend_title mid-turn, like the real thing.
 
