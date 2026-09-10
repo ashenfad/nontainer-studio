@@ -850,6 +850,7 @@ class Registry:
         )
         self._migrate_published()
         self._migrate_publications()
+        self._reconcile_pointers()
 
     def workspace_for(self, name: str) -> Workspace:
         """The LIVE workspace for a session — the store db's ``open``.
@@ -2381,10 +2382,10 @@ class Registry:
                 self._unpublish_version(pub, version)
                 raise
             if published.current != version:
-                # The row is on disk, so the URL can move to what it
-                # names. Skipped for the version that opened the
-                # lineage, which took the pointer as it landed.
-                self._store.set_current(pub, version)
+                # The row is on disk, so the store can be pointed at
+                # what it names. Skipped for the version that opened
+                # the lineage, which took the pointer as it landed.
+                self._point_store_at(pub, token, version)
             self._drop_snapshots(token)
             return {
                 "token": token,
@@ -2439,8 +2440,12 @@ class Registry:
             # The version by name, not the registry's own `current`:
             # what the rail shows and what the URL serves have to be
             # one answer, and the manifest is where the studio keeps
-            # it. The open re-reads nontainer's registry either way, so
-            # a version unpublished since is refused rather than served.
+            # it. Nothing here reads which version nontainer points at,
+            # which is what makes the manifest the authority — an app
+            # serves the version its row names even where the store's
+            # pointer has been left behind. The open re-reads
+            # nontainer's registry either way, so a version unpublished
+            # since is refused rather than served.
             snapshot = publication.open(
                 version,
                 python=self._python_config(self._app_db(entry)),
@@ -2576,6 +2581,11 @@ class Registry:
         The origin session is untouched — an app was never the session's
         state, only a named copy of it."""
         with self._lock:
+            # nontainer keeps the version it points at while others
+            # remain, so a pointer left behind an earlier publish would
+            # decide the order below is wrong and leave that version
+            # standing.
+            self._reconcile_pointers()
             manifest = self._manifest()
             entry = manifest["apps"].pop(token, None)
             if entry is None:
@@ -2606,6 +2616,12 @@ class Registry:
         the last one — taking an app down is ``unpublish``, and a verb
         that big should be the one the caller named."""
         with self._lock:
+            # The version being deleted is not the one this app serves,
+            # but a pointer left behind an earlier publish may still
+            # name it — and nontainer keeps the version it points at
+            # while others remain, so the delete would drop the row and
+            # nothing else.
+            self._reconcile_pointers()
             manifest = self._manifest()
             entry = manifest["apps"].get(token)
             if entry is None:
@@ -2627,6 +2643,63 @@ class Registry:
             self._unpublish_version(_pub_name(entry, token), version)
             self._save_manifest(manifest)
             return self._app_row(entry)
+
+    def _point_store_at(self, pub: str, token: str, version: str) -> None:
+        """Point nontainer's registry at the version this app's
+        manifest row names.
+
+        Best-effort, because the manifest is the authority for which
+        version an app serves: ``resolve`` opens the version the row
+        names and never asks the registry which is current, so a
+        pointer that will not move leaves the app serving exactly what
+        it is recorded as serving. What the registry's pointer decides
+        is which version ``unpublish`` refuses to drop while others
+        remain — bookkeeping worth a log and worth reconciling later,
+        and never worth failing a publish that has already landed.
+        """
+        try:
+            self._store.set_current(pub, version)
+        except Exception as e:
+            log.warning(
+                "publish: %s serves %s, which the store will not point at: %s",
+                token,
+                version,
+                e,
+            )
+
+    def _reconcile_pointers(self) -> None:
+        """Move every disagreeing store pointer onto the version its
+        app's manifest row names.
+
+        The two are written in that order — the row first, the pointer
+        after — so a pointer that never moved (a raise, a machine that
+        went away in the window) leaves the store naming the version
+        before the one being served. The manifest is the authority, so
+        reconciling is one-directional and idempotent: apps where the
+        two already agree cost a comparison.
+
+        Run at open and before a deletion, which is where a stale
+        pointer bites: nontainer refuses to unpublish the version its
+        registry points at while others remain, so a pointer left
+        behind would keep the version the studio means to delete and
+        drop nothing.
+
+        A row naming a version the store does not hold is the MANIFEST
+        being wrong, and no pointer move fixes that — it is logged and
+        left, since a row a human can still read beats a guess written
+        over it.
+        """
+        with self._lock:
+            apps = self._manifest()["apps"]
+            if not apps:
+                return
+            registry = self._store.publications()
+            for token, entry in apps.items():
+                current = entry.get("current")
+                record = registry.get(_pub_name(entry, token))
+                if not current or record is None or record.current == current:
+                    continue
+                self._point_store_at(_pub_name(entry, token), token, current)
 
     def _unpublish_version(self, pub: str, version: str) -> None:
         """Remove one published version: its tag, its branch, its record
