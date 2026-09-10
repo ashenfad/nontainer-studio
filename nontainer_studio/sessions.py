@@ -515,7 +515,8 @@ STUDIO_PRIMER = (
     "steps over big-bang changes. They may also PUBLISH the app: a "
     "frozen version of `app/` — that tree and nothing else in the "
     "workspace — behind a share URL that keeps serving while you keep "
-    "working, over a `db` the published app owns. Publishing again adds "
+    "working, over the SAME live `db` this session writes to. "
+    "Publishing again adds "
     "a version and the URL moves to it, so build toward states worth "
     "publishing."
 )
@@ -561,10 +562,12 @@ DB_PRIMER = (
     "`db` is a SQLite store for LIVE app state — it does NOT "
     "time-travel with the workspace's commits, so no rewind ever "
     "unwrites it. "
-    "Publishing copies it once into the published app's own db, and "
-    "every later version of that app keeps that db: a new version "
-    "meets whatever schema the last one left, so create tables with "
-    "CREATE TABLE IF NOT EXISTS and read tolerantly. Use it (not "
+    "It is a HANDLE to one external store, not a copy of one: a fork "
+    "and a delegate write to the same db you do, and every published "
+    "version of your app serves over it too. So other writers may be "
+    "at it while you are, and a new version meets whatever schema the "
+    "last one left — create tables with CREATE TABLE IF NOT EXISTS "
+    "and read tolerantly. Use it (not "
     "`cache`) for any "
     "state the app's users mutate. `cache` is versioned workspace "
     "data: it rewinds with the workspace and is NOT published — a "
@@ -2030,14 +2033,13 @@ class Registry:
         """Bring pre-app publications forward, once, at startup.
 
         A publish used to fork an anchor branch and serve it over the
-        session's live db, so the token named a BRANCH and the state was
-        the session's. An app now owns its db and its versions are
-        nontainer publications — so each old entry becomes an app
-        holding one version, ``v1``, published from the anchor branch's
-        head, over a copy of the origin session's db. A copy is the
-        closest state there is: the two were sharing one db, and the
-        app has to stop sharing it here or deleting the session would
-        take the app's state.
+        session's live db, so the token named a BRANCH. An app's
+        versions are nontainer publications now — so each old entry
+        becomes an app holding one version, ``v1``, published from the
+        anchor branch's head, over the very db it was already serving
+        over: the app's row names the origin session's file, which is
+        what the anchor shape did and what keeps that file from being
+        swept once the session goes.
 
         An entry whose anchor branch is gone is dropped. A token that
         names no state serves nothing, and leaving it in the manifest

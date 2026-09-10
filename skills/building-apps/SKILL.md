@@ -172,6 +172,13 @@ def get(req):
   published: a version is the `app/` tree and its rows, so a published
   handler finds an empty cache. A GET cannot WRITE `cache` either
   (read-only; writing 500s).
+- `db` is the opposite of `cache`: it is not published because it is
+  not carried at all. A published app serves over the SAME live db
+  this session writes to, and so does every later version of it — a
+  row you write in the preview is there for the app's users, theirs
+  are there for you, and a new version meets whatever schema the last
+  one left. `CREATE TABLE IF NOT EXISTS` and tolerant reads are how a
+  handler survives that.
 - Everything a published app RUNS from lives under app/. Publishing
   takes that tree and nothing else, so a module anywhere else imports
   fine in the preview and raises ImportError on every request once the
