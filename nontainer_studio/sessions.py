@@ -1326,36 +1326,49 @@ class Registry:
             # starting empty, and mints a db of its own.
             rel = self._db_of(name, manifest) or self._mint_db_path(manifest)
             db = self._db_handle(rel)
-            ws = self._store.open(
-                name,
-                python=self._python_config(db),
-                **_ws_kwargs(),
-            )
-            # Published before anything can ask: _build_agent constructs
-            # the toolkit, which checks that the store db owns this
-            # workspace, and the db answers by calling workspace_for.
-            self._opening[name] = ws
             try:
-                # <root>/ui exists from the start: agents predictably
-                # savefig into it directly (instead of assigning objects
-                # to `ui`), and VFS open honors real-fs semantics — no
-                # parent, no write. Forgive the near-miss.
-                if not ws.files.fs.isdir(f"{ws.root}/ui"):
-                    ws.files.fs.makedirs(f"{ws.root}/ui", exist_ok=True)
-                    ws.commit(info={"tool": "init"})
-                # Seed skills once, at session CREATION — after that they
-                # are the session's own versioned state (agents may edit
-                # or add them; a reseed would clobber that).
-                if not ws.files.fs.isdir(f"{ws.root}/skills"):
-                    self._seed_skills(ws)
-                session = self._assemble(name, ws, db, model)
-                loaded = self._load_events(session.log_path)
-                session.events.extend(loaded)
-                session.next_seq = (loaded[-1]["seq"] + 1) if loaded else 0
-                session.flush_idx = len(session.events)  # loaded = on disk
-                self._sessions[name] = session
-            finally:
-                self._opening.pop(name, None)
+                ws = self._store.open(
+                    name,
+                    python=self._python_config(db),
+                    **_ws_kwargs(),
+                )
+                # Published before anything can ask: _build_agent
+                # constructs the toolkit, which checks that the store db
+                # owns this workspace, and the db answers by calling
+                # workspace_for.
+                self._opening[name] = ws
+                try:
+                    # <root>/ui exists from the start: agents predictably
+                    # savefig into it directly (instead of assigning
+                    # objects to `ui`), and VFS open honors real-fs
+                    # semantics — no parent, no write. Forgive the
+                    # near-miss.
+                    if not ws.files.fs.isdir(f"{ws.root}/ui"):
+                        ws.files.fs.makedirs(f"{ws.root}/ui", exist_ok=True)
+                        ws.commit(info={"tool": "init"})
+                    # Seed skills once, at session CREATION — after that
+                    # they are the session's own versioned state (agents
+                    # may edit or add them; a reseed would clobber that).
+                    if not ws.files.fs.isdir(f"{ws.root}/skills"):
+                        self._seed_skills(ws)
+                    session = self._assemble(name, ws, db, model)
+                    loaded = self._load_events(session.log_path)
+                    session.events.extend(loaded)
+                    session.next_seq = (loaded[-1]["seq"] + 1) if loaded else 0
+                    session.flush_idx = len(session.events)  # loaded = on disk
+                    self._sessions[name] = session
+                finally:
+                    self._opening.pop(name, None)
+            except BaseException:
+                # A store that will not build, a guest image that will
+                # not come up, a bad skill: the connection minted on the
+                # way in must not outlive the attempt. A handle left in
+                # the map holds the file open until the process ends AND
+                # keeps the sweep off it, so one failed open would leak
+                # a store nothing can ever reach. No-ops where the file
+                # is a parent's and the parent is live.
+                self._forget_db(rel)
+                raise
             self._record(name, model, db=rel)
             return session
 

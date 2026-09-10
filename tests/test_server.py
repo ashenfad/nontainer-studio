@@ -5,6 +5,7 @@ lifecycle, preview/publish, time travel — exercised with a fake agent
 import json
 import re
 import shutil
+import sqlite3
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -2941,6 +2942,34 @@ def test_the_sweep_runs_when_the_registry_opens(studio, tmp_path):
         assert (tmp_path / kept).exists()
     finally:
         reborn.close()
+
+
+def test_an_open_that_fails_leaves_no_handle_behind(studio, tmp_path):
+    """A failed open leaves nothing: not the manifest reservation, and
+    not the connection it minted on the way. A handle left in the map
+    holds the file open for the life of the process AND stops the
+    sweep collecting it — the two together make one failed click a
+    permanent leak."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "keeper"})
+
+    made = []
+    handle = registry._db_handle
+    registry._db_handle = lambda rel: made.append((rel, handle(rel))) or made[-1][1]
+    registry._assemble = lambda *a, **k: 1 / 0
+    try:
+        with pytest.raises(ZeroDivisionError):
+            registry.open("doomed")
+    finally:
+        del registry._db_handle, registry._assemble
+
+    rel, db = made[-1]
+    assert rel not in registry._dbs
+    with pytest.raises(sqlite3.ProgrammingError):  # the connection went too
+        db.query("SELECT 1")
+    assert "doomed" not in registry.known()
+    # and the file it minted is an orphan the sweep can take
+    assert registry.sweep_dbs() == [rel]
 
 
 def test_the_sweep_refuses_a_manifest_it_cannot_read(studio, tmp_path, caplog):
