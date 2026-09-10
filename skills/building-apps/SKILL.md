@@ -175,9 +175,9 @@ def get(req):
 - Everything a published app RUNS from lives under app/. Publishing
   takes that tree and nothing else, so a module anywhere else imports
   fine in the preview and raises ImportError on every request once the
-  app is published. The run_python tool description tells you to put
-  shared modules in /workspace/helpers; for an app, don't — and move
-  any you already have, since nothing moves them for you.
+  app is published. /workspace/helpers is for code no handler imports;
+  a module in there that a handler already imports has to move under
+  app/, since nothing moves it for you.
 - Shared backend code goes in app/api/_shared.py (any `_`-prefixed
   name there), imported QUALIFIED from the workspace root:
   `from app.api._shared import fn`. A bare `import _shared` will not
