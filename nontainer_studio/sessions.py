@@ -1915,10 +1915,14 @@ class Registry:
                 ref = str(published.version("v1").ref)
                 commit = ws.head
                 tree = _head_tree(ws)
-        except WorkspaceError as e:
+        except (ValueError, WorkspaceError) as e:
             # An anchor holding no `app/` tree is an entry whose URL
             # could only ever have 404ed; it is dropped like a missing
             # branch rather than recorded as an app that serves nothing.
+            # nontainer calls that one the caller's mistake (a
+            # `ValueError`) and a store it cannot publish from its own
+            # (a `WorkspaceError`), and neither is worth failing a
+            # startup migration over: the entry is legacy either way.
             log.warning("publish: %s cannot be published from %r: %s", token, branch, e)
         finally:
             ws.close()
@@ -2187,27 +2191,19 @@ class Registry:
         counts only ``v``-numbers, so studio names every version
         explicitly rather than letting the store pick one.
 
-        ``/`` is refused on top of kvgit's own rule (non-empty, no
-        ``%``) because a version is half of ``<name>/<version>``, the
-        tag a publication carries — a slash in the name would make that
-        say something else. The already-taken check is studio's own
-        even though nontainer refuses a reused version too: it refuses
-        with a ``WorkspaceError``, which the route would answer 500 to
-        rather than 400."""
+        A name the caller asked for is passed on as typed (bar the
+        whitespace a text field collects). nontainer refuses one a tag
+        cannot carry and one this lineage already holds, both with a
+        ``ValueError`` the route answers 400 to, and its grammar is the
+        stricter of the two — so a second spelling of the rule here
+        could only ever disagree with the one that decides."""
         taken = set((entry or {}).get("versions", {}))
         if asked is None:
             n = len(taken) + 1
             while f"v{n}" in taken:
                 n += 1
             return f"v{n}"
-        name = asked.strip()
-        if not name or "/" in name or "%" in name:
-            raise ValueError(
-                f"a version name must be non-empty and free of '/' and '%': {asked!r}"
-            )
-        if name in taken:
-            raise ValueError(f"this app already has a version {name!r}")
-        return name
+        return asked.strip()
 
     @staticmethod
     def _last_published(entry: dict) -> float:
@@ -2306,7 +2302,6 @@ class Registry:
             version = self._version_name(version, entry)
             title = self.title_of(name, manifest)
             pub = _pub_name(entry, token)
-            serving = entry.get("current")
             # Publishing names a commit and refuses staged work, so the
             # session's is landed here first — what the version holds
             # is then what the human was looking at. Safe under the
@@ -2321,23 +2316,28 @@ class Registry:
             # cannot pick the same version number. The studio is one
             # process and holds `_lock` across this whole
             # read-decide-write, so there is nothing to add here.
-            try:
-                published = self._store.publish(
-                    session.ws,
-                    pub,
-                    version=version,
-                    # Studio's own provenance. `tool`, `name`, `version`
-                    # and `published_from` are nontainer's to write into
-                    # the commit and are refused here rather than
-                    # overridden, which is why `version` is not among them.
-                    info={"token": token, "session": name, "title": title},
-                )
-            except WorkspaceError as e:
-                # A session with nothing under `app/` is the everyday
-                # one: there is no app here yet. The refusal is the
-                # caller's to fix, so it leaves as a ValueError and the
-                # route answers 400 rather than 500.
-                raise ValueError(str(e)) from e
+            #
+            # The version lands without the pointer, which then moves
+            # only once the manifest row naming it is on disk: every
+            # state in between still serves what the URL served before.
+            # nontainer points a lineage's FIRST version at itself
+            # whatever this says, because a publication must point
+            # somewhere. A caller's mistake here — a name a tag cannot
+            # carry, one this lineage already holds, a session with
+            # nothing under `app/` — is a ValueError and leaves as one,
+            # so the route answers 400; a WorkspaceError is the store's
+            # own state and keeps its 500.
+            published = self._store.publish(
+                session.ws,
+                pub,
+                version=version,
+                current=False,
+                # Studio's own provenance. `tool`, `name`, `version`
+                # and `published_from` are nontainer's to write into
+                # the commit and are refused here rather than
+                # overridden, which is why `version` is not among them.
+                info={"token": token, "session": name, "title": title},
+            )
             try:
                 if not entry:
                     self._app_db_path(token).parent.mkdir(parents=True, exist_ok=True)
@@ -2375,13 +2375,16 @@ class Registry:
             except BaseException:
                 # A version with no manifest entry is a URL nothing can
                 # reach and a branch nothing will ever collect, so it
-                # goes back down. The pointer moves back first: a
-                # publication refuses to drop the version it points at
-                # while others remain, and publishing pointed it here.
-                if serving and serving != version:
-                    self._store.set_current(pub, serving)
+                # goes back down. Nothing points at it — a publication
+                # refuses to drop the version it points at while others
+                # remain, and this one never took the pointer.
                 self._unpublish_version(pub, version)
                 raise
+            if published.current != version:
+                # The row is on disk, so the URL can move to what it
+                # names. Skipped for the version that opened the
+                # lineage, which took the pointer as it landed.
+                self._store.set_current(pub, version)
             self._drop_snapshots(token)
             return {
                 "token": token,
