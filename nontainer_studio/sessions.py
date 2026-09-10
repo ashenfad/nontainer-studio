@@ -1006,8 +1006,38 @@ class Registry:
             data = json.loads(self._manifest_path().read_text())
         except Exception:
             data = {}
+        return self._as_manifest(data)
+
+    def _manifest_strict(self) -> dict | None:
+        """:meth:`_manifest`, but None when the file is there and could
+        not be read or understood.
+
+        ``_manifest`` turns any fault into an empty manifest, which is
+        the right answer for every reader that would otherwise fail a
+        request over a transient one. It is the wrong answer for a
+        caller that DELETES what the manifest does not mention, and
+        :meth:`sweep_dbs` is the only such caller.
+
+        A file that is simply absent is not a fault: that is a store
+        nobody has used yet, and it reads as the empty manifest it is.
+        """
+        try:
+            data = json.loads(self._manifest_path().read_text())
+        except FileNotFoundError:
+            data = {}
+        except Exception:
+            return None
+        if not isinstance(data, (dict, list)):
+            return None
+        return self._as_manifest(data)
+
+    @staticmethod
+    def _as_manifest(data: Any) -> dict:
+        """Whatever the file held, in the manifest's shape."""
         if isinstance(data, list):  # v1: just session names
             data = {"sessions": data}
+        if not isinstance(data, dict):
+            data = {}
         sessions = data.get("sessions") or {}
         if isinstance(sessions, list):  # a list of names, no db written down
             sessions = {name: {} for name in sessions}
@@ -1164,16 +1194,42 @@ class Registry:
         A file this registry still holds a handle to is logged and left
         for the next sweep. Unlinking under an open connection fails
         nothing: the writes simply go nowhere.
+
+        This is the one caller that reads the manifest STRICTLY.
+        Everywhere else an unreadable or half-written file is answered
+        with an empty one, because a 404 on one session beats a 500 on
+        the whole studio; here that answer would mean "no row names
+        anything" and take every store on the install. So a read that
+        did not come off refuses, and so does a manifest that parses
+        but names nothing while db files exist — a store that emptied
+        itself and a truncated write look identical from here, and only
+        one of them is worth acting on.
         """
         with self._lock:
-            manifest = self._manifest()
+            root = self._store.path
+            files = sorted(root.glob("dbs/*.sqlite")) + sorted(
+                root.glob("dbs/apps/*.sqlite")
+            )
+            manifest = self._manifest_strict()
+            if manifest is None:
+                log.warning(
+                    "dbs: sweep skipped — %s could not be read; leaving %d file(s)",
+                    self._manifest_path().name,
+                    len(files),
+                )
+                return []
             named = {row.get("db") for row in manifest["sessions"].values()}
             named |= {entry.get("db") for entry in manifest["apps"].values()}
-            root = self._store.path
+            if files and not named:
+                log.warning(
+                    "dbs: sweep skipped — the manifest names no db while %d "
+                    "file(s) exist; leaving %s",
+                    len(files),
+                    ", ".join(f.relative_to(root).as_posix() for f in files),
+                )
+                return []
             swept = []
-            for path in sorted(root.glob("dbs/*.sqlite")) + sorted(
-                root.glob("dbs/apps/*.sqlite")
-            ):
+            for path in files:
                 rel = path.relative_to(root).as_posix()
                 if rel in named:
                     continue
