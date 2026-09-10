@@ -98,7 +98,20 @@ dependencies = [
     # question outright — a publication belongs to no session, so
     # nothing has to lend it a branch — and `Publication.open(version,
     # python=...)` is where the app's live `db` goes in.
-    "nontainer[agno,apps]>=0.6.2",
+    #
+    # 0.6.3 sorts publish's errors by whose mistake they are: a reused
+    # version name, a `paths` that matches nothing, and a version
+    # `set_current`/`unpublish`/`open` cannot find are `ValueError`,
+    # so the publish route answers 400 without the studio re-raising
+    # by hand, while `WorkspaceError` stays the store's own state and
+    # keeps its 500. `publish(..., current=False)` records a version
+    # without taking the pointer, so a version whose manifest row
+    # fails goes back down with nothing to move back first, and a
+    # publish that died before its record is adopted on the retry
+    # rather than blocking the name. Its python tool description and
+    # apps notes also send shared handler code to `app/api/_<name>.py`
+    # — what the app-building skill has been contradicting them to say.
+    "nontainer[agno,apps]>=0.6.3",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",
