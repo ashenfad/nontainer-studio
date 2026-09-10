@@ -2907,6 +2907,7 @@ def test_the_sweep_leaves_a_file_it_still_holds_open(studio, tmp_path, caplog):
     logged and left for the next sweep, which takes it once the
     connection is closed."""
     client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
     stray = "dbs/deadbeefdeadbeef.sqlite"
     with registry._lock:
         registry._db_handle(stray).execute("CREATE TABLE t (v TEXT)")
@@ -2926,17 +2927,84 @@ def test_the_sweep_runs_when_the_registry_opens(studio, tmp_path):
     """Every restart tidies up: the files a previous run's deletions
     left behind are collected before anything is served."""
     client, registry = studio
-    client.post("/api/sessions", json={"name": "s1"})
-    orphan = _db_of(registry, "s1")
-    assert client.delete("/api/sessions/s1").json() == {"ok": True}
+    for name in ("keeper", "doomed"):
+        client.post("/api/sessions", json={"name": name})
+    orphan = _db_of(registry, "doomed")
+    kept = _db_of(registry, "keeper")
+    assert client.delete("/api/sessions/doomed").json() == {"ok": True}
     assert (tmp_path / orphan).exists()
     registry.close()
 
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     try:
         assert not (tmp_path / orphan).exists()
+        assert (tmp_path / kept).exists()
     finally:
         reborn.close()
+
+
+def test_the_sweep_refuses_a_manifest_it_cannot_read(studio, tmp_path, caplog):
+    """Destructive cleanup never runs on a reference set it could not
+    load. Every other reader answers an unparseable manifest with an
+    empty one — a page that 404s beats a page that 500s — but for the
+    one caller that DELETES what the manifest does not mention, an
+    empty answer means every store on the install."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    db = tmp_path / _db_of(registry, "s1")
+    registry.release("s1")  # no handle held: only the manifest protects it
+    (tmp_path / "sessions.json").write_text("{not json at all")
+
+    with caplog.at_level("WARNING", logger="nontainer_studio.sessions"):
+        assert registry.sweep_dbs() == []
+    assert "sessions.json" in "\n".join(caplog.messages)
+    assert db.exists()
+
+
+def test_the_sweep_refuses_a_manifest_it_cannot_open(studio, tmp_path, caplog):
+    """Unreadable is the same answer as unparseable: a fault on the
+    read is not a store with nothing in it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    db = tmp_path / _db_of(registry, "s1")
+    registry.release("s1")  # no handle held: only the manifest protects it
+    path = tmp_path / "sessions.json"
+    path.chmod(0o000)
+    try:
+        with caplog.at_level("WARNING", logger="nontainer_studio.sessions"):
+            assert registry.sweep_dbs() == []
+    finally:
+        path.chmod(0o644)
+    assert db.exists()
+
+
+def test_the_sweep_refuses_when_the_manifest_names_nothing(studio, tmp_path, caplog):
+    """A manifest that parses but names no session and no app, beside
+    db files that exist, is far more likely a truncated write than a
+    store that emptied itself — so the sweep says what it would have
+    taken and takes none of it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    rel = _db_of(registry, "s1")
+    registry.release("s1")  # no handle held: only the manifest protects it
+    (tmp_path / "sessions.json").write_text("{}")
+
+    with caplog.at_level("WARNING", logger="nontainer_studio.sessions"):
+        assert registry.sweep_dbs() == []
+    assert rel in "\n".join(caplog.messages)  # what it would have taken
+    assert (tmp_path / rel).exists()
+
+
+def test_the_sweep_on_a_brand_new_store_takes_nothing(tmp_path):
+    """No manifest and no db files is a store nobody has used yet, not
+    a fault: the sweep has nothing to read and nothing to collect."""
+    fresh = tmp_path / "fresh"
+    registry = sessions_mod.Registry(model_factory=lambda *a: None, store=fresh)
+    try:
+        assert not (fresh / "sessions.json").exists()
+        assert registry.sweep_dbs() == []
+    finally:
+        registry.close()
 
 
 def test_delete_busy_409s_and_unknown_404s(studio):
