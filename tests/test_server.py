@@ -723,9 +723,13 @@ def test_a_published_app_is_readable_from_a_sandboxed_iframe(studio):
     assert missing.headers["access-control-allow-origin"] == "*"
 
 
-def test_make_current_repoints_the_url(studio):
+def test_make_current_repoints_the_url(studio, tmp_path):
     """The URL belongs to the app. Rolling back is a pointer move — no
-    republish, no new token, the same link in someone's inbox."""
+    republish, no new token, the same link in someone's inbox.
+
+    Two pointers have to agree on where it lands: the manifest row the
+    studio serves from, and nontainer's own registry, which decides
+    which version `unpublish` refuses to drop."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
@@ -737,12 +741,14 @@ def test_make_current_repoints_the_url(studio):
     session.ws.commit()
     v2 = _publish(client, "s1")
     assert client.get(pub["url"]).text == "<h1>two</h1>"
+    assert _registry(tmp_path)[pub["token"]]["current"] == "v2"
 
     app = client.post(
         f"/api/apps/{pub['token']}/current", json={"version": "v1"}
     ).json()
     assert app["current"] == "v1"
     assert client.get(pub["url"]).text == "<h1>one</h1>"
+    assert _registry(tmp_path)[pub["token"]]["current"] == "v1"
     # and forward again
     client.post(f"/api/apps/{pub['token']}/current", json={"version": "v2"})
     assert client.get(v2["url"]).text == "<h1>two</h1>"
@@ -815,7 +821,11 @@ def test_deleting_the_origin_session_leaves_the_app_served(studio, tmp_path):
 def test_app_selection_and_version_names(studio):
     """Publishing again extends the session's most recent app; `app:
     "new"` starts another; a name may be given, and must be a name a
-    tag can carry and one this app doesn't already hold."""
+    tag can carry and one this app doesn't already hold.
+
+    The name rules are the store's — it raises the kind of error a
+    caller's mistake gets, so the refusal reaches the client as a 400
+    and not as a fault."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     _seed_app(registry.get("s1").ws)
@@ -850,8 +860,10 @@ def test_app_selection_and_version_names(studio):
 def test_a_version_whose_record_fails_is_taken_back_down(studio, tmp_path):
     """A published version with no manifest row is a URL nothing can
     reach and a branch nothing will ever collect. Taking it back down
-    means moving the pointer back first, since publishing had already
-    moved it onto the version being removed."""
+    is a plain removal and never a pointer move: a version after the
+    first lands with `current=False` and the URL moves to it only once
+    the row naming it is on disk, so the version being removed is one
+    nothing was pointing at."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
@@ -862,7 +874,10 @@ def test_a_version_whose_record_fails_is_taken_back_down(studio, tmp_path):
     def boom(*a, **k):
         raise RuntimeError("the record could not be written")
 
+    moves = []
     original = sessions_mod._head_tree
+    set_current = registry._store.set_current
+    registry._store.set_current = lambda *a: moves.append(a) or set_current(*a)
     sessions_mod._head_tree = boom
     try:
         session.ws.files.write("/workspace/app/index.html", "<h1>v2</h1>")
@@ -870,7 +885,9 @@ def test_a_version_whose_record_fails_is_taken_back_down(studio, tmp_path):
             registry.publish("s1")
     finally:
         sessions_mod._head_tree = original
+        registry._store.set_current = set_current
 
+    assert moves == []  # nothing to move back, so nothing moved
     record = _registry(tmp_path)[token]
     assert sorted(record["versions"]) == ["v1"] and record["current"] == "v1"
     app = client.get("/api/apps").json()["apps"][0]
