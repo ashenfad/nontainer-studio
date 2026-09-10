@@ -2972,6 +2972,57 @@ def test_an_open_that_fails_leaves_no_handle_behind(studio, tmp_path):
     assert registry.sweep_dbs() == [rel]
 
 
+def test_an_open_that_fails_closes_the_workspace_it_opened(studio, tmp_path):
+    """The other half of leaving nothing behind: an open workspace pins
+    its branch, so a session that never came up would hold one for the
+    life of the process — and every verb that removes a branch closes
+    the session first, which is a step nothing can take for a session
+    that does not exist."""
+    client, registry = studio
+    closed = []
+    store_open = registry._store.open
+
+    def spy(name, **kw):
+        ws = store_open(name, **kw)
+        ws.close = lambda close=ws.close: (closed.append(name), close())[1]
+        return ws
+
+    registry._store.open = spy
+    registry._assemble = lambda *a, **k: 1 / 0
+    try:
+        with pytest.raises(ZeroDivisionError):
+            registry.open("doomed")
+    finally:
+        registry._store.open = store_open
+        del registry._assemble
+
+    assert closed == ["doomed"]
+    # nothing is holding the branch, so the name opens for real
+    assert registry.open("doomed").ws.files.fs.isdir("/workspace/skills")
+
+
+def test_an_open_whose_cleanup_fails_still_raises_the_real_error(studio):
+    """A close that throws on the way out must not become the error the
+    caller sees: the reason the open failed is the one worth reading,
+    and a masked one sends the reader after the wrong fault."""
+    client, registry = studio
+    store_open = registry._store.open
+
+    def spy(name, **kw):
+        ws = store_open(name, **kw)
+        ws.close = lambda: (_ for _ in ()).throw(RuntimeError("close blew up"))
+        return ws
+
+    registry._store.open = spy
+    registry._assemble = lambda *a, **k: 1 / 0
+    try:
+        with pytest.raises(ZeroDivisionError):
+            registry.open("doomed")
+    finally:
+        registry._store.open = store_open
+        del registry._assemble
+
+
 def test_the_sweep_refuses_a_manifest_it_cannot_read(studio, tmp_path, caplog):
     """Destructive cleanup never runs on a reference set it could not
     load. Every other reader answers an unparseable manifest with an

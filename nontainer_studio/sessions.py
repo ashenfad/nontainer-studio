@@ -1326,6 +1326,7 @@ class Registry:
             # starting empty, and mints a db of its own.
             rel = self._db_of(name, manifest) or self._mint_db_path(manifest)
             db = self._db_handle(rel)
+            ws = None
             try:
                 ws = self._store.open(
                     name,
@@ -1361,12 +1362,23 @@ class Registry:
                     self._opening.pop(name, None)
             except BaseException:
                 # A store that will not build, a guest image that will
-                # not come up, a bad skill: the connection minted on the
-                # way in must not outlive the attempt. A handle left in
-                # the map holds the file open until the process ends AND
-                # keeps the sweep off it, so one failed open would leak
-                # a store nothing can ever reach. No-ops where the file
-                # is a parent's and the parent is live.
+                # not come up, a bad skill: nothing the attempt opened
+                # may outlive it. An open workspace pins its branch, and
+                # every verb that removes one closes the session first —
+                # a step nobody can take for a session that does not
+                # exist. A handle left in the map holds its file open
+                # until the process ends AND keeps the sweep off it, so
+                # one failed open would leak a store nothing can reach.
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        # The reason the open failed is the one worth
+                        # reading; a cleanup that throws on top of it
+                        # sends the reader after the wrong fault.
+                        log.warning("open %s: closing the workspace failed", name)
+                # No-ops where the file is a parent's and the parent is
+                # live, which is what fork and open_delegate hand it.
                 self._forget_db(rel)
                 raise
             self._record(name, model, db=rel)
