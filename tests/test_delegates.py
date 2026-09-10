@@ -36,6 +36,11 @@ def registry(tmp_path):
     reg.close()
 
 
+def _db_of(registry, name: str) -> str:
+    """Where a session's db is: the manifest row says so."""
+    return registry._manifest()["sessions"][name]["db"]
+
+
 def _delegate(registry, parent, task, **kw):
     """Ask, wait, answer — the blocking form, so a test is a straight line."""
     runner = delegates.StudioRunner(registry, parent.name, delegates.DELEGATE_TURNS)
@@ -77,9 +82,11 @@ def test_the_task_arrives_with_a_provenance_header(registry):
     assert asked["text"].endswith(WRITE_A_NOTE)
 
 
-def test_a_delegate_reads_the_parents_app_db(registry):
-    """Live app state is copied in, not shared: the fork carries files
-    and cache, and the db versions with neither."""
+def test_a_delegate_and_its_parent_share_one_db(registry):
+    """`db` is a handle to an external store, and forking a session is
+    not forking the store: the delegate's row names the file its
+    parent's row names. So what the delegate's own code writes is
+    there for the parent's next turn to read."""
     parent = registry.open("boss")
     parent.db.execute("CREATE TABLE t (n INT)")
     parent.db.execute("INSERT INTO t VALUES (7)")
@@ -87,15 +94,32 @@ def test_a_delegate_reads_the_parents_app_db(registry):
     answer = _delegate(
         registry,
         parent,
-        '!tool run_python {"code": "print(db.query(\'SELECT n FROM t\'))"}\n'
-        "!text Read it.",
+        '!tool run_python {"code": "db.execute(\'INSERT INTO t VALUES (9)\')"}\n'
+        "!text Wrote a row.",
     )
-    child = registry.open(answer.branch)
-    assert child.db.query("SELECT n FROM t") == [(7,)]
+    assert answer.status == "answered"
+    # the delegate's write, read by the session that asked for it
+    assert parent.db.query("SELECT n FROM t ORDER BY n") == [(7,), (9,)]
 
-    # a copy: the delegate's rows stay on its side
-    child.db.execute("INSERT INTO t VALUES (9)")
-    assert parent.db.query("SELECT n FROM t") == [(7,)]
+    child = registry.open(answer.branch)
+    assert child.db is parent.db  # one handle, so the writes queue
+    assert child.db.query("SELECT n FROM t ORDER BY n") == [(7,), (9,)]
+    rows = registry._manifest()["sessions"]
+    assert rows[answer.branch]["db"] == rows["boss"]["db"]
+
+
+def test_releasing_a_delegate_leaves_the_parents_db_open(registry):
+    """`release` drops a finished delegate's handles. The db handle is
+    not one of them: the file is the parent's, and closing the
+    connection the parent is mid-conversation with would be a delegate
+    finishing its work by breaking the session that asked."""
+    parent = registry.open("boss")
+    parent.db.execute("CREATE TABLE t (n INT)")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+    assert registry.get(answer.branch) is None  # released when it answered
+
+    parent.db.execute("INSERT INTO t VALUES (1)")
+    assert parent.db.query("SELECT n FROM t") == [(1,)]
 
 
 def test_the_runner_releases_the_delegate_when_it_answers(registry):
@@ -164,7 +188,7 @@ def test_a_dotted_session_is_not_owned_by_the_session_it_is_named_under(registry
 
     assert [row["name"] for row in registry.list()] == ["foo.notes"]
     assert "foo.notes" in registry._store.sessions()
-    assert (registry._store.path / "dbs" / "foo.notes.sqlite").exists()
+    assert (registry._store.path / _db_of(registry, "foo.notes")).exists()
     assert (registry._store.path / "events" / "foo.notes.jsonl").exists()
 
 
@@ -190,13 +214,16 @@ def test_deleting_a_session_takes_its_delegates_with_it(registry):
     parent = registry.open("boss")
     answer = _delegate(registry, parent, WRITE_A_NOTE)
     child = answer.branch
+    db = registry._store.path / _db_of(registry, "boss")
 
     registry.delete(parent)
 
     assert child not in registry.known()
     assert child not in registry._store.sessions()
-    assert not (registry._store.path / "dbs" / f"{child}.sqlite").exists()
     assert not (registry._store.path / "events" / f"{child}.jsonl").exists()
+    # the delegate never had a db of its own to take: it named its
+    # parent's, and no deletion removes a db file
+    assert db.exists()
     # the ownership record goes with the branch it described
     assert registry._manifest()["delegates"] == {}
 
