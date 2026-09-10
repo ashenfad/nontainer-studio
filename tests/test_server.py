@@ -897,6 +897,115 @@ def test_a_version_whose_record_fails_is_taken_back_down(studio, tmp_path):
     assert _publish(client, "s1")["version"] == "v2"
 
 
+def _publish_v2_leaving_the_pointer_behind(client, registry, session) -> dict:
+    """Two versions, with the store's pointer stuck on the first: what
+    a `set_current` that raised after the manifest row landed leaves
+    behind. Returns the app, as the publish route says it."""
+    session.ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    session.ws.files.fs.write("/workspace/app/index.html", b"<h1>one</h1>")
+    session.ws.commit()
+    pub = _publish(client, session.name)
+    session.ws.files.fs.write("/workspace/app/index.html", b"<h1>two</h1>")
+    session.ws.commit()
+
+    def refuse(*a):
+        raise RuntimeError("the pointer would not move")
+
+    original = registry._store.set_current
+    registry._store.set_current = refuse
+    try:
+        assert _publish(client, session.name)["version"] == "v2"
+    finally:
+        registry._store.set_current = original
+    return pub
+
+
+def test_a_publish_outlives_a_pointer_the_store_would_not_move(studio, tmp_path):
+    """Which version an app serves is the MANIFEST's answer, and the
+    store's pointer follows it.
+
+    The row lands first and the store is pointed at it after, so a
+    `set_current` that raises — or a machine that goes away in the
+    window — leaves a version that is published, recorded and served
+    while the store still names the one before it. Failing the request
+    there would report a publish that happened as one that did not,
+    and a retry would collide with the version already recorded. So it
+    is logged, and the next registry to open the store reconciles the
+    pointer with the manifest."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    pub = _publish_v2_leaving_the_pointer_behind(client, registry, session)
+    token = pub["token"]
+
+    # the publish stands: recorded, and serving off the new version
+    app = client.get("/api/apps").json()["apps"][0]
+    assert app["current"] == "v2"
+    assert [v["name"] for v in app["versions"]] == ["v1", "v2"]
+    assert client.get(pub["url"]).text == "<h1>two</h1>"
+    assert _registry(tmp_path)[token]["current"] == "v1"  # the store is behind
+
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    reborn._build_agent = lambda *a, **k: FakeAgent()
+    try:
+        assert _registry(tmp_path)[token]["current"] == "v2"
+        # ...which is what lets v1 go: the store refuses to drop the
+        # version it points at while others remain
+        assert [v["name"] for v in reborn.delete_version(token, "v1")["versions"]] == [
+            "v2"
+        ]
+        assert sorted(_registry(tmp_path)[token]["versions"]) == ["v2"]
+    finally:
+        reborn.close()
+
+
+def test_taking_an_app_down_reconciles_the_pointer_first(studio, tmp_path):
+    """`unpublish` removes an app's versions in an order the MANIFEST
+    decides — the served one last, since the store refuses to drop the
+    version it points at while others remain. A pointer left behind an
+    earlier publish would make that order the wrong one and strand the
+    version it names, so the pointer is reconciled before the first
+    removal rather than at the next restart."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    token = _publish_v2_leaving_the_pointer_behind(client, registry, session)["token"]
+    assert _registry(tmp_path)[token]["current"] == "v1"
+
+    assert client.delete(f"/api/apps/{token}").json() == {"ok": True}
+    # nothing of the app is left on the store, in either version
+    assert token not in _registry(tmp_path)
+    assert not any(t.startswith(f"@store/{token}/") for t in _store_tags(tmp_path))
+
+
+def test_a_manifest_naming_a_version_the_store_lost_is_left_alone(
+    studio, tmp_path, caplog
+):
+    """Reconciling moves the store's pointer to the version the
+    manifest names. When the store does not hold that version at all,
+    the manifest is the half that is wrong and no pointer move fixes
+    it, so it is logged and left: a row a human can still read beats a
+    guess written over it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+    pub = _publish(client, "s1")
+    token = pub["token"]
+    manifest = registry._manifest()
+    manifest["apps"][token]["current"] = "v9"
+    registry._save_manifest(manifest)
+
+    with caplog.at_level("WARNING", logger="nontainer_studio.sessions"):
+        reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+        reborn._build_agent = lambda *a, **k: FakeAgent()
+        try:
+            assert reborn._manifest()["apps"][token]["current"] == "v9"
+            assert _registry(tmp_path)[token]["current"] == "v1"
+        finally:
+            reborn.close()
+    assert any("v9" in m for m in caplog.messages)
+
+
 def test_publishing_a_session_with_no_app_is_refused(studio):
     """A version IS the `app/` tree, so a session that has not built one
     has no version to make — and the refusal is the caller's to fix,
