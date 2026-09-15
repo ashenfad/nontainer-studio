@@ -544,18 +544,17 @@ NO_VERSIONING_PRIMER = (
 )
 
 
-def _versioning_primer(ws: Workspace) -> str:
+def _versioning_primer(wsgit: bool) -> str:
     """The delegation half of the primer, under ws-git's own gate.
 
-    ``register_wsgit`` is a no-op where the executor can neither run
-    terminal commands nor ferry the portable ``ws-*`` verbs to a guest,
-    and an agent told to run a spelling that does not exist spends a
-    call discovering that.
+    ``wsgit`` is what ``register_wsgit`` answered when the session was
+    wired: whether the agent can type the verb here. Asking the function
+    that did the wiring, rather than re-reading the executor flags it
+    read, is what keeps the primer from teaching a spelling that answers
+    `command not found` — an agent told to run one spends a call
+    discovering it is not there.
     """
-    runtime = ws.runtime
-    if runtime.supports_commands or runtime.supports_ws_verbs:
-        return VERSIONING_PRIMER
-    return NO_VERSIONING_PRIMER
+    return VERSIONING_PRIMER if wsgit else NO_VERSIONING_PRIMER
 
 
 DB_PRIMER = (
@@ -638,6 +637,14 @@ class Session:
     run_id: str | None = None
     """The running turn's agno run id, as soon as the stream reveals it
     — the handle the stop button needs (agno's cancel-by-run-id)."""
+
+    wsgit: bool = False
+    """Whether the agent can type ``ws-git`` in this session's terminal
+    — ``register_wsgit``'s own answer, kept rather than re-derived.
+    False where the executor can neither run an injected command nor
+    ferry a ``ws-*`` verb into a guest, which is also where
+    ``enable_apps`` installs no ``ws-pytest`` or ``ws-vitest``: one gate
+    decides all three. What teaches the verbs reads this."""
 
     delegates: Any = None
     """This session's ``nontainer.sessions.Sessions`` — the job table
@@ -1550,7 +1557,7 @@ class Registry:
         # work comes back as `ws-git merge <name>` or `ws-git checkout
         # <name> -- <paths>`, and there is no host-side verb for either.
         # STUDIO_PRIMER carries the teaching, under the same gate.
-        register_wsgit(ws)
+        wsgit = register_wsgit(ws)
         log_dir = self._store.path / "events"
         log_dir.mkdir(parents=True, exist_ok=True)
         # One helper per session, built here so the studio holds it: the
@@ -1565,10 +1572,11 @@ class Registry:
             name=name,
             ws=ws,
             runtime=runtime,
-            agent=self._build_agent(name, ws, runtime, model, delegates),
+            agent=self._build_agent(name, ws, runtime, model, delegates, wsgit=wsgit),
             db=db,
             turn_lock=threading.Lock(),
             model=model,
+            wsgit=wsgit,
             delegates=delegates,
             log_path=log_dir / f"{name}.jsonl",
         )
@@ -1676,7 +1684,14 @@ class Registry:
         runtime: AppRuntime,
         model: str | None = None,
         delegates: Any = None,
+        *,
+        wsgit: bool = False,
     ) -> Any:
+        """``wsgit`` is whether ``register_wsgit`` installed the verb on
+        this workspace, which decides the primer's delegation half. It
+        defaults to the conservative answer: an agent that is not told
+        about a verb it has loses a spelling, where one told about a
+        verb it lacks loses a turn."""
         from agno.agent import Agent
 
         from . import providers
@@ -1729,7 +1744,7 @@ class Registry:
             # the MECHANICS (workspace, handlers, curl); this covers the
             # product the human is looking at (preview, artifacts,
             # commits, publish)
-            instructions=STUDIO_PRIMER + _versioning_primer(ws),
+            instructions=STUDIO_PRIMER + _versioning_primer(wsgit),
             # Durable chat, keyed by the session name and stored in that
             # session's own workspace branch: after a server restart the
             # agent still remembers the conversation (and the jsonl
@@ -2038,7 +2053,12 @@ class Registry:
         conversation — switch models mid-project freely. Raises
         ValueError (via the model factory) on an unknown spec."""
         session.agent = self._build_agent(
-            session.name, session.ws, session.runtime, spec, session.delegates
+            session.name,
+            session.ws,
+            session.runtime,
+            spec,
+            session.delegates,
+            wsgit=session.wsgit,
         )
         session.model = spec
         with self._lock:

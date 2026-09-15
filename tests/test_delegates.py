@@ -451,3 +451,46 @@ def test_a_delegate_swept_mid_delivery_is_dropped_not_retried(registry):
     assert parent.answered_delegates() == []
     assert parent.take_delegate_answers() == []
     assert parent.delegates.reads == 1  # never asked for a swept branch again
+
+
+# -- the ws-git gate: one answer, from the function that wired it ------------
+
+
+def test_a_session_records_whether_ws_git_installed(registry):
+    """`register_wsgit` says whether the agent can type the verb, and
+    the session keeps that answer. Everything that teaches the verb —
+    the primer, a delegate's brief — asks the session rather than
+    re-reading the runtime flags the function read itself."""
+    session = registry.open("boss")
+    assert session.wsgit is True
+    assert sessions_mod._versioning_primer(True) is sessions_mod.VERSIONING_PRIMER
+
+
+def test_no_verb_no_delegation_half(registry, monkeypatch):
+    """An executor that can carry neither an injected command nor a
+    ferried ws-* verb installs nothing, and the agent is told so: it is
+    taught to ask a delegate for findings instead of for edits, and
+    never taught a spelling that answers `command not found`."""
+    monkeypatch.setattr(sessions_mod, "register_wsgit", lambda ws: False)
+    session = registry.open("verbless")
+
+    assert session.wsgit is False
+    primer = sessions_mod._versioning_primer(False)
+    assert primer is sessions_mod.NO_VERSIONING_PRIMER
+    assert "ws-git" not in primer
+    # and a delegate of that session opens with the same honesty
+    assert delegates.VERSIONING not in delegates.brief("boss", None, versioning=False)
+    assert delegates.VERSIONING in delegates.brief("boss", None, versioning=True)
+
+
+def test_a_delegates_brief_follows_the_sessions_own_answer(registry, monkeypatch):
+    """The brief is built from what the child session recorded, not
+    from a second reading of the executor's flags."""
+    monkeypatch.setattr(sessions_mod, "register_wsgit", lambda ws: False)
+    parent = registry.open("boss")
+    runner = delegates.StudioRunner(registry, "boss", 1)
+
+    assert delegates.VERSIONING not in runner._brief(parent, None)
+
+    parent.wsgit = True
+    assert delegates.VERSIONING in runner._brief(parent, None)
