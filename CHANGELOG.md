@@ -8,7 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **The nontainer floor is 0.7.2.** A store tag is a ref wherever
+- **The nontainer floor is 0.7.3.** A full-inherit delegate is the
+  agent that was at the fork point: the fork carries the conversation
+  as the child's own, where before the copied record still named the
+  session it came from and the chat db, which binds a branch to one
+  session id, gave the delegate no memory and refused its turns. A
+  store tag is a ref wherever
   ws-git reads one — `worktree add`, `checkout -- <paths>`, `diff`,
   `log`, `show` — and `inherit="full"` is allowed with `fork_from`, so
   the two halves of starting from a published app are mechanisms and

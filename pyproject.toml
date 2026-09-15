@@ -136,7 +136,14 @@ dependencies = [
     # reached it is deleted. And `inherit="full"` is allowed with
     # `fork_from`, so a delegate started at such a tag is the agent
     # that was there, with the task as its next turn.
-    "nontainer[agno,apps]>=0.7.2",
+    #
+    # 0.7.3 makes that last sentence true for this studio. A full
+    # inherit used to copy the conversation with its record still
+    # naming the session it came from, and the chat db binds a branch
+    # to one session id: the delegate had no memory and could not
+    # store its own turns. The fork now carries the conversation as
+    # the child's own.
+    "nontainer[agno,apps]>=0.7.3",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",
