@@ -509,6 +509,16 @@ a session that became something else is not listed under what it was.
 """
 
 
+def _title_cursor(event: dict) -> tuple[int, int] | None:
+    """The transcript cursor a title event was generated from, or None
+    for one recorded before the cursor rode along — which is a name
+    nothing can date, and says so rather than inventing a position."""
+    at_seq, turns = event.get("at_seq"), event.get("turns")
+    if isinstance(at_seq, int) and isinstance(turns, int):
+        return at_seq, turns
+    return None
+
+
 def _clean_title(title: object) -> str | None:
     """Free text -> a rail label, or None for "no title".
 
@@ -1242,11 +1252,38 @@ class Registry:
             self._save_manifest(manifest)
             return True
 
-    def retitle(self, session: Session) -> str | None:
+    def _restore_generated_title(
+        self, name: str, title: str | None, cursor: tuple[int, int] | None
+    ) -> None:
+        """Put the generated name back as a rewind found it, cursor and
+        all: the cadence counts from where that name was READ, so a name
+        restored without its cursor would leave the session waiting out
+        an interval measured against a transcript that no longer exists.
+
+        A ``None`` cursor CLEARS it, which reads as "named, nobody wrote
+        down from where" — and that is the honest answer for a title
+        event recorded before the cursor rode along. The next real
+        exchange names the session again rather than guessing.
+        """
+        with self._lock:
+            manifest = self._manifest()
+            entry = dict(manifest["titles"].get(name) or {})
+            entry["agent"] = _clean_title(title)
+            if cursor is None:
+                entry.pop("at_seq", None)
+                entry.pop("turns", None)
+            else:
+                entry["at_seq"], entry["turns"] = cursor
+            manifest["titles"][name] = entry
+            self._save_manifest(manifest)
+
+    def retitle(self, session: Session) -> dict | None:
         """Name the session from its own transcript, when the cadence
-        says a name is due. Returns the name it generated, or ``None``
-        when it generated none. That name is what was STORED, which a
-        human title may be hiding — :meth:`title_of` says what shows.
+        says a name is due. Returns what was stored — the generated name
+        under ``agent``, with the transcript cursor it was read from —
+        or ``None`` when nothing was stored. What was stored is not
+        necessarily what SHOWS: a human title outranks it, and
+        :meth:`title_of` is what answers that.
 
         The studio's answer, not the agent's: a second, tiny model run
         over the transcript this registry already holds, made after the
@@ -1286,7 +1323,7 @@ class Registry:
                 title,
             )
             return None
-        return title
+        return {"agent": title, "at_seq": at, "turns": turns}
 
     def _summary_spec(self, session: Session) -> str | None:
         """The model a generated title or description is read by:
@@ -1325,9 +1362,13 @@ class Registry:
         if self.is_delegate(session.name, manifest):
             return False
         entry = manifest["titles"].get(session.name) or {}
-        if not entry.get("agent"):
+        if not entry.get("agent") or entry.get("turns") is None:
+            # Never named, or named at a point in the transcript nobody
+            # wrote down — a rewind past the cursor, or a manifest from
+            # before names carried one. Read the name again at the next
+            # real exchange rather than date it by guesswork.
             return self._real_exchange(session)
-        return turns - int(entry.get("turns") or 0) >= TITLE_TURNS
+        return turns - int(entry["turns"]) >= TITLE_TURNS
 
     @classmethod
     def _turn_count(cls, session: Session) -> int:
@@ -2952,37 +2993,41 @@ class Registry:
         self._rewind(session, seq, head)
 
     def _rewind(self, session: Session, seq: int, head: str) -> None:
-        """Put the files, the agent's memory and the agent's title back
+        """Put the files, the agent's memory and the session's name back
         where they stood at ``head``, with the transcript cut at ``seq``.
 
         One ``checkout`` covers the first two: the conversation lives in
-        the same branch as the files. The title is a third thing, kept
-        in the manifest, so it is put back by hand — the agent named the
-        session from a conversation that is being unsaid.
+        the same branch as the files. The name is a third thing, kept in
+        the manifest, so it is put back by hand — it was read out of a
+        conversation that is being unsaid.
 
         What the human sees is a rewind; what the branch records is a
         new commit holding the old content. Nothing is lost either way,
         and the redo is the same verb said about the commit this one
         stepped off.
         """
-        surviving_title = None
+        surviving = None
         prior = [e for e in session.events if e["seq"] < seq]
         for _, ev in self._visible(prior):
-            if ev.get("type") == "title":
-                # A title event carries the label that was in force and,
-                # under ``agent``, the generated name beneath it. The
-                # tier this puts back is the generated one; an event
-                # from before the two were told apart carries only the
-                # label, and back then that WAS the generated name.
-                surviving_title = ev.get("agent") or ev.get("title") or surviving_title
+            # A title event carries the label that was in force and,
+            # under ``agent``, the generated name beneath it — plus the
+            # transcript cursor that name was read from. An event from
+            # before the two were told apart carries only the label,
+            # and back then that WAS the generated name.
+            if ev.get("type") == "title" and (ev.get("agent") or ev.get("title")):
+                surviving = ev
         session.ws.checkout(head)
-        # Best-effort within the event window: revert to the last title
-        # the agent gave BEFORE the cut. None surviving is ambiguous —
-        # never titled, or titled so long ago the event front-trimmed out
-        # (MAX_EVENTS) — so keep what the manifest says rather than wipe a
-        # name we can't prove was undone.
-        if surviving_title is not None:
-            self.set_agent_title(session.name, surviving_title)
+        # Best-effort within the event window: revert to the last name
+        # generated BEFORE the cut. None surviving is ambiguous — never
+        # named, or named so long ago the event front-trimmed out
+        # (MAX_EVENTS) — so keep what the manifest says rather than wipe
+        # a name we can't prove was undone.
+        if surviving is not None:
+            self._restore_generated_title(
+                session.name,
+                surviving.get("agent") or surviving.get("title"),
+                _title_cursor(surviving),
+            )
 
     @staticmethod
     def _visible(events: list[dict]) -> list[tuple[int, dict]]:

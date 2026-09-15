@@ -504,17 +504,20 @@ async def _name_the_session(session: Any, registry: Any) -> None:
     the title back the way the conversation was; and it lets the shell
     relabel now instead of on the next rail poll. `title` is the label
     now in force, which under a human title is theirs — the row the
-    human is looking at does not move — and `agent` is the generated
-    name stored beneath it, which is the one a rewind puts back.
+    human is looking at does not move — while `agent` is the generated
+    name stored beneath it and `at_seq`/`turns` are the transcript
+    cursor it was read from. A rewind puts those three back together:
+    the name without its cursor would leave the cadence counting from
+    a transcript that no longer exists.
     """
     try:
-        generated = await asyncio.to_thread(registry.retitle, session)
+        stored = await asyncio.to_thread(registry.retitle, session)
     except Exception as e:  # noqa: BLE001 - a name is never worth a turn
         log.info("titles: %s went unnamed (%s)", session.name, e)
         return
-    if generated:
+    if stored:
         shown = await asyncio.to_thread(registry.title_of, session.name)
-        await session.emit({"type": "title", "title": shown, "agent": generated})
+        await session.emit({"type": "title", "title": shown, **stored})
 
 
 # ---------------------------------------------------------------------------
