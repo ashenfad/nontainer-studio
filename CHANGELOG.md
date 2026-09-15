@@ -44,6 +44,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A delegate opens, read-only.** Its name in the rail's ⑂ listing is
+  now a way in: the delegate's own transcript renders in the ordinary
+  chat view, with a breadcrumb up to the session that forked it and,
+  where the composer would be, a bar saying what it is — status, whose
+  delegate, how long since anybody dealt with it, and the keep toggle.
+  The delegates it forked in turn are listed under that bar, so the
+  drill-down nests. The studio offers no merge, take or discard: the
+  parent agent judges a delegate's branch and integrates it, so every
+  verb that drives a session — chat, edit, restore, model, title,
+  upload — answers 409 on a delegate, and `GET /api/sessions/{name}`
+  is what tells a shell landing on `?session=<child>` that it is
+  looking at one. Fork still works, since taking a delegate's branch as
+  a session of your own is a thing to want.
 - **A delegate's branch has a TTL, and the studio schedules the sweep.**
   `NONTAINER_STUDIO_DELEGATE_TTL` is the hours a delegate is kept after
   anybody last dealt with it — 24 by default, `0` off. Past it the

@@ -314,6 +314,17 @@ own record of who forked whom — which is also where a keep is written
 down, since the job table it is flagged in does not survive a restart.
 `0` turns the whole thing off.
 
+**A delegate is readable, not drivable.** Clicking one in that listing
+opens its transcript in the ordinary chat view: the parent's title sits
+in a breadcrumb above it, a bar stands where the composer would be
+saying what the session is (status, whose delegate, `keep`), and any
+delegate it forked in turn is listed under that bar — so the drill-down
+nests as deep as the delegation did. Every verb that would drive a
+session — chat, edit, restore, model, title, upload — refuses a
+delegate with a 409, because the parent agent writes its prompts,
+judges its branch and integrates it. Forking one is still how you take
+its work as a session of your own.
+
 ### a2ui egress
 
 `GET /api/sessions/{name}/a2ui` projects the transcript into an
