@@ -7,8 +7,9 @@ on:
     branches: [ main ]
 
 jobs:
-  # The python matrix: no browser, no node — test_e2e skips cleanly
-  # without playwright, so this stays fast. pip ignores [tool.uv.sources],
+  # The python matrix: no browser, no node — every test that needs one
+  # skips cleanly without chromium, so this stays fast and the `browser`
+  # job below is what actually runs them. pip ignores [tool.uv.sources],
   # so nontainer resolves from PyPI here — CI tests the studio against
   # the RELEASED core, which is what a fresh install gets.
   test:
@@ -46,9 +47,13 @@ jobs:
       run: |
         ruff format --check nontainer_studio/ tests/
 
-  # The browser E2E runs against the COMMITTED bundle (no npm build
-  # here, deliberately): it's what ships, so it's what gets tested.
-  e2e:
+  # Everything that needs a browser, in one job against the COMMITTED
+  # bundle (no npm build here, deliberately: it's what ships, so it's
+  # what gets tested). test_server.py is here as well as in the matrix
+  # because a third of its shell tests importorskip playwright and skip
+  # to chromium — without this job a regression in the served page only
+  # shows on somebody's laptop.
+  browser:
     runs-on: ubuntu-latest
 
     steps:
@@ -67,9 +72,9 @@ jobs:
     - name: Install Playwright browser
       run: python -m playwright install --with-deps chromium
 
-    - name: Run browser E2E against the committed bundle
+    - name: Run the browser tests against the committed bundle
       run: |
-        pytest tests/test_e2e.py -v
+        pytest tests/test_e2e.py tests/test_server.py -v
 
   # The frontend is committed as a built bundle, so "forgot to rebuild"
   # is this repo's standing footgun: the source says one thing and the
