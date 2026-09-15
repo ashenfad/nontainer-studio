@@ -992,3 +992,73 @@ def test_the_rail_lists_a_sessions_delegates_and_keeps_one(page, server):
     # so that is where a keep has to land
     record = json.loads((server.store / "sessions.json").read_text())["delegates"]
     assert record["e2e-keep.scout"]["kept"] is True
+
+
+def test_a_delegate_opens_read_only_and_the_crumb_leads_back(page, server):
+    """The drill-down: a delegate is not a rail row, but its transcript
+    is worth reading, so it opens in the ordinary chat view — with the
+    parent in a breadcrumb above it and a read-only bar where the
+    composer would be. The parent agent drives it; the human reads it."""
+    page.goto(f"{server}/?session=e2e-drill")
+    _send(
+        page,
+        '!tool sessions {"action": "ask", "name": "scout", '
+        '"task": "!text Had a look."}\n'
+        "!text Sent a scout.",
+    )
+    _title(server, "e2e-drill", "driller")
+    row = page.locator(".rail .row", has_text="driller")
+    expect(row.locator(".waiting")).to_be_visible(timeout=20000)
+
+    # straight at the child, the way a reload lands: the shell has only
+    # the name and has to ask the server what it is looking at
+    page.goto(f"{server}/?session=e2e-drill.scout")
+
+    bar = page.locator(".delegate-bar")
+    expect(bar).to_be_visible(timeout=20000)
+    expect(bar).to_contain_text("delegate of e2e-drill")
+    expect(bar).to_contain_text("answered")
+    # no composer: there is nothing here for a human to say
+    expect(page.locator(".input-wrap")).to_have_count(0)
+    expect(page.locator("textarea")).to_have_count(0)
+    # its own transcript, replayed from its own event log
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Had a look.", timeout=15000
+    )
+
+    # parent title › child, and the rail keeps the ancestor highlighted
+    # (there is no row for the delegate itself)
+    crumbs = page.locator(".crumbs .crumb")
+    expect(crumbs).to_have_count(2)
+    expect(crumbs.first).to_have_text("driller")
+    expect(crumbs.last).to_have_text("scout")
+    expect(page.locator(".rail .row.active")).to_contain_text("driller")
+
+    crumbs.first.click()
+    expect(page.locator(".delegate-bar")).to_have_count(0)
+    expect(page.locator("header .session-name")).to_have_text("driller")
+    expect(page.locator("textarea")).to_have_count(1)
+
+
+def test_the_rail_listing_opens_a_delegate(page, server):
+    """The way in: the ⑂ listing's names are the drill-down's handles."""
+    page.goto(f"{server}/?session=e2e-open")
+    _send(
+        page,
+        '!tool sessions {"action": "ask", "name": "scout", '
+        '"task": "!text Looked around."}\n'
+        "!text Off it went.",
+    )
+    _title(server, "e2e-open", "opener")
+    row = page.locator(".rail .row", has_text="opener")
+    expect(row.locator(".waiting")).to_be_visible(timeout=20000)
+
+    row.locator(".waiting").click()
+    listed = page.locator(".rail .delegate")
+    expect(listed).to_have_count(1, timeout=10000)
+    listed.locator("button.delegate-name").click()
+
+    expect(page.locator(".delegate-bar")).to_contain_text(
+        "delegate of e2e-open", timeout=20000
+    )
+    expect(page.locator(".crumbs .crumb").last).to_have_text("scout")
