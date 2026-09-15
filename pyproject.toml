@@ -111,7 +111,24 @@ dependencies = [
     # rather than blocking the name. Its python tool description and
     # apps notes also send shared handler code to `app/api/_<name>.py`
     # — what the app-building skill has been contradicting them to say.
-    "nontainer[agno,apps]>=0.6.3",
+    #
+    # 0.7.0 buys the delegation and terminal verbs studio now speaks
+    # for. `Sessions.sweep` is retention for a delegate's branch: an
+    # idle TTL the embedder schedules, which marks a swept job
+    # `expired`, drops its answer and refuses `result` with
+    # `BranchExpired` — the status the rail count and the delivery loop
+    # are written against here. `register_wsgit` returns whether the
+    # agent can type `ws-git`, so the primer asks the function that
+    # wired it instead of re-reading the runtime flags behind it.
+    # `enable_apps` is idempotent and hands back the runtime a fork
+    # already carries, which is what makes a delegate's workspace
+    # ordinary. `ws.files.remove` deletes one file through the lock and
+    # the view rule. Publications take the store's own tag namespace
+    # (`<name>/<version>`), which is what a `sessions ask(fork_from=)`
+    # can name. And `enable_apps` registers `ws-pytest` and `ws-vitest`
+    # beside `ws-curl`, so the tier below a request exists on every
+    # rung — which is what the README and the primer now say.
+    "nontainer[agno,apps]>=0.7.0",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",
