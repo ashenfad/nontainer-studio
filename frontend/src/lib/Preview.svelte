@@ -8,7 +8,11 @@
     import { api } from './api.js'
     import PublishedPanel from './PublishedPanel.svelte'
 
-    let { rt, onSwitch } = $props()
+    // `readonly` is a delegate: publishing commits its open work and
+    // puts a version behind a public URL, which is the parent agent's
+    // call, not a reader's. The published panel stays — an app is
+    // addressed by token and outlives whatever session made it.
+    let { rt, onSwitch, readonly = false } = $props()
 
     let mode = $state('live') // 'live' | 'published'
     let manual = $state(0)
@@ -136,7 +140,11 @@
         {#if rt.apps.length}
             <button class="small" onclick={() => (panel = true)}>published…</button>
         {/if}
-        {#if composing}
+        {#if readonly}
+            <!-- nothing to offer: the publish route refuses this
+                 session, and a button whose only outcome is a refusal
+                 reads as a broken one -->
+        {:else if composing}
             <input
                 class="vname"
                 aria-label="version name"

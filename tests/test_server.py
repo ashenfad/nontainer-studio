@@ -4731,6 +4731,9 @@ DRIVING = [
     ("model", {"json": {"model": "dummy"}}),
     ("title", {"json": {"title": "mine"}}),
     ("upload?name=n.txt", {"content": b"hi"}),
+    # publishing commits the delegate's open work and puts a version
+    # behind a public URL — as much a turn's doing as a turn is
+    ("publish", {"json": {}}),
 ]
 
 
@@ -4800,6 +4803,19 @@ def test_an_ordinary_session_still_takes_every_verb(studio):
         client.post("/api/sessions/plain/chat", json={"message": "go"}).status_code
         == 200
     )
+
+
+def test_an_ordinary_session_still_publishes(studio):
+    """The other half of the publish refusal: the route is not broken,
+    it is scoped."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "plain"})
+    _seed_app(registry.get("plain").ws)
+
+    made = client.post("/api/sessions/plain/publish", json={})
+
+    assert made.status_code == 200
+    assert made.json()["url"].startswith("/apps/")
 
 
 def test_a_delegate_has_delegates_of_its_own(studio):
