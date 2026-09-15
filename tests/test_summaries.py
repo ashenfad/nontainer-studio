@@ -1,5 +1,5 @@
-"""The side generator: a transcript rendered for a model, and the title
-read back off it.
+"""The side generators: a transcript rendered for a model, and the
+title and description read back off it.
 
 The model is scripted (no key, no tokens) and everything around it is
 the real thing — the same agno Agent the studio builds, over the same
@@ -122,7 +122,7 @@ def test_a_long_tool_argument_is_a_preview():
 def test_an_empty_transcript_asks_no_model(scripted_model):
     model = scripted_model("never asked")
     assert summaries.generate_title("dummy", "") is None
-    assert summaries.generate_title("dummy", "   ") is None
+    assert summaries.generate_description("dummy", "   ") is None
     assert model.asked == []
 
 
@@ -146,7 +146,34 @@ def test_a_generated_title_is_clamped_like_a_stored_one(scripted_model):
     assert summaries.generate_title("dummy", "hi") is None
 
 
-# -- which model runs it -----------------------------------------------------
+def test_generate_description_is_capped(scripted_model):
+    scripted_model("It builds a revenue dashboard over the sales db.")
+    assert summaries.generate_description("dummy", "hi") == (
+        "It builds a revenue dashboard over the sales db."
+    )
+    scripted_model("word " * 200)
+    assert len(summaries.generate_description("dummy", "hi")) == 300
+    scripted_model("\n\n")
+    assert summaries.generate_description("dummy", "hi") is None
+
+
+def test_clean_description_takes_only_text():
+    assert summaries._clean_description(None) is None
+    assert summaries._clean_description(17) is None
+    assert summaries._clean_description("one   two\nthree") == "one two three"
+
+
+def test_the_generators_share_one_runner(scripted_model):
+    """One prompt each, one model, one answer: the difference between a
+    title and a description is the prompt it was asked for."""
+    model = scripted_model("whatever")
+    summaries.generate_title("dummy", "transcript")
+    summaries.generate_description("dummy", "transcript")
+    assert len(model.asked) == 2
+    assert summaries.TITLE_PROMPT != summaries.DESCRIPTION_PROMPT
+
+
+# -- which model runs them ---------------------------------------------------
 
 
 def test_the_summary_model_defaults_to_the_sessions_own(monkeypatch):

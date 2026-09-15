@@ -83,10 +83,10 @@ A `.env` file next to where you launch is loaded at startup (real env
 wins) — see `.env.example`.
 
 `NONTAINER_STUDIO_SUMMARY_MODEL` picks the model the studio names
-sessions with — a second, tiny run over the transcript, on the
-session's own model unless this says otherwise. Naming a conversation
-is a job a small, cheap model does as well as the one doing the
-building.
+sessions and describes published apps with — a second, tiny run over
+the transcript, on the session's own model unless this says otherwise.
+Naming a conversation is a job a small, cheap model does as well as the
+one doing the building.
 
 Other knobs: `NONTAINER_STUDIO_PORT`, `NONTAINER_STUDIO_STORE`
 (defaults to `~/.nontainer-studio`), `NONTAINER_STUDIO_CSP` (override
@@ -259,8 +259,14 @@ most wanted, on the session nobody named. Rename from the rail
 (double-click the label) and your title wins from then on: yours is
 what the rail shows, while the generated one goes on being read
 underneath it, so clearing yours reveals a name for the session as it
-now stands rather than the one it had when you renamed it. Delegates are not named at all — they are labelled by
-the handle their parent gave them.
+now stands rather than the one it had when you renamed it. Delegates
+are not named at all — they are labelled by the handle their parent
+gave them. Publishing generates a second thing from the same
+transcript: a sentence or two on what the app IS, kept on the app
+rather than on any one version, which the rail shows under the app row
+and the `sessions` tool's `published` listing hands to an agent
+weighing where to start. It follows the same two tiers, so
+your own words outrank it.
 
 ### Delegation
 

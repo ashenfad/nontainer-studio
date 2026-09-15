@@ -1078,6 +1078,19 @@ def build_app(registry: Registry) -> Starlette:
             {"apps": await anyio.to_thread.run_sync(registry.list_apps)}
         )
 
+    async def set_app_description(request: Any) -> JSONResponse:
+        """The human's own words for an app. Blank CLEARS them, so the
+        row falls back to what the last publish generated."""
+        token = request.path_params["token"]
+        body = await request.json()
+        try:
+            app = await anyio.to_thread.run_sync(
+                registry.set_app_description, token, body.get("description")
+            )
+        except KeyError:
+            return JSONResponse({"error": f"no app {token!r}"}, status_code=404)
+        return JSONResponse(app)
+
     async def set_current(request: Any) -> JSONResponse:
         """Repoint an app's URL at one of its versions — rollback, or
         roll forward again. Nothing is rebuilt; the pointer moves and
@@ -1287,6 +1300,11 @@ def build_app(registry: Registry) -> Starlette:
             ),
             Route("/api/apps", list_apps, methods=["GET"]),
             Route("/api/apps/{token}/current", set_current, methods=["POST"]),
+            Route(
+                "/api/apps/{token}/description",
+                set_app_description,
+                methods=["POST"],
+            ),
             Route(
                 "/api/apps/{token}/versions/{version}/branch",
                 branch_version,

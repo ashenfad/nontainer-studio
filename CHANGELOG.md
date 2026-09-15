@@ -70,6 +70,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A published app says what it is.** Publishing generates a sentence
+  or two about the session behind the app — what it knows, built or
+  decided — and keeps it on the APP rather than on any one version, so
+  it moves forward with each publish the way the title does. The rail
+  shows it under the app row, the `sessions` tool's `published` listing
+  carries it under the app it belongs to, so an agent weighing an
+  origin tag reads what is in there before mounting it, and
+  `POST /api/apps/{token}/description` writes the human's own words,
+  which outrank the generated ones (blank clears them again). A
+  generation that fails is not a failed publish: the app keeps whatever
+  it already said.
 - **A swept delegate's name is refused, not reopened.** `open` is
   create-or-return, so a name it does not know mints a fresh session —
   which is the one wrong answer for a delegate whose branch the
@@ -77,7 +88,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and what opened was a blank session wearing the name of work that is
   gone. It raises now, and `POST /api/sessions` answers 409 with the
   reason instead of handing back an empty session.
-
 - **A published version names the commit it came from.** Publishing
   store-tags the origin — the whole session tree at that publish, where
   the version holds `app/` alone — as `<token>/<version>/origin`, and

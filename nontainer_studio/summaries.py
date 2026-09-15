@@ -1,7 +1,8 @@
-"""Generated text ABOUT a session: its title.
+"""Generated text ABOUT a session: its title, and the description an
+app carries when the human publishes one.
 
-A cached projection of the transcript, and not something the agent is
-asked for. A tool the model may
+Both are one cached projection of the same thing — the transcript —
+and neither is something the agent is asked for. A tool the model may
 or may not call costs a turn's attention, arrives when the model feels
 like it, and is missing exactly where it is most wanted (the session
 nobody named). A side generation is a second, tiny model run over the
@@ -31,6 +32,8 @@ one that has since been superseded would name the wrong thing."""
 
 ARG_PREVIEW = 80  # a tool call's arguments, as a hint of what it did
 
+DESCRIPTION_MAX = 300
+
 TITLE_PROMPT = (
     "You name a work session for the human's session list. Read the "
     "transcript and answer with 3 to 6 words naming the work — "
@@ -39,9 +42,17 @@ TITLE_PROMPT = (
     "else."
 )
 
+DESCRIPTION_PROMPT = (
+    "You describe a work session to another agent deciding whether to "
+    "start from it. Read the transcript and answer with one or two "
+    "sentences on what this session knows, built, or decided — what "
+    "somebody would be inheriting. No preamble: the answer is the "
+    "description and nothing else."
+)
+
 
 def summary_spec(session_spec: str | None = None) -> str | None:
-    """The model spec the generator runs on: ``NONTAINER_STUDIO_SUMMARY_MODEL``
+    """The model spec the generators run on: ``NONTAINER_STUDIO_SUMMARY_MODEL``
     if set, else the session's own model (and ``None`` means the
     server default, which is what every spec reader here means by it).
 
@@ -108,6 +119,26 @@ def generate_title(spec: str | None, transcript: str) -> str | None:
     from .sessions import _clean_title
 
     return _clean_title(_generate(spec, TITLE_PROMPT, transcript))
+
+
+def generate_description(spec: str | None, transcript: str) -> str | None:
+    """A sentence or two on what a session holds, for another agent
+    weighing whether to start from it. ``None`` when the model
+    answered with nothing usable."""
+    return _clean_description(_generate(spec, DESCRIPTION_PROMPT, transcript))
+
+
+def _clean_description(text: object) -> str | None:
+    """Free text -> a stored description, or None for "none".
+
+    A model wrote this, so it is untrusted shape: collapse the
+    whitespace runs a wrapped answer arrives with, bound the length,
+    and treat blank as absent so an empty answer never shadows the
+    human's own words with "".
+    """
+    if not isinstance(text, str):
+        return None
+    return " ".join(text.split())[:DESCRIPTION_MAX] or None
 
 
 def _generate(spec: str | None, prompt: str, transcript: str) -> str | None:
