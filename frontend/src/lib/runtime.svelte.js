@@ -524,3 +524,20 @@ export class SessionRuntime {
         }
     }
 }
+
+/** What a session delegated, and what became of each one. Asked for
+ * when the human opens the rail's listing rather than polled: the ⑂
+ * badge is on the session list already, and this is the detail behind
+ * it. */
+export async function loadDelegates(name) {
+    return (await api(`/api/sessions/${name}/delegates`)).delegates
+}
+
+/** Keep a delegate's branch from the retention sweep, or let it go
+ * again. Returns the row as the server reads it from here on — a keep
+ * is recorded whether or not a live job took the flag, and an un-keep
+ * is that record alone. */
+export async function setDelegateKept(name, child, kept) {
+    const res = await api(`/api/sessions/${name}/delegates/${child}/keep`, { kept })
+    return res.delegate
+}
