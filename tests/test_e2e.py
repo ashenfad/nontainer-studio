@@ -1023,6 +1023,9 @@ def test_a_delegate_opens_read_only_and_the_crumb_leads_back(page, server):
     expect(page.locator(".input-wrap")).to_have_count(0)
     expect(page.locator("textarea")).to_have_count(0)
     expect(page.locator("button.edit")).to_have_count(0)
+    # nor one that would publish: that commits the delegate's open work
+    # and puts a version of it behind a public URL
+    expect(page.get_by_role("button", name="publish", exact=True)).to_have_count(0)
     # its own transcript, replayed from its own event log
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "Had a look.", timeout=15000
@@ -1040,6 +1043,8 @@ def test_a_delegate_opens_read_only_and_the_crumb_leads_back(page, server):
     expect(page.locator(".delegate-bar")).to_have_count(0)
     expect(page.locator("header .session-name")).to_have_text("driller")
     expect(page.locator("textarea")).to_have_count(1)
+    # the parent is drivable again, publish included
+    expect(page.get_by_role("button", name="publish", exact=True)).to_have_count(1)
 
 
 def test_the_rail_listing_opens_a_delegate(page, server):

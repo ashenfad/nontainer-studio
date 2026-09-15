@@ -331,7 +331,11 @@
                                     {/each}
                                 </div>
                                 {#if tab === 'preview'}
-                                    <Preview {rt} onSwitch={switchTo} />
+                                    <Preview
+                                        {rt}
+                                        onSwitch={switchTo}
+                                        readonly={!!delegate}
+                                    />
                                 {:else}
                                     <FilesTab {rt} />
                                 {/if}

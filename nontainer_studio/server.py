@@ -535,8 +535,15 @@ def build_app(registry: Registry) -> Starlette:
         its prompts, judges its branch and integrates it. The studio
         shows a delegate so a human can READ it; a human turn landing
         in the middle of that exchange would rewrite a transcript the
-        parent is still reading. Reading verbs are untouched, and so
-        are fork (take the branch as your own session) and delete.
+        parent is still reading. Publishing counts: it commits the
+        delegate's open work, puts a version behind a public URL and
+        appends a landmark to the transcript. Reading verbs are
+        untouched, and so are fork (take the branch as your own
+        session) and delete.
+
+        The app-side routes need no such rule: they are addressed by
+        publication token, and moving a pointer, taking an app down or
+        deleting a version reaches no session at all.
         """
 
         @with_session
@@ -973,7 +980,7 @@ def build_app(registry: Registry) -> Starlette:
     # current, so publishing again moves it forward and `POST
     # /api/apps/{token}/current` moves it back.
 
-    @with_session
+    @human_driven
     async def publish(request: Any, session: Any) -> JSONResponse:
         """Publish a new version. `name` names it (default: v1, v2, ...
         within the app); `app` picks the lineage — a token extends that
