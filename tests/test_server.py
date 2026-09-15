@@ -364,6 +364,7 @@ def test_busy_session_409s_chat(studio):
                 "busy": True,
                 "model": None,
                 "delegates": 0,
+                "delegate_count": 0,
             }
         ]
     finally:
@@ -1776,6 +1777,7 @@ def test_session_manifest_survives_restart(studio, tmp_path):
             "busy": False,
             "model": None,
             "delegates": 0,
+            "delegate_count": 0,
         }
     ]
     # and it opens lazily with its files intact
@@ -3110,6 +3112,7 @@ def test_delete_leaves_other_sessions_alone(studio):
             "busy": False,
             "model": None,
             "delegates": 0,
+            "delegate_count": 0,
         }
     ]
     assert registry.get("s2").ws.files.fs.read("mine.txt") == b"s2 data"
@@ -3174,6 +3177,7 @@ def test_model_switch_persists_and_notices(studio, tmp_path):
             "busy": False,
             "model": "dummy",
             "delegates": 0,
+            "delegate_count": 0,
         }
     ]
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
@@ -3560,6 +3564,7 @@ def test_v1_manifest_format_tolerated(studio, tmp_path):
         "busy": False,
         "model": None,
         "delegates": 0,
+        "delegate_count": 0,
     } in reborn.list()
     assert reborn.resolve("nope") is None
     reborn.close()
@@ -4654,3 +4659,102 @@ def test_python_config_drops_the_isolation_knob_on_a_dud_rung(tmp_path, monkeypa
     assert sessions_mod.Registry._python_config(db).isolation == "none"
     monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "dud-vm")
     assert sessions_mod.Registry._python_config(db).isolation == "none"
+
+
+# -- delegates: the rail's listing, and the sweep on a timer -----------------
+
+
+def _delegate(registry, parent="boss", child="boss.scout"):
+    """A delegate that has finished: opened, recorded, handles
+    released — what the runner leaves behind when it answers."""
+    registry.open(parent)
+    registry.open_delegate(parent, child)
+    registry.release(child)
+    return child
+
+
+def test_the_route_lists_what_a_session_delegated(studio):
+    """The rail's ⑂ badge counts what a turn would deliver; this is the
+    listing behind it, which is everything the session forked."""
+    client, registry = studio
+    child = _delegate(registry)
+
+    rows = client.get("/api/sessions/boss/delegates").json()["delegates"]
+
+    assert [r["name"] for r in rows] == [child]
+    assert rows[0]["kept"] is False
+    assert rows[0]["touched"] > 0
+    # and the rail row says there is something to list
+    row = next(r for r in client.get("/api/sessions").json()["sessions"])
+    assert (row["name"], row["delegate_count"]) == ("boss", 1)
+
+
+def test_keeping_a_delegate_through_the_route_is_written_down(studio):
+    """A keep has to outlive the job table it is flagged in, so the
+    record is written whether or not a live job took the flag — and
+    un-keeping is the record alone, since nontainer offers no un-keep."""
+    client, registry = studio
+    child = _delegate(registry)
+
+    kept = client.post(f"/api/sessions/boss/delegates/{child}/keep", json={})
+    assert kept.json()["delegate"]["kept"] is True
+    assert registry._manifest()["delegates"][child]["kept"] is True
+
+    freed = client.post(
+        f"/api/sessions/boss/delegates/{child}/keep", json={"kept": False}
+    )
+    assert freed.json()["delegate"]["kept"] is False
+    assert registry._manifest()["delegates"][child]["kept"] is False
+
+
+def test_keeping_a_delegate_of_another_session_is_a_404(studio):
+    client, registry = studio
+    child = _delegate(registry)
+    registry.open("other")
+
+    res = client.post(f"/api/sessions/other/delegates/{child}/keep", json={})
+
+    assert res.status_code == 404
+    assert child in res.json()["error"]
+    assert client.get("/api/sessions/other/delegates").json()["delegates"] == []
+
+
+def test_the_server_sweeps_on_a_timer(tmp_path, monkeypatch):
+    """Retention is a verb somebody schedules, and the server is what
+    schedules it while the studio is up: the registry sweeps once at
+    open, and this loop from then on."""
+    monkeypatch.setattr(server, "DELEGATE_SWEEP_EVERY", 0.05)
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a: None, store=tmp_path, delegate_ttl=1e-9
+    )
+    registry._build_agent = lambda *a, **k: FakeAgent()
+    try:
+        with TestClient(server.build_app(registry)):
+            child = _delegate(registry)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if child not in registry._store.sessions():
+                    break
+                time.sleep(0.02)
+            else:
+                raise AssertionError("the timer never swept")
+        assert registry._manifest()["delegates"] == {}
+    finally:
+        registry.close()
+
+
+def test_no_ttl_no_timer(tmp_path, monkeypatch):
+    """`0` is retention off. Nothing is scheduled, so a delegate nobody
+    has touched since the store was made is still there."""
+    monkeypatch.setattr(server, "DELEGATE_SWEEP_EVERY", 0.05)
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a: None, store=tmp_path, delegate_ttl=0
+    )
+    registry._build_agent = lambda *a, **k: FakeAgent()
+    try:
+        with TestClient(server.build_app(registry)):
+            child = _delegate(registry)
+            time.sleep(0.3)
+            assert child in registry._store.sessions()
+    finally:
+        registry.close()

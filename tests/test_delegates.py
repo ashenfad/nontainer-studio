@@ -200,7 +200,8 @@ def test_the_delegate_record_outlives_the_registry(registry, tmp_path):
     answer = _delegate(registry, parent, WRITE_A_NOTE)
 
     manifest = json.loads((tmp_path / "sessions.json").read_text())
-    assert manifest["delegates"][answer.branch] == "boss"
+    row = manifest["delegates"][answer.branch]
+    assert row["parent"] == "boss"
 
     reborn = sessions_mod.Registry(
         model_factory=lambda *a, **k: DummyModel(),
@@ -243,11 +244,15 @@ def test_deleting_a_delegate_on_its_own_takes_its_record(registry):
 # -- the sessions tool, end to end ------------------------------------------
 
 
-def _turn(session, message):
-    """One turn, run exactly as the server runs a human's."""
+def _turn(session, message, registry=None):
+    """One turn, run exactly as the server runs a human's.
+
+    ``registry`` is what the server passes, and what makes the turn
+    snapshot its delegates' retention — the tests that care about that
+    pass it, the rest run the turn without it."""
     session.turn_lock.acquire()  # _run_turn releases it
     since = session.next_seq
-    asyncio.run(server._run_turn(session, message))
+    asyncio.run(server._run_turn(session, message, registry))
     return [e for e in session.events if e.get("seq", -1) >= since]
 
 
@@ -520,3 +525,342 @@ def test_a_delegate_can_start_from_another_sessions_commit(registry):
     assert child.ws.files.fs.read("/workspace/from_other.md") == b"written elsewhere"
     # and it started there, not here: the asking session never had it
     assert not parent.ws.files.fs.exists("/workspace/from_other.md")
+
+
+# -- retention: the studio schedules what nontainer supplies -----------------
+
+
+def _record(registry, child=None):
+    """The delegates record, or one child's row in it."""
+    record = registry._manifest()["delegates"]
+    return record if child is None else record[child]
+
+
+def _tiny_ttl(tmp_path, hours=1e-9):
+    """A registry whose delegates are idle the moment they answer."""
+    return sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+        delegate_ttl=hours,
+    )
+
+
+def test_the_setting_is_hours_and_a_bad_one_falls_back(monkeypatch):
+    """The TTL is read where the other settings are read, in the unit
+    the decision is made in. A value that is not a number keeps the
+    default rather than taking the studio down at startup."""
+    assert sessions_mod._delegate_ttl_hours() == 24.0
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TTL", "2")
+    assert sessions_mod._delegate_ttl_hours() == 2.0
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TTL", "overnight")
+    assert sessions_mod._delegate_ttl_hours() == 24.0
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TTL", "-3")
+    assert sessions_mod._delegate_ttl_hours() == 0.0
+
+
+def test_the_record_carries_what_the_sweep_measures(registry):
+    """A delegate has been dealt with as of the moment it was asked
+    for, and the record says so — the job table that also knows it
+    does not survive a restart."""
+    parent = registry.open("boss")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+
+    row = _record(registry, answer.branch)
+    assert row["parent"] == "boss"
+    assert row["touched"] > time.time() - 60
+    # nobody has said whether to keep it, which is not the same as
+    # "no": the job table's own flag answers until somebody does
+    assert row["kept"] is None
+
+
+def test_an_older_record_ages_from_the_session_birthday(registry, tmp_path):
+    """The record used to be `{child: parent}` and said nothing about
+    retention. Reading one, a delegate ages from the only evidence on
+    disk of when it was dealt with: when it was created."""
+    parent = registry.open("boss")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+    path = tmp_path / "sessions.json"
+    manifest = json.loads(path.read_text())
+    manifest["delegates"] = {answer.branch: "boss"}  # the old shape
+    born = manifest["created"][answer.branch]
+    path.write_text(json.dumps(manifest))
+
+    row = _record(registry, answer.branch)
+    assert row == {"parent": "boss", "touched": born, "kept": None}
+    # and a record with no birthday either reads as never dealt with,
+    # which is what lets the sweep collect it
+    manifest["delegates"] = {answer.branch: "boss"}
+    manifest["created"] = {}
+    path.write_text(json.dumps(manifest))
+    assert _record(registry, answer.branch)["touched"] == 0.0
+
+
+def test_a_delegate_nobody_read_is_swept_after_the_ttl(tmp_path):
+    """The live half: a job its session's helper still holds is swept
+    by nontainer's own rule, and the studio takes the record, the
+    session row and the transcript with the branch."""
+    registry = _tiny_ttl(tmp_path)
+    try:
+        parent = registry.open("boss")
+        _turn(parent, ASK_ASYNC, registry)
+        _await_delegates(parent)
+        child = "boss.scout"
+        assert (tmp_path / "events" / f"{child}.jsonl").exists()
+
+        assert registry.sweep_delegates() == [child]
+
+        assert child not in registry._store.sessions()
+        assert child not in registry.known()
+        assert _record(registry) == {}
+        assert not (tmp_path / "events" / f"{child}.jsonl").exists()
+        # and the badge clears with it: a swept job has no answer left
+        assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [0]
+    finally:
+        registry.close()
+
+
+def test_a_delegate_from_before_a_restart_is_swept_too(registry, tmp_path):
+    """The half nontainer cannot reach. A job table is per `Sessions`
+    object, built per live session in this process, so a delegate asked
+    for before the last restart is in no table — the record is what
+    remembers it, and the studio sweeps it through the store itself."""
+    parent = registry.open("boss")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+    registry.close()
+
+    reborn = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+    )
+    try:
+        assert reborn._live_jobs() == {}  # nothing here knows that job
+        assert reborn.sweep_delegates() == []  # and it is not idle yet
+
+        assert reborn.sweep_delegates(now=time.time() + 25 * 3600) == [answer.branch]
+        assert answer.branch not in reborn._store.sessions()
+        assert _record(reborn) == {}
+    finally:
+        reborn.close()
+
+
+def test_the_sweep_runs_when_the_registry_opens(registry, tmp_path):
+    """Retention is a verb somebody schedules, and opening the store is
+    the first of the two moments the studio schedules it for."""
+    parent = registry.open("boss")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+    registry.close()
+
+    reborn = _tiny_ttl(tmp_path)
+    try:
+        assert answer.branch not in reborn._store.sessions()
+        assert _record(reborn) == {}
+    finally:
+        reborn.close()
+
+
+def test_no_ttl_no_sweep(registry, tmp_path):
+    """`0` is retention off: nothing ages out, however long ago it was
+    asked for."""
+    parent = registry.open("boss")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+    registry.close()
+
+    reborn = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+        delegate_ttl=0,
+    )
+    try:
+        assert reborn.sweep_delegates(now=time.time() + 10**6) == []
+        assert answer.branch in reborn._store.sessions()
+    finally:
+        reborn.close()
+
+
+def test_a_kept_delegate_is_not_swept(registry, tmp_path):
+    """`keep` is the flag that exempts a delegate for good, and the
+    studio's record of it is what a sweep after a restart reads."""
+    parent = registry.open("boss")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+    registry.keep_delegate("boss", answer.branch, True)
+
+    assert _record(registry, answer.branch)["kept"] is True
+    assert registry.sweep_delegates(now=time.time() + 10**6) == []
+    assert answer.branch in registry._store.sessions()
+
+
+def test_a_keep_the_agent_asked_for_survives_a_restart(tmp_path):
+    """`keep` flags a job, and the job table goes when the process
+    does. The snapshot at the end of the turn is what carries the flag
+    over — without it the delegate an agent asked to keep last night is
+    swept this morning."""
+    registry = _tiny_ttl(tmp_path, hours=24)
+    try:
+        parent = registry.open("boss")
+        _turn(parent, ASK_ASYNC, registry)
+        _await_delegates(parent)
+        parent.delegates.keep("boss.scout")  # what the tool's keep calls
+
+        _turn(parent, "!text ok", registry)
+
+        assert _record(registry, "boss.scout")["kept"] is True
+    finally:
+        registry.close()
+
+    reborn = _tiny_ttl(tmp_path)  # sweeps at open, with no table left
+    try:
+        assert "boss.scout" in reborn._store.sessions()
+        assert reborn.sweep_delegates(now=time.time() + 10**6) == []
+    finally:
+        reborn.close()
+
+
+def test_a_delivered_answer_counts_as_dealing_with_the_delegate(tmp_path):
+    """Retention is an IDLE ttl: reading an answer moves the clock, and
+    the studio reads answers on the parent's next turn. The record has
+    to move with it or a delegate read this morning ages from the ask."""
+    registry = _tiny_ttl(tmp_path, hours=24)
+    try:
+        parent = registry.open("boss")
+        _turn(parent, ASK_ASYNC, registry)
+        _await_delegates(parent)
+        asked = _record(registry, "boss.scout")["touched"]
+        time.sleep(0.01)
+
+        _turn(parent, "what did the scout say?", registry)
+
+        assert _record(registry, "boss.scout")["touched"] > asked
+    finally:
+        registry.close()
+
+
+def test_un_keeping_is_the_manifest_and_it_outranks_the_live_job(tmp_path):
+    """nontainer has no un-keep: a job it flagged stays flagged for as
+    long as its session lives. So the record carries the later stamp
+    and every reader takes the human's answer from it — including the
+    sweep, once that job table is gone."""
+    registry = _tiny_ttl(tmp_path, hours=24)
+    try:
+        parent = registry.open("boss")
+        _turn(parent, ASK_ASYNC, registry)
+        _await_delegates(parent)
+        registry.keep_delegate("boss", "boss.scout", True)
+        assert parent.delegates.list()[0].kept is True
+
+        row = registry.keep_delegate("boss", "boss.scout", False)
+
+        assert row["kept"] is False  # the live job still says True
+        assert parent.delegates.list()[0].kept is True
+        assert registry.delegate_rows("boss")[0]["kept"] is False
+        # and a turn's snapshot does not put the flag back
+        _turn(parent, "!text ok", registry)
+        assert _record(registry, "boss.scout")["kept"] is False
+    finally:
+        registry.close()
+
+    # the record is all that is left after a restart, and it says no
+    reborn = _tiny_ttl(tmp_path)  # sweeps at open
+    try:
+        assert "boss.scout" not in reborn._store.sessions()
+        assert _record(reborn) == {}
+    finally:
+        reborn.close()
+
+
+def test_a_kept_grandchild_holds_its_whole_subtree(registry, tmp_path):
+    """A delegate may delegate, and a swept parent's subtree goes with
+    it. Something somebody asked to keep stops that: the branch under
+    it is the one they meant to come back to, and it is only reachable
+    through the record the parent's deletion would take."""
+    registry.open("boss")
+    registry.open_delegate("boss", "boss.scout")
+    registry.open_delegate("boss.scout", "boss.scout.finch")
+    registry.release("boss.scout")
+    registry.release("boss.scout.finch")
+    registry.keep_delegate("boss.scout", "boss.scout.finch", True)
+
+    assert registry.sweep_delegates(now=time.time() + 10**6) == []
+    assert "boss.scout" in registry._store.sessions()
+    assert "boss.scout.finch" in registry._store.sessions()
+
+    # let the grandchild go and the subtree goes together
+    registry.keep_delegate("boss.scout", "boss.scout.finch", False)
+    swept = registry.sweep_delegates(now=time.time() + 10**6)
+    assert swept == ["boss.scout", "boss.scout.finch"]
+    assert _record(registry) == {}
+
+
+def test_the_sweep_leaves_a_delegate_the_registry_holds_open(registry):
+    """A kvgit handle pins its branch, so the store refuses to delete
+    one that is open — and a delegate with a run in flight is open."""
+    registry.open("boss")
+    child = registry.open_delegate("boss", "boss.scout")
+
+    assert registry.sweep_delegates(now=time.time() + 10**6) == []
+    assert child.name in registry._store.sessions()
+
+    registry.release(child.name)
+    assert registry.sweep_delegates(now=time.time() + 10**6) == [child.name]
+
+
+def test_the_rows_say_what_became_of_each_delegate(tmp_path):
+    """The per-session listing: status off the live job where a table
+    holds one, and a row that says so where none does."""
+    registry = _tiny_ttl(tmp_path, hours=24)
+    try:
+        parent = registry.open("boss")
+        _turn(parent, ASK_ASYNC, registry)
+        _await_delegates(parent)
+
+        (row,) = registry.delegate_rows("boss")
+        assert row["name"] == "boss.scout"
+        assert row["status"] == "answered"
+        assert row["known"] is True
+        assert row["kept"] is False
+    finally:
+        registry.close()
+
+    reborn = _tiny_ttl(tmp_path, hours=24)
+    try:
+        (row,) = reborn.delegate_rows("boss")
+        # no job table survived the restart: what is left is the record,
+        # which says this delegate was asked for and its branch is here
+        assert row["known"] is False
+        assert row["status"] == "answered"
+    finally:
+        reborn.close()
+
+
+def test_a_delegate_of_another_session_is_not_this_ones_to_keep(registry):
+    parent = registry.open("boss")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+    registry.open("other")
+
+    assert registry.delegate_rows("other") == []
+    with pytest.raises(KeyError):
+        registry.keep_delegate("other", answer.branch, True)
+
+
+def test_the_primer_says_the_number_and_the_verb(registry, tmp_path):
+    """nontainer's `sessions` tool says `keep` exists. Whether anything
+    sweeps, and on what clock, is the studio's to say — so the agent is
+    told the hours and that it is on."""
+    primer = sessions_mod._retention_primer(24)
+    assert "24 hours" in primer
+    assert "sessions keep" in primer
+    assert sessions_mod._retention_primer(0) == ""
+    assert primer in registry.open("boss").agent.instructions
+
+    off = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path / "off",
+        default_model="dummy",
+        delegate_ttl=0,
+    )
+    try:
+        assert "is swept" not in off.open("boss").agent.instructions
+    finally:
+        off.close()
