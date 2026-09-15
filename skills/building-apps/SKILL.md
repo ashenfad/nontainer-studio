@@ -302,26 +302,19 @@ section.
    traceback is already in this file: READ IT before changing code.
    Guessing from the frontend is how a one-line fix turns into a
    rewrite.
-<!--if:commands-->
-2. `curl api/x` in the terminal — instant, no server. `-i` shows
-   status+headers, `-w '%{http_code}'` prints the code. This hits the
+2. `ws-curl $APP_ORIGIN/api/x` in the terminal — instant, no server.
+   `-i` shows status+headers, `-f` fails the call on a 4xx/5xx instead
+   of printing the error body as if it were a response. This hits the
    dispatcher directly, so it isolates backend from frontend in one
-   call.
-3. test_app for the frontend: page errors carry file:line for runtime
-   errors; parse errors mean bisecting your <script> blocks.
-<!--endif-->
-<!--if:no-commands-->
-2. test_app for everything else — both the frontend AND the endpoints.
-   Page errors carry file:line for runtime errors; parse errors mean
-   bisecting your <script> blocks. To probe an endpoint on its own, use
-   an `eval` action: `await (await fetch('api/x')).text()` — `eval`
-   awaits what you return, so return the promise chain rather than
-   referencing a `.then(r => ...)` binding from outside it.
-
-   There is no `curl` builtin on this executor. The terminal has the
-   REAL curl, which would hit the network instead of your app — a
-   `curl api/x` here does NOT test your endpoint.
-<!--endif-->
+   call. The verb is `ws-curl`, never plain `curl`: real curl may be on
+   the PATH, and it would reach the NETWORK instead of your app.
+3. `ws-pytest` when the failing piece is one function — put plain
+   `assert` tests in tests/test_<name>.py, never under app/, and reach
+   a handler with `call('x', params={...}, db=fake)`. A failing
+   assertion names the function; a blank page names nothing.
+   `ws-vitest` is the same tier for a frontend module.
+4. test_app for the page: errors carry file:line for runtime errors;
+   parse errors mean bisecting your <script> blocks.
 
 ## Verification that means something
 
