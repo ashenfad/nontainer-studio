@@ -793,6 +793,45 @@ def test_a_kept_grandchild_holds_its_whole_subtree(registry, tmp_path):
     assert _record(registry) == {}
 
 
+def test_a_kept_grandchild_holds_a_live_parents_branch(tmp_path):
+    """The subtree rule has to hold for a delegate whose job is still
+    in a live table, which is the case nontainer's own sweep decides.
+    It sweeps a whole table in one go and takes no exclusion list, so
+    the studio has to spare the root BEFORE that runs — after it, the
+    branch is gone and so is the record the subtree hangs off."""
+    registry = _tiny_ttl(tmp_path)  # everything is idle the moment it lands
+    try:
+        parent = registry.open("boss")
+        _turn(parent, ASK_ASYNC, registry)  # a live job for boss.scout
+        _await_delegates(parent)
+        registry.open_delegate("boss.scout", "boss.scout.finch")
+        registry.release("boss.scout.finch")
+        registry.keep_delegate("boss.scout", "boss.scout.finch", True)
+
+        assert registry.sweep_delegates() == []
+
+        assert "boss.scout" in registry._store.sessions()
+        assert "boss.scout.finch" in registry._store.sessions()
+        assert set(_record(registry)) == {"boss.scout", "boss.scout.finch"}
+        # and holding it back is not a keep: nobody asked for one, so
+        # the record still says nobody has, and the rail agrees
+        assert _record(registry, "boss.scout")["kept"] is None
+        assert registry.delegate_rows("boss")[0]["kept"] is False
+
+        # freeing the grandchild frees the subtree — for the next run,
+        # since nontainer's flag cannot be taken off a live job
+        registry.keep_delegate("boss.scout", "boss.scout.finch", False)
+    finally:
+        registry.close()
+
+    reborn = _tiny_ttl(tmp_path)  # sweeps at open, with no table left
+    try:
+        assert "boss.scout" not in reborn._store.sessions()
+        assert _record(reborn) == {}
+    finally:
+        reborn.close()
+
+
 def test_the_sweep_leaves_a_delegate_the_registry_holds_open(registry):
     """A kvgit handle pins its branch, so the store refuses to delete
     one that is open — and a delegate with a run in flight is open."""

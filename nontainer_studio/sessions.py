@@ -879,6 +879,11 @@ class Registry:
         self.delegate_ttl_hours = (
             _delegate_ttl_hours() if delegate_ttl is None else max(0.0, delegate_ttl)
         )
+        # Delegates the sweep flagged kept in nontainer's job table to
+        # spare a subtree, which is not a keep anybody asked for (see
+        # `_pin`). In memory only, because the flag it stands for is:
+        # both die with this process.
+        self._pinned: set[str] = set()
         # The store is the object that owns what outlives a session:
         # opening one, deleting one, and the tag scope that belongs to
         # none of them. Studio's own bookkeeping (the app dbs, the
@@ -1978,14 +1983,18 @@ class Registry:
     # remembers it, and the two sweeps below are the two halves of one
     # rule.
 
-    @staticmethod
-    def _freshest(entry: dict, job: Any) -> tuple[float, bool]:
+    def _freshest(self, entry: dict, job: Any) -> tuple[float, bool]:
         """``(touched, kept)`` for a record and the live job that may
         know more than it.
 
         ``touched`` is the later of the two: both sides move it when
         they deal with the delegate, and a delegate is as recent as the
         most recent thing anybody did with it.
+
+        A PINNED job is read past entirely. Its flag and its stamp are
+        the sweep's own doing (see :meth:`_pin`), so reading either as
+        news about the delegate would report a keep nobody asked for
+        and a delegate dealt with by nothing.
 
         ``kept`` is the record's as soon as the record HAS one.
         ``None`` there means nobody has said, which is when nontainer's
@@ -1997,7 +2006,7 @@ class Registry:
         put the flag back the next time an answer was read.
         """
         touched, kept = entry["touched"], entry["kept"]
-        if job is not None:
+        if job is not None and job.name not in self._pinned:
             touched = max(touched, float(getattr(job, "touched", 0.0) or 0.0))
             if kept is None:
                 kept = getattr(job, "kept", False)
@@ -2068,12 +2077,12 @@ class Registry:
         """Delete the branches of delegates nobody has dealt with
         inside the TTL, and return what went, sorted.
 
-        Two sweeps, one rule. Every live session's helper sweeps its
-        own table first, which is nontainer's rule with its own
-        touch-on-read in it; then the manifest's record is walked for
-        the delegates no table holds — the ones asked for before a
-        restart — and those branches are deleted through the store
-        directly.
+        Two sweeps, one rule, and the rule is decided HERE before
+        either runs. Every live session's helper sweeps its own table,
+        which is nontainer's rule with its own touch-on-read in it;
+        then the manifest's record is walked for the delegates no table
+        holds — the ones asked for before a restart — and those
+        branches are deleted through the store directly.
 
         What is spared: a kept delegate; one dealt with inside the TTL;
         one this registry still holds open, since a workspace handle
@@ -2083,6 +2092,14 @@ class Registry:
         delegates are taken with it, so one of them being kept or open
         leaves the whole subtree standing rather than deleting around
         it.
+
+        The subtree rule is applied BEFORE nontainer's sweep rather
+        than after it, and that is what :meth:`_pin` is for. A helper
+        sweeps its whole table in one critical section and takes no
+        exclusion list, so a root whose subtree is held has to be
+        flagged kept in that table first or the branch is gone before
+        this can spare it — deleted, and with the record it is
+        reachable through.
 
         A swept name leaves the record and the session rows with its
         branch, which is what lets :meth:`sweep_dbs` collect a db
@@ -2098,21 +2115,38 @@ class Registry:
         if ttl <= 0:
             return []
         now = time.time() if now is None else now
-        swept: set[str] = set()
-        for name, session in list(self._sessions.items()):
-            if session.delegates is None:
-                continue
-            try:
-                swept.update(session.delegates.sweep(ttl))
-            except Exception as e:  # noqa: BLE001
-                # A branch something still holds open refuses to delete,
-                # and a closed helper raises outright. Neither is worth
-                # losing the rest of the sweep over; the next pass tries
-                # again, and nothing was marked expired here.
-                log.info("delegates: %s's own jobs were not swept (%s)", name, e)
+        # One critical section for the whole sweep: what is held is read
+        # off the record and the open sessions, and a sweep that let
+        # either move between deciding and deleting would spare the
+        # wrong subtree. The lock is reentrant, so the store deletions
+        # underneath may reach back through `workspace_for`.
         with self._lock:
             manifest = self._manifest()
             record = manifest["delegates"]
+            live = self._live_jobs()
+            for child in sorted(record):
+                job = live.get(child)
+                if job is None or job.status in ("running", "expired"):
+                    continue  # no table is about to sweep this one
+                touched, kept = self._freshest(record[child], job)
+                if kept or touched > now - ttl:
+                    continue  # nor this one: nontainer spares it too
+                if self._held(child, manifest, live):
+                    self._pin(child, record[child]["parent"])
+            swept: set[str] = set()
+            for name, session in list(self._sessions.items()):
+                if session.delegates is None:
+                    continue
+                try:
+                    swept.update(session.delegates.sweep(ttl))
+                except Exception as e:  # noqa: BLE001
+                    # A branch something still holds open refuses to
+                    # delete, and a closed helper raises outright.
+                    # Neither is worth losing the rest of the sweep
+                    # over; the next pass tries again, and nothing was
+                    # marked expired here.
+                    log.info("delegates: %s's own jobs were not swept (%s)", name, e)
+            # after the sweeps: the jobs they took now read `expired`
             live = self._live_jobs()
             candidates: set[str] = set()
             for child in sorted(record):
@@ -2134,11 +2168,7 @@ class Registry:
                 # record that says whose those branches are goes with
                 # the parent's.
                 subtree = self.delegates_of(child, manifest)
-                held = sorted(
-                    g
-                    for g in subtree
-                    if g in self._sessions or self._freshest(record[g], live.get(g))[1]
-                )
+                held = self._held(child, manifest, live)
                 if held:
                     log.info(
                         "delegates: leaving the subtree under %s — %s is kept or "
@@ -2154,6 +2184,7 @@ class Registry:
                 self._delete_branches(doomed)
             gone = swept | doomed
             for name in sorted(gone):
+                self._pinned.discard(name)
                 record.pop(name, None)
                 manifest["sessions"].pop(name, None)
                 manifest["models"].pop(name, None)
@@ -2169,6 +2200,53 @@ class Registry:
                 log.info("delegates: swept %s", ", ".join(sorted(gone)))
                 self.sweep_dbs()
             return sorted(gone)
+
+    def _held(self, name: str, manifest: dict, live: dict) -> list[str]:
+        """Branches under ``name`` that must stand: kept, or held open
+        by this registry. Caller holds ``_lock``.
+
+        The subtree goes with its root, so this is what decides whether
+        the root goes at all. An OPEN branch is in here for the same
+        reason a kept one is, plus a harder one: a handle pins its
+        branch, and asking the store to delete it raises in the middle
+        of a sweep that had other branches to take.
+        """
+        return sorted(
+            child
+            for child in self.delegates_of(name, manifest)
+            if child in self._sessions
+            or self._freshest(manifest["delegates"][child], live.get(child))[1]
+        )
+
+    def _pin(self, child: str, parent: str) -> None:
+        """Flag ``child``'s job kept in its parent's live table so
+        nontainer's sweep leaves it alone. Caller holds ``_lock``.
+
+        The studio decides what a sweep spares; nontainer's sweep takes
+        a whole table in one critical section and offers no exclusion
+        list, so this is the only seam through which that decision
+        reaches it. What it flags is a delegate whose own subtree is
+        held, never one somebody asked to keep.
+
+        A pin is not a keep, and nothing reads it as one: the record
+        stays as it was (see :meth:`_freshest`), so the rail shows what
+        the human decided and a restart sweeps the delegate if its
+        subtree is free by then. nontainer's flag is one-way, though,
+        so a pinned job is out of both sweeps' reach until its session
+        closes — the branch of a delegate whose subtree was freed in
+        the meantime waits for the next run rather than the next hour.
+        """
+        session = self._sessions.get(parent)
+        helper = session.delegates if session is not None else None
+        if helper is None:
+            return
+        try:
+            helper.keep(child)
+        except Exception as e:  # noqa: BLE001 - a job it cannot flag is not ours
+            log.info("delegates: %s could not be held back (%s)", child, e)
+            return
+        self._pinned.add(child)
+        log.info("delegates: %s is idle but its subtree is held; leaving it", child)
 
     def delegate_rows(self, name: str) -> list[dict]:
         """What ``name`` delegated, most recently dealt with first —
@@ -2453,6 +2531,7 @@ class Registry:
                 manifest["titles"].pop(victim, None)
                 manifest["created"].pop(victim, None)
                 manifest["delegates"].pop(victim, None)
+                self._pinned.discard(victim)
                 self._save_manifest(manifest)
             if live is not None:
                 # before branch deletion: an open workspace holds its branch
