@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import mimetypes
 import os
 from contextlib import asynccontextmanager
@@ -34,10 +35,41 @@ from starlette.staticfiles import StaticFiles
 from . import delegates
 from .sessions import Registry, _clean_title, repair_aborted_run
 
+log = logging.getLogger(__name__)
+
 STATIC = Path(__file__).parent / "static"
 MAX_UPLOAD = 50_000_000  # upload bodies buffer in memory; cap them
 
 HTTP_VERBS = ["GET", "POST", "PUT", "DELETE", "PATCH"]
+
+
+DELEGATE_SWEEP_EVERY = 3600
+"""Seconds between delegate retention sweeps.
+
+Not a setting. The TTL is the decision a human makes; how often the
+reaper looks is the studio's own business, and an hour is finer than
+any TTL worth spelling in hours. A pass costs a manifest read plus
+whatever it deletes.
+"""
+
+
+async def _sweep_delegates_forever(
+    registry: Registry, every: float = DELEGATE_SWEEP_EVERY
+) -> None:
+    """Run the retention sweep on a timer for as long as the server is
+    up. The registry sweeps once at open, so this sleeps first.
+
+    Nothing may escape the loop: a pass that fails — a branch held
+    open, a manifest half-written — costs that pass and not the
+    schedule, or one bad delegate turns retention off until the next
+    restart.
+    """
+    while True:
+        await asyncio.sleep(every)
+        try:
+            await anyio.to_thread.run_sync(registry.sweep_delegates)
+        except Exception as e:  # noqa: BLE001 - the schedule outlives a bad pass
+            log.warning("delegate sweep failed: %s", e)
 
 
 def cors_for_apps(app: Any) -> Any:
@@ -352,11 +384,22 @@ class _A2uiTurns:
         return out
 
 
-async def _run_turn(session: Any, message: str) -> None:
+async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
     """One agent turn, as a server-side task DECOUPLED from any HTTP
     request: events land in the session's buffer, subscribers follow
     from a cursor. Disconnects, reloads, and session switches never
-    abort work. Caller holds the turn lock; released here."""
+    abort work. Caller holds the turn lock; released here.
+
+    ``registry`` is passed so the turn can write down what its
+    delegates' job table now says (retention outlives the table; see
+    ``Registry.snapshot_delegates``). Without one the turn runs
+    exactly as before and records nothing — every caller that has a
+    registry passes it."""
+
+    def snapshot() -> None:
+        if registry is not None:
+            registry.snapshot_delegates(session.name)
+
     run_id = None
     cancelled = False
     errored = None
@@ -381,6 +424,12 @@ async def _run_turn(session: Any, message: str) -> None:
                     "text": delegates.answer_message(name, answer),
                 }
             )
+        if answers:
+            # Reading an answer is dealing with the delegate, and
+            # nontainer moved its `touched` when this collected it.
+            # Record that before the turn runs: a long turn must not be
+            # what decides whether a delivered answer counts as recent.
+            await asyncio.to_thread(snapshot)
         prompt = "\n\n".join(
             [delegates.answer_message(n, a) for n, a in answers] + [message]
         )
@@ -448,6 +497,10 @@ async def _run_turn(session: Any, message: str) -> None:
         session.run_id = None
         await session.emit({"type": "done", "run_id": run_id, "head": session.ws.head})
         session.turn_lock.release()
+        # After the lock: the agent may have asked for a delegate or
+        # kept one during the turn, and both live only in a job table
+        # until this writes them down.
+        await asyncio.to_thread(snapshot)
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +578,7 @@ def build_app(registry: Registry) -> Starlette:
             return JSONResponse({"error": "a turn is already running"}, status_code=409)
         # keep a strong reference: the loop holds tasks weakly, and a
         # GC'd task is a silently dead turn with a stuck lock
-        session.turn_task = asyncio.create_task(_run_turn(session, message))
+        session.turn_task = asyncio.create_task(_run_turn(session, message, registry))
         return JSONResponse({"ok": True, "since": session.next_seq})
 
     @with_session
@@ -557,7 +610,7 @@ def build_app(registry: Registry) -> Starlette:
             session.turn_lock.release()
             return JSONResponse({"error": str(e)}, status_code=400)
         await session.emit({"type": "truncate", "to": seq})
-        session.turn_task = asyncio.create_task(_run_turn(session, message))
+        session.turn_task = asyncio.create_task(_run_turn(session, message, registry))
         return JSONResponse({"ok": True, "since": session.next_seq})
 
     @with_session
@@ -1041,6 +1094,33 @@ def build_app(registry: Registry) -> Starlette:
         session.turn_lock.release()
         return JSONResponse({"ok": True, "since": session.next_seq})
 
+    @with_session
+    async def session_delegates(request: Any, session: Any) -> JSONResponse:
+        """What this session delegated, and what became of each one —
+        the listing behind the rail's ⑂ badge."""
+        rows = await anyio.to_thread.run_sync(registry.delegate_rows, session.name)
+        return JSONResponse({"delegates": rows})
+
+    @with_session
+    async def keep_delegate(request: Any, session: Any) -> JSONResponse:
+        """Keep a delegate's branch from the retention sweep, or let it
+        go again. `{"kept": false}` un-keeps."""
+        child = request.path_params["child"]
+        body = await request.json()
+        try:
+            row = await anyio.to_thread.run_sync(
+                registry.keep_delegate,
+                session.name,
+                child,
+                bool(body.get("kept", True)),
+            )
+        except KeyError:
+            return JSONResponse(
+                {"error": f"{session.name!r} has no delegate {child!r}"},
+                status_code=404,
+            )
+        return JSONResponse({"ok": True, "delegate": row})
+
     async def api_fallback(request: Any) -> Response:
         """Unmatched /api/* — almost always an app in the preview
         iframe using ABSOLUTE urls, which escape the /preview/{name}/
@@ -1072,9 +1152,26 @@ def build_app(registry: Registry) -> Starlette:
 
     @asynccontextmanager
     async def lifespan(app: Any):
+        # The sweep needs a loop to be scheduled on, and this is the
+        # only place the studio has one for the life of the server. No
+        # TTL, no timer: 0 is retention off, not retention every hour
+        # with nothing to take.
+        sweeper = (
+            # the interval is read HERE rather than bound as a
+            # default: a default argument is fixed when the function is
+            # defined, which is before anything can change it
+            asyncio.create_task(
+                _sweep_delegates_forever(registry, DELEGATE_SWEEP_EVERY)
+            )
+            if registry.delegate_ttl > 0
+            else None
+        )
         try:
             yield
         finally:
+            if sweeper is not None:
+                sweeper.cancel()
+                await asyncio.gather(sweeper, return_exceptions=True)
             registry.close()
 
     verbs = HTTP_VERBS
@@ -1101,6 +1198,12 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions/{name}/apps", session_apps, methods=["GET"]),
             Route("/api/sessions/{name}/restore", restore, methods=["POST"]),
             Route("/api/sessions/{name}/fork", fork, methods=["POST"]),
+            Route("/api/sessions/{name}/delegates", session_delegates, methods=["GET"]),
+            Route(
+                "/api/sessions/{name}/delegates/{child}/keep",
+                keep_delegate,
+                methods=["POST"],
+            ),
             Route("/api/apps", list_apps, methods=["GET"]),
             Route("/api/apps/{token}/current", set_current, methods=["POST"]),
             Route(
