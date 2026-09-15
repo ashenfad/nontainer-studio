@@ -1033,7 +1033,16 @@ class Registry:
 
         Pass ``manifest`` to answer for a batch without re-reading it.
         """
-        return name in (manifest or self._manifest())["delegates"]
+        return self.parent_of(name, manifest) is not None
+
+    def parent_of(self, name: str, manifest: dict | None = None) -> str | None:
+        """The session that forked ``name``, or ``None`` for one nobody
+        forked — the delegates record asked about a single name.
+
+        Pass ``manifest`` to answer for a batch without re-reading it.
+        """
+        entry = (manifest or self._manifest())["delegates"].get(name)
+        return entry["parent"] if entry is not None else None
 
     def delegates_of(self, name: str, manifest: dict | None = None) -> list[str]:
         """Every session forked under ``name``, delegates of delegates
@@ -2286,6 +2295,21 @@ class Registry:
             )
         rows.sort(key=lambda r: (-r["touched"], r["name"]))
         return rows
+
+    def delegate_of(self, name: str) -> dict | None:
+        """The row ``name``'s parent sees for it, with the parent named
+        — ``None`` for a session nobody forked.
+
+        One question for a shell that has only a name: is this
+        somebody's delegate, whose, and what became of it. The row is
+        the parent's listing's, so both agree about what they are
+        looking at.
+        """
+        parent = self.parent_of(name)
+        if parent is None:
+            return None
+        row = next((r for r in self.delegate_rows(parent) if r["name"] == name), None)
+        return {**row, "parent": parent} if row is not None else None
 
     def keep_delegate(self, parent: str, child: str, kept: bool) -> dict:
         """Flag or unflag one delegate against the sweep; returns its
