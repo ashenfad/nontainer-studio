@@ -228,12 +228,20 @@ class StudioRunner:
         Its own event loop: the runner is on a worker thread, and a
         delegate's turn must not depend on a server loop being there to
         borrow (nor block one for as long as the delegate takes).
+
+        The registry goes with it, as it does from the routes. A
+        delegate may delegate, and what its own job table knows about
+        those — when each was last dealt with, which ones it kept —
+        lives only in that table until a turn writes it down. This
+        runner releases the child the moment it answers, and the table
+        goes with it, so a turn run without the registry loses a keep
+        the delegate asked for and the branch is swept from under it.
         """
         from .server import _run_turn
 
         child.turn_lock.acquire()  # _run_turn releases it
         since = child.next_seq
-        asyncio.run(_run_turn(child, prompt))
+        asyncio.run(_run_turn(child, prompt, self._registry))
         return _reply(child, since)
 
 

@@ -527,6 +527,47 @@ def test_a_delegate_can_start_from_another_sessions_commit(registry):
     assert not parent.ws.files.fs.exists("/workspace/from_other.md")
 
 
+def test_a_delegates_own_turn_is_run_with_the_registry(registry, monkeypatch):
+    """The runner drives a delegate's turn the way the server drives a
+    human's, and that includes handing over the registry: a delegate
+    may delegate, and what its job table knows is written down on the
+    turn that ends — the runner releases the child, and the table, as
+    soon as it answers."""
+    seen = []
+    original = server._run_turn
+
+    async def spy(session, message, reg=None):
+        seen.append(reg)
+        await original(session, message, reg)
+
+    monkeypatch.setattr(server, "_run_turn", spy)
+    parent = registry.open("boss")
+
+    _delegate(registry, parent, WRITE_A_NOTE)
+
+    assert seen and all(reg is registry for reg in seen)
+
+
+def test_a_delegate_that_kept_its_own_delegate_is_believed_after_it_goes(registry):
+    """The nested case, end to end: a delegate of a delegate is kept in
+    the CHILD's job table, and that table is released with the child
+    when it answers. The snapshot on the child's turn is the only thing
+    that outlives it."""
+    registry.open("boss")
+    child = registry.open_delegate("boss", "boss.scout")
+    child.delegates.ask("!text Had a look.", name="finch", wait=True)
+    grandchild = "boss.scout.finch"
+    assert _record(registry, grandchild)["parent"] == "boss.scout"
+    child.delegates.keep(grandchild)
+
+    _turn(child, "!text done", registry)
+    registry.release(child.name)
+
+    assert _record(registry, grandchild)["kept"] is True
+    assert registry.sweep_delegates(now=time.time() + 10**6) == []
+    assert grandchild in registry._store.sessions()
+
+
 # -- retention: the studio schedules what nontainer supplies -----------------
 
 
