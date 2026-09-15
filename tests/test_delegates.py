@@ -9,6 +9,7 @@ real against its own branch.
 import asyncio
 import json
 import time
+from pathlib import Path
 
 import pytest
 from agno.models.response import ModelResponse
@@ -256,6 +257,12 @@ def _turn(session, message, registry=None):
     return [e for e in session.events if e.get("seq", -1) >= since]
 
 
+def _run_ids(registry, name: str) -> list[str]:
+    """The agent's memory on that branch, as the chat db holds it."""
+    record = registry.db.get_session(name)
+    return [run.run_id for run in (record.runs or [])] if record is not None else []
+
+
 def _tool_results(events, name):
     return [
         e["result"] for e in events if e["type"] == "tool_end" and e["name"] == name
@@ -367,6 +374,203 @@ def test_an_edited_turn_gets_the_delegates_answer_again(registry):
     # once, though: the turn after it is not a third delivery
     assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok"))
     assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [0]
+
+
+# -- the published action: apps as a starting point --------------------------
+
+PUBLISHED = '!tool sessions {"action": "published"}\n!text Listed them.'
+
+
+def _make_app(registry, session, title: str, body: bytes = b"<h1>app</h1>") -> dict:
+    """A session with an app under `app/`, a title, and a version."""
+    registry.set_agent_title(session.name, title)
+    session.ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    session.ws.files.fs.write("/workspace/app/index.html", body)
+    session.ws.commit()
+    return registry.publish(session.name)
+
+
+def test_the_published_action_lists_the_apps_the_human_has(registry):
+    """What an agent may start from is what the human published, and it
+    reads the studio's own app registry — so the list is the rail's."""
+    boss = registry.open("boss")
+    assert _tool_results(_turn(boss, PUBLISHED), "sessions") == [
+        "The human has published nothing yet."
+    ]
+
+    first = _make_app(registry, registry.open("alice"), "Revenue dashboard")
+    second = _make_app(registry, registry.open("bob"), "Signup funnel")
+
+    listed = _tool_results(_turn(boss, PUBLISHED), "sessions")[0]
+    lines = listed.splitlines()
+    assert lines[0].endswith("title (current version), origin tag:")
+    # newest first, each with the token the terminal and fork_from take
+    assert lines[1] == f"- Signup funnel (v1) — {second['origin']}"
+    assert lines[2] == f"- Revenue dashboard (v1) — {first['origin']}"
+    assert len(lines) == 3
+
+
+def test_a_version_with_no_origin_tag_says_so(registry):
+    """A row that names no origin has nothing to mount, take from or
+    fork — and saying so is better than printing a name that would
+    resolve to nothing."""
+    published = _make_app(registry, registry.open("alice"), "Revenue dashboard")
+    manifest = registry._manifest()
+    manifest["apps"][published["token"]]["versions"]["v1"].pop("origin")
+    registry._save_manifest(manifest)
+
+    boss = registry.open("boss")
+    listed = _tool_results(_turn(boss, PUBLISHED), "sessions")[0]
+    assert listed.splitlines()[1] == (
+        "- Revenue dashboard (v1) — no origin tag: nothing to start from here"
+    )
+
+
+def test_every_other_action_is_nontainers_to_dispatch(registry, monkeypatch):
+    """The studio owns the tool and one action; the rest arrive at
+    `run_action` as the model sent them, over this session's own
+    helper."""
+    boss = registry.open("boss")
+    seen = {}
+    dispatch = sessions_mod.run_action
+
+    def spy(helper, action, **kwargs):
+        seen["helper"], seen["action"], seen["kwargs"] = helper, action, kwargs
+        return dispatch(helper, action, **kwargs)
+
+    monkeypatch.setattr(sessions_mod, "run_action", spy)
+    result = _tool_results(
+        _turn(boss, '!tool sessions {"action": "list"}\n!text ok'), "sessions"
+    )[0]
+
+    assert result.startswith("no delegated jobs yet")
+    assert seen["action"] == "list"
+    assert seen["helper"] is boss.delegates
+    assert seen["kwargs"] == {
+        "task": "",
+        "name": "",
+        "paths": None,
+        "inherit": "fresh",
+        "fork_from": "",
+        "resume": "",
+        "wait": False,
+    }
+
+
+def test_the_tool_is_nontainers_shape_under_nontainers_name(registry):
+    """One `sessions` tool, with nontainer's signature argument for
+    argument, so a model that has learned the spelling anywhere can use
+    it here. Its description is a constant: a tool description is the
+    head of the prompt cache and must not move between turns."""
+    import inspect
+
+    boss = registry.open("boss")
+    tool = registry._sessions_tool(boss.delegates)
+
+    assert tool.__name__ == "sessions"
+    assert list(inspect.signature(tool).parameters) == [
+        "action",
+        "task",
+        "name",
+        "paths",
+        "inherit",
+        "fork_from",
+        "resume",
+        "wait",
+    ]
+    assert tool.__doc__ is sessions_mod.SESSIONS_TOOL_DESCRIPTION
+    assert registry._sessions_tool(boss.delegates).__doc__ is tool.__doc__
+    assert '  action="published"' in tool.__doc__
+
+    # and the agent is handed it once: nontainer's is not registered
+    # beside it
+    toolkit = boss.agent.tools[0]
+    assert toolkit.sessions is None
+    assert [f for f in toolkit.functions if f == "sessions"] == []
+    assert [getattr(t, "__name__", None) for t in boss.agent.tools].count(
+        "sessions"
+    ) == 1
+
+
+NOTE = "the CSV comes in UTF-16, which is why the loader decodes"
+
+
+def _conversation(store_path, branch: str) -> list[str]:
+    """The conversation the branch holds, as kvgit holds it: one key
+    per stored run. Read off the store because a full inherit carries
+    the conversation as STATE — it is on the branch before any agent
+    opens it."""
+    import kvgit
+
+    handle = kvgit.store(
+        kind="disk", path=str(Path(store_path) / "kvgit"), branch=branch
+    )
+    try:
+        return sorted(k for k in handle.keys() if k.startswith("__agno__/runs/"))
+    finally:
+        handle.versioned.store.close()
+
+
+def test_an_agent_starts_from_an_app_whose_session_is_gone(registry, tmp_path):
+    """The workflow the origin tag exists for. A session builds an app
+    and publishes it; the session is deleted; a later session mounts
+    that origin, takes a file out of it, and puts a question to the
+    agent that built it — none of which the published version alone
+    could answer, since it holds `app/` and nothing else."""
+    maker = registry.open("maker")
+    registry.set_agent_title("maker", "Revenue dashboard")
+    _turn(
+        maker,
+        '!tool file_write {"path": "/workspace/app/index.html", '
+        '"content": "<h1>revenue</h1>"}\n'
+        '!tool file_write {"path": "/workspace/notes/loader.md", '
+        f'"content": "{NOTE}"}}\n'
+        "!text Built the dashboard.",
+    )
+    published = registry.publish("maker")
+    tag = published["origin"]
+    remembered = _run_ids(registry, "maker")
+    assert remembered
+
+    registry.delete(maker)
+    assert "maker" not in registry._store.sessions()
+
+    builder = registry.open("builder")
+    assert tag in _tool_results(_turn(builder, PUBLISHED), "sessions")[0]
+
+    # MOUNTED: the origin is the whole tree, where the version is `app/`
+    _turn(
+        builder,
+        f'!tool terminal {{"command": "ws-git worktree add old {tag}"}}\n'
+        "!text Mounted it.",
+    )
+    fs = builder.ws.files.fs
+    assert fs.read("/workspace/old/app/index.html") == b"<h1>revenue</h1>"
+    assert fs.read("/workspace/old/notes/loader.md").decode() == NOTE
+
+    # TAKEN FROM: one path, landed here
+    _turn(
+        builder,
+        f'!tool terminal {{"command": "ws-git checkout {tag} -- notes/loader.md"}}\n'
+        "!text Took the note.",
+    )
+    assert fs.read("/workspace/notes/loader.md").decode() == NOTE
+
+    # ASKED: a clone of the agent that built it, memory included
+    answer = _delegate(
+        registry,
+        builder,
+        "!text The loader decodes UTF-16.",
+        fork_from=tag,
+        inherit="full",
+    )
+    assert answer.status == "answered"
+    assert _conversation(tmp_path, answer.branch) == sorted(
+        f"__agno__/runs/{run_id}" for run_id in remembered
+    )
+    # and the files came with it, which a fresh inherit would give too
+    child = registry.open(answer.branch)
+    assert child.ws.files.fs.read("/workspace/notes/loader.md").decode() == NOTE
 
 
 class FailingModel(DummyModel):

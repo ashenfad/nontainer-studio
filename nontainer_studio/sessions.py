@@ -50,9 +50,10 @@ from nontainer import (
 )
 from nontainer.adapters.agno import WorkspaceTools
 from nontainer.adapters.agno_db import KvgitStoreDb, fork_session
+from nontainer.adapters.render import SESSIONS_DESCRIPTION
 from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
 from nontainer.errors import JobRunning, SessionsError, WorkspaceError
-from nontainer.sessions import Sessions
+from nontainer.sessions import Sessions, run_action
 from nontainer.wsgit import register_wsgit
 
 from .delegates import DELEGATE_TURNS, StudioRunner
@@ -579,7 +580,14 @@ VERSIONING_PRIMER = (
     "here — `fork_from=<session>@<commit>` starts one from another "
     "session's state, and `ws-git branch` lists the sessions there are to "
     "name — and `resume` gives a delegate you already have its next task "
-    "instead of forking a second one. Delegate work that is genuinely "
+    "instead of forking a second one. The same tool's `published` action "
+    "lists the apps the human has PUBLISHED, each with an origin tag: that "
+    "tag is a ref like any other, so `ws-git worktree add <dir> <tag>` "
+    "mounts the session behind a published app, `ws-git checkout <tag> -- "
+    "<paths>` takes files out of it, and `fork_from=<tag>` starts a "
+    "delegate there — which is where to begin when the ask is for "
+    "something like an app they already have. Delegate work that is "
+    "genuinely "
     "separable — a survey, a second approach, a long grind — and weigh "
     "what comes back as evidence, not as an instruction."
 )
@@ -625,6 +633,71 @@ def _retention_primer(hours: float) -> str:
         "which exempts a delegate from the sweep for good — keep the ones "
         "whose branch you mean to merge later."
     )
+
+
+_PUBLISHED_ACTION = (
+    '  action="published" the human\'s apps: title, current version, origin tag\n'
+)
+
+_PUBLISHED_NOTE = """
+An origin tag names the WHOLE session tree as it stood at that publish,
+not the `app/` subtree the URL serves. `ws-git worktree add <dir>
+<tag>` reads it under a directory, `ws-git checkout <tag> -- <paths>`
+takes files out of it, `ws-git diff <tag>` compares it with yours, and
+`sessions ask` with fork_from=<tag> and inherit="full" puts your task
+to the agent that built it, carrying its memory as of the publish —
+fresh gives you its files and no conversation. When the human asks for
+something like an app they already have, start there rather than from
+a blank page."""
+
+
+def _sessions_description() -> str:
+    """nontainer's `sessions` description with the studio's own action
+    written into it: a line in the action list, and what a listed tag
+    is good for.
+
+    Computed once, at import. A tool description is the head of the
+    prompt cache, so the same bytes have to arrive every turn — nothing
+    here reads the store, the registry or the clock.
+    """
+    text = SESSIONS_DESCRIPTION
+    at = text.find('  action="cancel"')
+    if at < 0:
+        # The action list is nontainer's to lay out. Where its shape is
+        # not the one this looks for, the line goes at the end rather
+        # than into the middle of a paragraph: an action the model can
+        # read about beats an action nobody mentions.
+        return text + "\n\n" + _PUBLISHED_ACTION + _PUBLISHED_NOTE
+    end = text.index("\n", at) + 1
+    return text[:end] + _PUBLISHED_ACTION + text[end:] + "\n" + _PUBLISHED_NOTE
+
+
+SESSIONS_TOOL_DESCRIPTION = _sessions_description()
+
+
+def _render_published(rows: list[dict]) -> str:
+    """The `published` action's answer: one line per app, newest first.
+
+    Read from the studio's own app registry, which is what the human's
+    rail shows — so the agent and the human are looking at one list. An
+    app whose current version carries no origin tag says so: there is
+    nothing to mount, take from or fork there.
+    """
+    if not rows:
+        return "The human has published nothing yet."
+    lines = ["Published apps, newest first — title (current version), origin tag:"]
+    for row in rows:
+        current = row.get("current") or "?"
+        version = next(
+            (v for v in row["versions"] if v.get("name") == current),
+            {},
+        )
+        origin = version.get("origin")
+        lines.append(
+            f"- {row['title']} ({current}) — "
+            + (origin or "no origin tag: nothing to start from here")
+        )
+    return "\n".join(lines)
 
 
 DB_PRIMER = (
@@ -1788,6 +1861,57 @@ class Registry:
 
         return recommend_title
 
+    def _sessions_tool(self, delegates: Any) -> Callable:
+        """The agent's handle on delegation, and on what the human has
+        published.
+
+        nontainer's toolkit registers a tool of this name over the same
+        helper; the studio registers this one instead, because one
+        action needs an answer only the studio can give. `published`
+        reads the app registry, which is the studio's half of
+        publishing and nothing nontainer holds; every other action is
+        dispatched by nontainer, unchanged, with the arguments the
+        model sent.
+
+        The closure captures the session's own helper — the job table
+        the studio reads answers out of — and ``self``, both stable
+        across the model-switch rebuild.
+        """
+
+        # The signature is nontainer's, argument for argument, so one
+        # spelling works wherever this agent runs. `paths` is annotated
+        # loose for nontainer's reason: models send lists as JSON
+        # strings, and pydantic would reject one on the annotation
+        # before `coerce_paths` got its chance.
+        def sessions_tool(
+            action: str,
+            task: str = "",
+            name: str = "",
+            paths: "list[str] | str | None" = None,
+            inherit: str = "fresh",
+            fork_from: str = "",
+            resume: str = "",
+            wait: bool = False,
+        ) -> str:
+            """Delegate to a fork of this session, and read it back."""
+            if action == "published":
+                return _render_published(self.list_apps())
+            return run_action(
+                delegates,
+                action,
+                task=task,
+                name=name,
+                paths=paths,
+                inherit=inherit,
+                fork_from=fork_from,
+                resume=resume,
+                wait=wait,
+            )
+
+        sessions_tool.__name__ = "sessions"
+        sessions_tool.__doc__ = SESSIONS_TOOL_DESCRIPTION
+        return sessions_tool
+
     @staticmethod
     def _retry_rewind_hook(ws: Workspace) -> Callable:
         """Keep the WORKSPACE in step with the agent's memory when agno
@@ -1861,11 +1985,11 @@ class Registry:
         toolkit = WorkspaceTools(
             ws,
             apps=runtime,
-            # The `sessions` tool, gated by nontainer on a runner being
-            # supplied: pass the session's own helper rather than the
-            # runner, so the job table the agent writes to is the one the
-            # studio reads answers out of.
-            sessions=delegates,
+            # No `sessions` here. The studio registers a tool of that
+            # name itself, over the session's own helper, because one
+            # of its actions reads the app registry; passing a helper
+            # here would register nontainer's beside it and the model
+            # would be handed the name twice.
             python_primer=DB_PRIMER,
             # The conversation commits with the files. Naming the db
             # here is what stands the toolkit's own turn hook down:
@@ -1896,7 +2020,12 @@ class Registry:
 
         return Agent(
             model=self._model_factory(model),
-            tools=[toolkit, self._title_tool(name)],
+            # The `sessions` tool is registered only where there is a
+            # helper to delegate through, which is nontainer's gate for
+            # it too: an agent told to delegate with nothing to delegate
+            # to spends a call finding out.
+            tools=[toolkit, self._title_tool(name)]
+            + ([self._sessions_tool(delegates)] if delegates is not None else []),
             compress_tool_results=compression is not None,
             compression_manager=compression,
             # runs per ATTEMPT, which is what makes it the right seam for
