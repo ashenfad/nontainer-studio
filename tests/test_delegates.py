@@ -806,6 +806,23 @@ def test_the_sweep_leaves_a_delegate_the_registry_holds_open(registry):
     assert registry.sweep_delegates(now=time.time() + 10**6) == [child.name]
 
 
+def test_an_open_grandchild_holds_the_subtree_it_is_in(registry):
+    """A delegate's own delegates go with it, so one of them being open
+    is the parent's problem too: the store refuses to delete a pinned
+    branch, and a sweep that asked anyway would lose the whole pass."""
+    registry.open("boss")
+    registry.open_delegate("boss", "boss.scout")
+    registry.open_delegate("boss.scout", "boss.scout.finch")
+    registry.release("boss.scout")
+
+    assert registry.sweep_delegates(now=time.time() + 10**6) == []
+    assert "boss.scout" in registry._store.sessions()
+
+    registry.release("boss.scout.finch")
+    swept = registry.sweep_delegates(now=time.time() + 10**6)
+    assert swept == ["boss.scout", "boss.scout.finch"]
+
+
 def test_the_rows_say_what_became_of_each_delegate(tmp_path):
     """The per-session listing: status off the live job where a table
     holds one, and a row that says so where none does."""

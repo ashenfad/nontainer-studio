@@ -2079,9 +2079,10 @@ class Registry:
         one this registry still holds open, since a workspace handle
         pins its branch and the store refuses to delete it (a delegate
         with a run in flight is open and its job is `running`, so it is
-        spared twice); and every branch under a kept delegate of a
-        delegate — a subtree is taken with its parent, and something
-        somebody asked to keep stops the whole subtree instead.
+        spared twice); and a subtree holding either — a delegate's own
+        delegates are taken with it, so one of them being kept or open
+        leaves the whole subtree standing rather than deleting around
+        it.
 
         A swept name leaves the record and the session rows with its
         branch, which is what lets :meth:`sweep_dbs` collect a db
@@ -2134,11 +2135,14 @@ class Registry:
                 # the parent's.
                 subtree = self.delegates_of(child, manifest)
                 held = sorted(
-                    g for g in subtree if self._freshest(record[g], live.get(g))[1]
+                    g
+                    for g in subtree
+                    if g in self._sessions or self._freshest(record[g], live.get(g))[1]
                 )
                 if held:
                     log.info(
-                        "delegates: leaving the subtree under %s — %s is kept",
+                        "delegates: leaving the subtree under %s — %s is kept or "
+                        "still open",
                         child,
                         ", ".join(held),
                     )
