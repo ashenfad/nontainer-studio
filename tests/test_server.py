@@ -4798,6 +4798,36 @@ def test_the_route_lists_what_a_session_delegated(studio):
     assert (row["name"], row["delegate_count"]) == ("boss", 1)
 
 
+def test_a_swept_delegates_name_will_not_open(studio):
+    """`open` is create-or-return, and for a delegate whose branch the
+    sweep took, creating is the one wrong answer: the record still says
+    whose delegate it was, and what would open is a blank session
+    wearing the name of work that is gone."""
+    client, registry = studio
+    child = _delegate(registry)
+    registry._store.delete(child, min_age=0)
+
+    with pytest.raises(sessions_mod.SweptSessionError) as raised:
+        registry.open(child)
+    assert child in str(raised.value) and "boss" in str(raised.value)
+    assert registry.get(child) is None  # and nothing was minted on the way
+
+
+def test_opening_a_swept_delegate_through_the_route_is_a_409(studio):
+    """The drill-down disables the click; every other client gets the
+    same refusal with the reason in it."""
+    client, registry = studio
+    child = _delegate(registry)
+    registry._store.delete(child, min_age=0)
+
+    opened = client.post("/api/sessions", json={"name": child})
+    assert opened.status_code == 409 and "swept" in opened.json()["error"]
+    # a reload aimed at one lands on the lazy-open path, same answer
+    assert client.get(f"/api/sessions/{child}").status_code == 409
+    # an ordinary unknown name still mints a session
+    assert client.post("/api/sessions", json={"name": "fresh"}).status_code == 200
+
+
 def test_keeping_a_delegate_through_the_route_is_written_down(studio):
     """A keep has to outlive the job table it is flagged in, so the
     record is written whether or not a live job took the flag — and

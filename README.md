@@ -312,7 +312,10 @@ depend on how often another is asked for. A delegate asked for before
 the last restart is in no job table, so the studio sweeps those off its
 own record of who forked whom — which is also where a keep is written
 down, since the job table it is flagged in does not survive a restart.
-`0` turns the whole thing off.
+`0` turns the whole thing off. A swept delegate's name is refused
+rather than opened: the record still says whose delegate it was, so
+opening it fresh would hand back a blank session wearing the name of
+work that is gone.
 
 **Starting from a published app.** Publishing also names the session
 commit the version came from: a store tag, `<token>/<version>/origin`,

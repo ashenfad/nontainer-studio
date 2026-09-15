@@ -33,7 +33,12 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from . import delegates
-from .sessions import Registry, _clean_title, repair_aborted_run
+from .sessions import (
+    Registry,
+    SweptSessionError,
+    _clean_title,
+    repair_aborted_run,
+)
 
 log = logging.getLogger(__name__)
 
@@ -520,7 +525,14 @@ def build_app(registry: Registry) -> Starlette:
             name = request.path_params["name"]
             session = registry.get(name)
             if session is None and name in registry.known():
-                session = await anyio.to_thread.run_sync(registry.open, name)
+                try:
+                    session = await anyio.to_thread.run_sync(registry.open, name)
+                except SweptSessionError as e:
+                    # A delegate the retention sweep took. Its row can
+                    # outlive its branch, so a reload aimed at one lands
+                    # here — and the answer is what became of it, never
+                    # a fresh session wearing its name.
+                    return JSONResponse({"error": str(e)}, status_code=409)
             if session is None:
                 return JSONResponse({"error": f"no session {name!r}"}, status_code=404)
             return await handler(request, session)
@@ -581,6 +593,11 @@ def build_app(registry: Registry) -> Starlette:
                 session = await anyio.to_thread.run_sync(registry.open, name)
             else:
                 session = await anyio.to_thread.run_sync(registry.create)
+        except SweptSessionError as e:
+            # 409 rather than 400: the name was well formed and was a
+            # session — its state has since been collected, which is a
+            # conflict with the store's state and not a typo.
+            return JSONResponse({"error": str(e)}, status_code=409)
         except SessionIdError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         return JSONResponse(

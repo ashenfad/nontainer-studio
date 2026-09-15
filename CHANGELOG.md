@@ -54,6 +54,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A swept delegate's name is refused, not reopened.** `open` is
+  create-or-return, so a name it does not know mints a fresh session —
+  which is the one wrong answer for a delegate whose branch the
+  retention sweep took: the record still says whose delegate it was,
+  and what opened was a blank session wearing the name of work that is
+  gone. It raises now, and `POST /api/sessions` answers 409 with the
+  reason instead of handing back an empty session.
+
 - **A published version names the commit it came from.** Publishing
   store-tags the origin — the whole session tree at that publish, where
   the version holds `app/` alone — as `<token>/<version>/origin`, and
