@@ -2,6 +2,8 @@
     // The shell: a projection of the foreground session's runtime.
     // Runtimes live in a module map and keep streaming while
     // backgrounded — switching sessions is just switching projections.
+    import { untrack } from 'svelte'
+
     import { api } from './lib/api.js'
     import {
         createSession,
@@ -121,6 +123,31 @@
         return crumbs
     }
 
+    /** Re-read the open session's row. A delegate's status is held in
+     * its PARENT's job table and moves without anything landing on this
+     * session's own event feed, so the bar asks again rather than
+     * freezing on what it first saw. The breadcrumb is left alone: who
+     * forked whom does not change. */
+    async function refreshInfo() {
+        const name = active
+        if (!name) return
+        try {
+            const meta = await loadSession(name)
+            if (active === name) info = meta
+        } catch {
+            /* transient, or the session is gone; the next tick decides */
+        }
+    }
+
+    // A turn ending is the moment a delegate's row is most likely to
+    // have moved, and the shell's own feed is what notices it first.
+    // The job flips a beat after the `done` event, so this is the fast
+    // path and the poll below is what actually converges.
+    $effect(() => {
+        void rt?.version
+        if (untrack(() => info?.delegate != null)) refreshInfo()
+    })
+
     const rt = $derived(active ? getRuntime(active) : null)
     // the rail row is the title's source of truth (the server resolves
     // user > agent > default); the slug never shows
@@ -138,6 +165,9 @@
         const t = setInterval(() => {
             refreshSessions()
             refreshApps()
+            // a delegate mid-turn has a status nothing will tell the
+            // shell about; the same cadence carries it
+            if (info?.delegate?.status === 'running') refreshInfo()
         }, 4000)
         return () => clearInterval(t)
     })
@@ -317,6 +347,7 @@
                                     name={active}
                                     {delegate}
                                     onSwitch={switchTo}
+                                    onRefresh={refreshInfo}
                                 />
                             {:else}
                                 <ChatInput {rt} />
@@ -359,7 +390,12 @@
                 <div class="chat solo">
                     <MessageList {rt} readonly={!!delegate} />
                     {#if delegate}
-                        <DelegateBar name={active} {delegate} onSwitch={switchTo} />
+                        <DelegateBar
+                            name={active}
+                            {delegate}
+                            onSwitch={switchTo}
+                            onRefresh={refreshInfo}
+                        />
                     {:else}
                         <ChatInput {rt} />
                     {/if}

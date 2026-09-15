@@ -7,19 +7,20 @@
     // and a way further down when it delegated in turn.
     import { loadDelegates, setDelegateKept } from './runtime.svelte.js'
 
-    let { name, delegate, onSwitch } = $props()
+    let { name, delegate, onSwitch, onRefresh } = $props()
 
-    // the server's row until the keep toggle has said otherwise; the
-    // name rides along so switching sessions drops a stale override
-    let override = $state(null)
-    const row = $derived(override?.name === name ? override : delegate)
-
+    // No local copy of the row: `delegate` is re-read as the session's
+    // status moves, and a copy kept here would freeze a running
+    // delegate on the status it wore when the keep was clicked. The
+    // toggle writes, then asks for the row again.
     let error = $state('')
+    let saving = $state(false)
     let kids = $state([])
 
     $effect(() => {
         const who = name
         kids = []
+        error = ''
         loadDelegates(who)
             .then((rows) => {
                 if (name === who) kids = rows
@@ -31,10 +32,14 @@
 
     async function toggleKeep() {
         error = ''
+        saving = true
         try {
-            override = await setDelegateKept(row.parent, name, !row.kept)
+            await setDelegateKept(delegate.parent, name, !delegate.kept)
+            await onRefresh()
         } catch (e) {
             error = e.message
+        } finally {
+            saving = false
         }
     }
 
@@ -57,23 +62,23 @@
 <div class="delegate-bar">
     <div class="line">
         <span
-            class="status {row.status}"
-            title={row.status === 'expired'
+            class="status {delegate.status}"
+            title={delegate.status === 'expired'
                 ? 'the retention sweep took this branch; its answer is gone'
-                : row.known
+                : delegate.known
                   ? ''
                   : 'no job table survived the last restart — this is what the record knows'}
-            >{row.status}</span
+            >{delegate.status}</span
         >
-        <span class="of">delegate of <b>{row.parent}</b></span>
-        <span class="when">{ago(row.touched)}</span>
+        <span class="of">delegate of <b>{delegate.parent}</b></span>
+        <span class="when">{ago(delegate.touched)}</span>
         <span class="grow"></span>
         <span class="readonly">read-only — the parent drives it</span>
         <button
             class="keep"
-            class:on={row.kept}
-            disabled={row.status === 'expired'}
-            title={row.kept
+            class:on={delegate.kept}
+            disabled={saving || delegate.status === 'expired'}
+            title={delegate.kept
                 ? 'kept — the sweep leaves this branch alone; click to let it age out'
                 : 'keep this branch from the retention sweep'}
             onclick={toggleKeep}>keep</button
