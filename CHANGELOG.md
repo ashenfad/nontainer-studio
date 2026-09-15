@@ -45,6 +45,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A published version names the commit it came from.** Publishing
+  store-tags the origin — the whole session tree at that publish, where
+  the version holds `app/` alone — as `<token>/<version>/origin`, and
+  the app's row records the name so nothing reconstructs it. The tag
+  belongs to the store rather than to a session, so it opens after the
+  session that built the app is deleted, and it is a GC root, so that
+  session's history up to the publish is kept for exactly as long as
+  the version is. Removing the version releases it, and so does taking
+  the app down; a row written without one reads as an app with nothing
+  to start from, and no reader invents a name for it.
 - **A delegate opens, read-only.** Its name in the rail's ⑂ listing is
   now a way in: the delegate's own transcript renders in the ordinary
   chat view, with a breadcrumb up to the session that forked it and,
