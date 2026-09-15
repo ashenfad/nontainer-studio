@@ -90,9 +90,12 @@ repo's `skills/`), `NONTAINER_STUDIO_APP_ASSETS` (directory of browser
 libraries served to agent-authored apps at `vendor/`; defaults to the
 repo's `nontainer_studio/appassets/` — see **Works offline** below),
 `NONTAINER_STUDIO_COMPRESS_TOKENS` (context-
-compression watermark), `NONTAINER_STUDIO_ISOLATION` (`process` by
-default — agent code runs in a worker process of its own so a
-segfault/OOM in C-extension guts costs the turn, not the server; the
+compression watermark), `NONTAINER_STUDIO_DELEGATE_TTL` (hours a
+delegate's branch is kept after anyone last dealt with it; 24 by
+default, `0` turns the sweep off — see **Delegation** below),
+`NONTAINER_STUDIO_ISOLATION` (`process` by default — agent code runs in
+a worker process of its own so a segfault/OOM in C-extension guts costs
+the turn, not the server; the
 workspace files, cache, and `db` stay host-side, bridged over RPC.
 `kernel` adds syscall/network lockdown; `none` runs in-process), and
 `NONTAINER_STUDIO_VIEW_WORKERS` (default 0 — how many app-handler
@@ -294,6 +297,22 @@ A delegate's conversation never comes back — its reply is the summary.
 Budget is turns: `Registry(delegate_turns=...)`, three by default, and
 a delegate that stops without a reply spends the rest being asked to
 finish before its answer resolves as `capped`.
+
+**A delegate's branch is not forever.** Retention is an idle TTL: one
+nobody has dealt with for `NONTAINER_STUDIO_DELEGATE_TTL` hours (24 by
+default) has its branch deleted and its answer dropped, so a week of
+delegating does not leave a week of branches. Reading an answer counts
+as dealing with it, and so does `sessions keep`, which exempts a
+delegate for good — the agent is told both, and the rail's ⑂ badge
+opens the same list for the human, with a keep toggle per delegate and
+an age beside it. The sweep runs when the studio starts and hourly
+after that. nontainer supplies it and schedules nothing on purpose: a
+sweep on the way past an `ask` would make one delegate's retention
+depend on how often another is asked for. A delegate asked for before
+the last restart is in no job table, so the studio sweeps those off its
+own record of who forked whom — which is also where a keep is written
+down, since the job table it is flagged in does not survive a restart.
+`0` turns the whole thing off.
 
 ### a2ui egress
 
