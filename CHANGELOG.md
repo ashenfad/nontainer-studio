@@ -53,7 +53,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   drill-down nests. The studio offers no merge, take or discard: the
   parent agent judges a delegate's branch and integrates it, so every
   verb that drives a session — chat, edit, restore, model, title,
-  upload — answers 409 on a delegate, and `GET /api/sessions/{name}`
+  upload, publish — answers 409 on a delegate, and
+  `GET /api/sessions/{name}`
   is what tells a shell landing on `?session=<child>` that it is
   looking at one. Fork still works, since taking a delegate's branch as
   a session of your own is a thing to want.
