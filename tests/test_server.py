@@ -4719,6 +4719,145 @@ def test_keeping_a_delegate_of_another_session_is_a_404(studio):
     assert client.get("/api/sessions/other/delegates").json()["delegates"] == []
 
 
+# -- the drill-down: a delegate opens, and opens read-only -------------------
+
+# Every verb that would DRIVE a session's turns. The parent agent writes
+# a delegate's prompts; a human's landing in the middle would rewrite a
+# transcript the parent is still reading.
+DRIVING = [
+    ("chat", {"json": {"message": "do it"}}),
+    ("edit", {"json": {"message": "do it", "seq": 0}}),
+    ("restore", {"json": {"seq": 0}}),
+    ("model", {"json": {"model": "dummy"}}),
+    ("title", {"json": {"title": "mine"}}),
+    ("upload?name=n.txt", {"content": b"hi"}),
+]
+
+
+def test_the_session_route_says_whose_delegate_this_is(studio):
+    """A delegate has no rail row, so a shell that lands on its name has
+    only the name — this is the request that tells it the rest."""
+    client, registry = studio
+    child = _delegate(registry)
+
+    info = client.get(f"/api/sessions/{child}").json()
+
+    assert info["name"] == child
+    assert info["title"] and info["busy"] is False
+    assert info["delegate"]["parent"] == "boss"
+    assert info["delegate"]["status"] == "answered"
+    assert info["delegate"]["kept"] is False
+    assert info["delegate"]["touched"] > 0
+    # an ordinary session is nobody's
+    assert client.get("/api/sessions/boss").json()["delegate"] is None
+    assert client.get("/api/sessions/nobody").status_code == 404
+
+
+def test_a_human_cannot_drive_a_delegate(studio):
+    client, registry = studio
+    child = _delegate(registry)
+    refusal = f"{child} is a delegate of boss: the parent drives it"
+
+    for verb, kw in DRIVING:
+        res = client.post(f"/api/sessions/{child}/{verb}", **kw)
+        assert res.status_code == 409, verb
+        assert res.json()["error"] == refusal, verb
+
+    # reading is the whole point of opening one
+    assert client.get(f"/api/sessions/{child}/events?wait=0").status_code == 200
+    assert client.get(f"/api/sessions/{child}/files").status_code == 200
+    assert client.get(f"/api/sessions/{child}/delegates").status_code == 200
+    # and forking it is how you take the branch as your own session
+    taken = client.post(f"/api/sessions/{child}/fork", json={})
+    assert taken.status_code == 200
+    assert registry.parent_of(taken.json()["name"]) is None
+
+
+def test_an_ordinary_session_still_takes_every_verb(studio):
+    """The refusal is about the delegates record, not about the routes:
+    a session nobody forked answers each of them for itself."""
+    client, _ = studio
+    client.post("/api/sessions", json={"name": "plain"})
+
+    assert (
+        client.post("/api/sessions/plain/title", json={"title": "mine"}).status_code
+        == 200
+    )
+    assert (
+        client.post("/api/sessions/plain/upload?name=n.txt", content=b"hi").status_code
+        == 200
+    )
+    # these say no for their own reasons — nothing to edit, nothing to
+    # restore to, no model named — which is the point: the refusal is
+    # not what answered
+    for verb, kw in (
+        ("edit", {"json": {"message": "x", "seq": 0}}),
+        ("restore", {"json": {"seq": 0}}),
+        ("model", {"json": {}}),
+    ):
+        assert client.post(f"/api/sessions/plain/{verb}", **kw).status_code == 400, verb
+    assert (
+        client.post("/api/sessions/plain/chat", json={"message": "go"}).status_code
+        == 200
+    )
+
+
+def test_a_delegate_has_delegates_of_its_own(studio):
+    """Delegation nests and so does the listing: the record is keyed on
+    whoever forked, not on the sessions the rail happens to show."""
+    client, registry = studio
+    _delegate(registry)
+    grandchild = _delegate(registry, parent="boss.scout", child="boss.scout.finch")
+
+    rows = client.get("/api/sessions/boss.scout/delegates").json()["delegates"]
+
+    assert [r["name"] for r in rows] == [grandchild]
+    # each level names its own parent, which is what the breadcrumb walks
+    info = client.get(f"/api/sessions/{grandchild}").json()
+    assert info["delegate"]["parent"] == "boss.scout"
+    assert client.get(f"/api/sessions/{grandchild}/delegates").json()["delegates"] == []
+
+
+def test_opening_a_delegate_after_a_restart_leaves_it_one(tmp_path):
+    """The job table dies with the process; the record is what says a
+    session is somebody's delegate. The shell's create-or-resume POST
+    opens the name like any other — and must not promote it."""
+    registry = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    registry._build_agent = lambda *a, **k: FakeAgent()
+    try:
+        with TestClient(server.build_app(registry)):
+            child = _delegate(registry)
+    finally:
+        registry.close()
+
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    reborn._build_agent = lambda *a, **k: FakeAgent()
+    try:
+        with TestClient(server.build_app(reborn)) as client:
+            assert client.post("/api/sessions", json={"name": child}).status_code == 200
+            assert client.get(f"/api/sessions/{child}").json()["delegate"] == {
+                "name": child,
+                "parent": "boss",
+                "status": "answered",
+                "known": False,
+                "kept": False,
+                "touched": pytest.approx(
+                    reborn._manifest()["delegates"][child]["touched"]
+                ),
+            }
+            assert [
+                r["name"] for r in client.get("/api/sessions").json()["sessions"]
+            ] == ["boss"]
+            assert (
+                client.post(
+                    f"/api/sessions/{child}/chat", json={"message": "x"}
+                ).status_code
+                == 409
+            )
+    finally:
+        reborn.close()
+
+
 def test_the_server_sweeps_on_a_timer(tmp_path, monkeypatch):
     """Retention is a verb somebody schedules, and the server is what
     schedules it while the studio is up: the registry sweeps once at
