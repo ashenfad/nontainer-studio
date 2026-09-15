@@ -834,35 +834,32 @@ def test_fork_from_the_rail_switches_to_the_child(page, server):
     assert "/workspace/forked.txt" in files
 
 
-def test_agent_titles_the_session_from_the_rail_default(page, server):
-    """The whole stage-3 path for real: the model calls recommend_title,
-    the studio tool writes the title, and the rail row stops reading
-    "New session" — while the URL keeps the slug that is identity."""
+def test_the_studio_names_the_session_from_the_transcript(page, server):
+    """The whole path for real: the turn ends, the studio reads the
+    transcript back with a second model run, and the rail row stops
+    reading "New session" — while the URL keeps the slug that is
+    identity. The scripted model echoes what it is shown, so the name
+    it gives begins with its own prefix."""
     page.goto(f"{server}/?session=e2e-title")
     expect(page.locator(".row.active .name")).to_have_text("New session", timeout=10000)
-    _send(
-        page,
-        '!tool recommend_title {"title": "Revenue dashboard"}\n'
-        "!text Named this session.",
-    )
+    _send(page, "!text Named this session.")
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "Named this session.", timeout=15000
     )
-    # the rail relabels (it polls, so give it a beat), header agrees...
-    expect(page.locator(".row.active .name")).to_have_text(
-        "Revenue dashboard", timeout=10000
-    )
-    expect(page.locator(".session-name")).to_have_text("Revenue dashboard")
+    # the rail relabels off the title event (it polls too), header agrees...
+    expect(page.locator(".row.active .name")).to_contain_text("dummy:", timeout=15000)
+    expect(page.locator(".session-name")).to_contain_text("dummy:")
     # ...and identity never moved
     assert page.url.endswith("?session=e2e-title")
 
 
-def test_rename_from_the_rail_outranks_the_agent(page, server):
+def test_rename_from_the_rail_outranks_the_generated_name(page, server):
     """Double-click the label to rename. The human's title wins from
-    there on, and clearing it falls back to the agent's latest."""
+    there on, and clearing it falls back to what the studio generated."""
     page.goto(f"{server}/?session=e2e-rename")
-    _send(page, '!tool recommend_title {"title": "Agent idea"}\n!text ok.')
-    expect(page.locator(".row.active .name")).to_have_text("Agent idea", timeout=15000)
+    _send(page, "!text ok.")
+    expect(page.locator(".row.active .name")).to_contain_text("dummy:", timeout=15000)
+    generated = page.locator(".row.active .name").inner_text()
 
     row = page.locator(".row.active")
     row.locator(".name").dblclick()
@@ -872,18 +869,19 @@ def test_rename_from_the_rail_outranks_the_agent(page, server):
         "My name for it", timeout=10000
     )
 
-    # the agent keeps suggesting; the human's title still wins
-    _send(page, '!tool recommend_title {"title": "Agent again"}\n!text ok.')
+    # another turn: the human's title still wins, and nothing regenerates
+    # under it
+    _send(page, "!text and again.")
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
-        "ok.", timeout=15000
+        "and again.", timeout=15000
     )
     expect(page.locator(".row.active .name")).to_have_text("My name for it")
 
-    # clearing reveals the agent's LATEST, not the default
+    # clearing reveals what the studio generated
     row.locator(".name").dblclick()
     page.fill(".rename", "")
     page.press(".rename", "Enter")
-    expect(page.locator(".row.active .name")).to_have_text("Agent again", timeout=10000)
+    expect(page.locator(".row.active .name")).to_have_text(generated, timeout=10000)
 
 
 def test_rename_escape_discards(page, server):
@@ -940,6 +938,11 @@ def test_a_delegates_answer_reaches_the_parent_next_turn(page, server):
     rail says an answer is waiting, and the parent's next turn carries it
     into the transcript with its provenance header."""
     page.goto(f"{server}/?session=e2e-delegate")
+    # Named by hand: the studio names a session out of its own
+    # transcript, and this one's transcript is about a scout — so the
+    # row this test asserts is NOT in the rail would be matched by the
+    # parent's own label.
+    _title(server, "e2e-delegate", "Delegating")
     _send(
         page,
         '!tool sessions {"action": "ask", "name": "scout", '
