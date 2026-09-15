@@ -9,7 +9,6 @@ real against its own branch.
 import asyncio
 import json
 import time
-from pathlib import Path
 
 import pytest
 from agno.models.response import ModelResponse
@@ -495,22 +494,6 @@ def test_the_tool_is_nontainers_shape_under_nontainers_name(registry):
 NOTE = "the CSV comes in UTF-16, which is why the loader decodes"
 
 
-def _conversation(store_path, branch: str) -> list[str]:
-    """The conversation the branch holds, as kvgit holds it: one key
-    per stored run. Read off the store because a full inherit carries
-    the conversation as STATE — it is on the branch before any agent
-    opens it."""
-    import kvgit
-
-    handle = kvgit.store(
-        kind="disk", path=str(Path(store_path) / "kvgit"), branch=branch
-    )
-    try:
-        return sorted(k for k in handle.keys() if k.startswith("__agno__/runs/"))
-    finally:
-        handle.versioned.store.close()
-
-
 def test_an_agent_starts_from_an_app_whose_session_is_gone(registry, tmp_path):
     """The workflow the origin tag exists for. A session builds an app
     and publishes it; the session is deleted; a later session mounts
@@ -565,9 +548,12 @@ def test_an_agent_starts_from_an_app_whose_session_is_gone(registry, tmp_path):
         inherit="full",
     )
     assert answer.status == "answered"
-    assert _conversation(tmp_path, answer.branch) == sorted(
-        f"__agno__/runs/{run_id}" for run_id in remembered
-    )
+    # The chat db reads the clone as its own session: the maker's runs
+    # first, then the turn the question just produced, which the db
+    # accepted as the child's — memory read and memory written.
+    recalled = _run_ids(registry, answer.branch)
+    assert recalled[: len(remembered)] == remembered
+    assert len(recalled) == len(remembered) + 1
     # and the files came with it, which a fresh inherit would give too
     child = registry.open(answer.branch)
     assert child.ws.files.fs.read("/workspace/notes/loader.md").decode() == NOTE
