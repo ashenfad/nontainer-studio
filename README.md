@@ -314,6 +314,28 @@ own record of who forked whom — which is also where a keep is written
 down, since the job table it is flagged in does not survive a restart.
 `0` turns the whole thing off.
 
+**Starting from a published app.** Publishing also names the session
+commit the version came from: a store tag, `<token>/<version>/origin`,
+which outlives the session the way the app does. `sessions` with
+`action="published"` lists what the human has published with those
+tags, and a store tag is a ref wherever `ws-git` takes one:
+
+```sh
+ws-git worktree add old <tag>          # the whole origin tree, read-only
+ws-git checkout <tag> -- app/          # take files out of it
+ws-git diff <tag>                      # compare it with here
+```
+
+The origin is the SESSION, where a version is `app/` alone — so the
+notes, the uploads and the data beside the app come with it. `sessions
+ask` with `fork_from=<tag>` and `inherit="full"` goes further and puts
+the task to a clone of the agent that built it, carrying its memory as
+of the publish; fresh gives that agent's files and no conversation. So
+"another one like that" starts from the app rather than from a blank
+page. The tag is a GC root, which is what keeps the origin session's
+history reachable after the session is deleted — deleting the version,
+or unpublishing the app, releases it.
+
 **A delegate is readable, not drivable.** Clicking one in that listing
 opens its transcript in the ordinary chat view: the parent's title sits
 in a breadcrumb above it, a bar stands where the composer would be
