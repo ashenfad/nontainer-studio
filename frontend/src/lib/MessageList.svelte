@@ -8,7 +8,9 @@
     import { published } from './runtime.svelte.js'
     import { viewFile } from './viewer.svelte.js'
 
-    let { rt } = $props()
+    // `readonly` is a delegate's transcript: the parent agent drives
+    // that session, so the handles that would rewind it are not offered.
+    let { rt, readonly = false } = $props()
 
     // The composer prepends "[attached: /a, /b]" for the AGENT's
     // benefit; humans get chips. Split it back out for display.
@@ -173,7 +175,7 @@
                     {/if}
                     {parts.body}
                 </div>
-                {#if msg.head && msg.seq != null && !rt.busy}
+                {#if msg.head && msg.seq != null && !rt.busy && !readonly}
                     <button
                         class="edit"
                         title="edit this prompt — rewinds and replaces this turn and everything after"
@@ -193,7 +195,7 @@
                 {:else}
                     <span class="removed-note">{now.text}</span>
                 {/if}
-                {#if msg.seq != null && !rt.busy}
+                {#if msg.seq != null && !rt.busy && !readonly}
                     <button
                         class="restore"
                         class:armed={armedRestore === msg.seq}

@@ -300,7 +300,7 @@
                 <SplitPane>
                     {#snippet left()}
                         <div class="chat">
-                            <MessageList {rt} />
+                            <MessageList {rt} readonly={!!delegate} />
                             {#if delegate}
                                 <DelegateBar
                                     name={active}
@@ -342,7 +342,7 @@
             {:else}
                 <!-- full-width mode: cap the column so lines stay readable -->
                 <div class="chat solo">
-                    <MessageList {rt} />
+                    <MessageList {rt} readonly={!!delegate} />
                     {#if delegate}
                         <DelegateBar name={active} {delegate} onSwitch={switchTo} />
                     {:else}
