@@ -1199,17 +1199,8 @@ class Registry:
         session, not a stale one."""
         return self._set_title(name, "agent", title)
 
-    def _set_title(
-        self,
-        name: str,
-        tier: str,
-        title: str | None,
-        cursor: tuple[int, int] | None = None,
-    ) -> str:
-        """Write one tier of a session's title. ``cursor`` is where a
-        GENERATED title was read from — the transcript seq it was
-        produced at, and how many user turns the transcript held then —
-        which is what the cadence measures the next generation against.
+    def _set_title(self, name: str, tier: str, title: str | None) -> str:
+        """Write one tier of a session's title.
 
         Takes ``_lock``: a title is written from a worker thread, and
         this is a read-modify-write of the whole manifest.
@@ -1218,11 +1209,38 @@ class Registry:
             manifest = self._manifest()
             entry = dict(manifest["titles"].get(name) or {})
             entry[tier] = _clean_title(title)
-            if cursor is not None:
-                entry["at_seq"], entry["turns"] = cursor
             manifest["titles"][name] = entry
             self._save_manifest(manifest)
             return self.title_of(name, manifest)  # manifest passed: no re-lock
+
+    def _store_generated_title(
+        self, name: str, title: str, at_seq: int, turns: int
+    ) -> bool:
+        """Write a generated name and the transcript cursor it was read
+        from — the seq the transcript stood at, and the user turns it
+        held — which is what the cadence measures the next generation
+        against. Returns whether it wrote.
+
+        Naming runs OVERLAP. A turn releases the turn lock before the
+        session is named, so a second turn's run can start while the
+        first's model call is still out, and the two can finish in
+        either order. The cursor is what tells them apart: a stored one
+        ahead of this call's belongs to a name read from a later
+        transcript, and writing an older name over it would step the
+        rail back to something the session has already moved past. The
+        read and the write are one critical section, so two runs cannot
+        both decide they are the newer.
+        """
+        with self._lock:
+            manifest = self._manifest()
+            entry = dict(manifest["titles"].get(name) or {})
+            if int(entry.get("at_seq") or 0) > at_seq:
+                return False
+            entry["agent"] = _clean_title(title)
+            entry["at_seq"], entry["turns"] = at_seq, turns
+            manifest["titles"][name] = entry
+            self._save_manifest(manifest)
+            return True
 
     def retitle(self, session: Session) -> str | None:
         """Name the session from its own transcript, when the cadence
@@ -1258,7 +1276,16 @@ class Registry:
             return None
         if title is None:
             return None
-        self._set_title(session.name, "agent", title, cursor=(at, turns))
+        if not self._store_generated_title(session.name, title, at, turns):
+            # A naming run that started later has already landed: this
+            # answer describes a transcript that has been superseded,
+            # so it is dropped rather than stored or announced.
+            log.info(
+                "titles: %s was named again while this ran; dropping %r",
+                session.name,
+                title,
+            )
+            return None
         return title
 
     def _summary_spec(self, session: Session) -> str | None:
