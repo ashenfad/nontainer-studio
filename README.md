@@ -320,9 +320,11 @@ in a breadcrumb above it, a bar stands where the composer would be
 saying what the session is (status, whose delegate, `keep`), and any
 delegate it forked in turn is listed under that bar — so the drill-down
 nests as deep as the delegation did. Every verb that would drive a
-session — chat, edit, restore, model, title, upload — refuses a
-delegate with a 409, because the parent agent writes its prompts,
-judges its branch and integrates it. Forking one is still how you take
+session — chat, edit, restore, model, title, upload, publish —
+refuses a delegate with a 409, because the parent agent writes its
+prompts, judges its branch and integrates it. An app is addressed by
+token rather than by session, so taking one down or moving its pointer
+is app management either way. Forking one is still how you take
 its work as a session of your own.
 
 ### a2ui egress
