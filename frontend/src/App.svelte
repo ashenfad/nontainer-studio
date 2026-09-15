@@ -207,6 +207,11 @@
     }
 
     async function deleteSession(name) {
+        // Deleting a session takes its delegates with it, so the open
+        // view goes whenever any crumb above it goes — not only when the
+        // deleted name is the one on screen. Decided before the delete,
+        // while the breadcrumb still describes something that exists.
+        const cascaded = name === active || trail.some((c) => c.name === name)
         try {
             await api(`/api/sessions/${name}`, undefined, 'DELETE')
         } catch (e) {
@@ -214,10 +219,16 @@
             return
         }
         dropRuntime(name)
+        if (cascaded) dropRuntime(active)
         await Promise.all([refreshSessions(), refreshApps()])
         // deleting the last session leaves nothing to fall back to: mint
         // one rather than strand the shell with no active session
-        if (name === active) {
+        if (cascaded) {
+            // The deleted name must not survive in the URL. A reload
+            // asks for whatever `?session=` holds, and a name nothing
+            // knows is MINTED rather than refused — an empty session
+            // wearing a deleted delegate's name.
+            history.replaceState(null, '', location.pathname)
             try {
                 switchTo(rail.sessions[0]?.name ?? (await createSession()))
             } catch (e) {
