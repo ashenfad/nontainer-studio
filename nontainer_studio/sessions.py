@@ -43,6 +43,7 @@ from typing import Any, Callable
 import petname
 from nontainer import (
     PythonConfig,
+    Ref,
     Store,
     Workspace,
     validate_session_id,
@@ -450,6 +451,19 @@ def _pub_name(entry: dict, token: str) -> str:
     entry is where all three live.
     """
     return entry.get("pub") or token
+
+
+def _origin_tag(pub: str, version: str) -> str:
+    """The store tag for one version's ORIGIN commit.
+
+    A version's own name is ``<pub>/<version>``, which nontainer's
+    publish mints and its unpublish removes; the origin hangs under it
+    so the two read as one family and neither can be mistaken for the
+    other. Store tags are refs, so the name carries neither ``@`` nor
+    ``:`` — a publication name and a version name carry neither
+    either.
+    """
+    return f"{pub}/{version}/origin"
 
 
 def _head_tree(ws: Workspace) -> str | None:
@@ -3190,6 +3204,12 @@ class Registry:
                     "commit": commit,
                     "tree": _head_tree(session.ws),
                     "created": row.created,
+                    # The name under which that session commit can be
+                    # reached once the session is gone. Absent where
+                    # the store would not take the name, and read as
+                    # "this version has no origin to start from"
+                    # wherever it is read.
+                    **self._tag_origin(pub, version, name, commit),
                 }
                 entry["current"] = version
                 manifest["apps"][token] = entry
@@ -3201,6 +3221,10 @@ class Registry:
                 # refuses to drop the version it points at while others
                 # remain, and this one never took the pointer.
                 self._unpublish_version(pub, version)
+                # The origin tag goes with it: a GC root for a version
+                # nothing names is history pinned forever by a publish
+                # that did not happen.
+                self._delete_tags([_origin_tag(pub, version)])
                 raise
             if published.current != version:
                 # The row is on disk, so the store can be pointed at
@@ -3215,6 +3239,7 @@ class Registry:
                 "title": title,
                 "commit": commit,
                 "tree": entry["versions"][version]["tree"],
+                "origin": entry["versions"][version].get("origin"),
             }
 
     # -- serving: the URL is the app's, the state is a version's ------------
@@ -3316,6 +3341,10 @@ class Registry:
                     "commit": v.get("commit"),
                     "tree": v.get("tree"),
                     "created": v.get("created", 0),
+                    # None where the version has no name on its origin
+                    # commit, which is the answer "there is nothing to
+                    # start from here".
+                    "origin": v.get("origin"),
                 }
                 for name, v in sorted(
                     versions.items(), key=lambda kv: kv[1].get("created", 0)
@@ -3398,6 +3427,12 @@ class Registry:
         row drops the app's claim and nothing else; a file no row names
         any more is collected by :meth:`sweep_dbs`.
 
+        The origin TAGS are the studio's to remove: nontainer's
+        unpublish takes down only what its own publish wrote, and the
+        name on each version's origin commit is not that. Dropping them
+        here is what releases the origin session's pinned history, so
+        an app taken down stops keeping one.
+
         The origin session is untouched — an app was never the session's
         state, only a version of its `app/` tree over the same store."""
         with self._lock:
@@ -3425,13 +3460,21 @@ class Registry:
             ]:
                 self._unpublish_version(pub, name)
             self._save_manifest(manifest)
+            # The row first, the tags after: a stop in between leaves a
+            # name nothing reaches, where the other order would leave a
+            # row naming a commit that has been let go.
+            self._delete_tags(self._origin_tags(entry))
 
     def delete_version(self, token: str, version: str) -> dict:
         """Remove one version of an app.
 
         Not the one the URL serves (it would point at nothing) and not
         the last one — taking an app down is ``unpublish``, and a verb
-        that big should be the one the caller named."""
+        that big should be the one the caller named.
+
+        Its origin tag goes with it, which is what releases the origin
+        session's history up to that publish: the tag is a GC root, and
+        the version it was kept for is gone."""
         with self._lock:
             # The version being deleted is not the one this app serves,
             # but a pointer left behind an earlier publish may still
@@ -3456,10 +3499,51 @@ class Registry:
                     "this is the app's only version — unpublish the app instead"
                 )
             self._drop_snapshots(token, version)
-            versions.pop(version)
+            origin = versions.pop(version).get("origin")
             self._unpublish_version(_pub_name(entry, token), version)
             self._save_manifest(manifest)
+            # The row first, the tag after: see ``unpublish``.
+            self._delete_tags([origin] if origin else [])
             return self._app_row(entry)
+
+    def _tag_origin(self, pub: str, version: str, session: str, commit: str) -> dict:
+        """Name a version's origin commit store-scoped: ``{"origin":
+        <tag>}``, or an empty dict where the store would not take the
+        name.
+
+        A publication holds the derived `app/` tree, which is the app
+        and not the session that wrote it. The ORIGIN is the whole
+        workspace at that publish — notes, uploads, the conversation —
+        so a name on it is what lets the state be mounted, taken from
+        or forked into a delegate after the session it came from is
+        deleted. A store tag is also a GC root, so the origin session's
+        history up to that commit is kept for as long as the version
+        is; it is released when the version is removed.
+
+        Best-effort, and the shape of what it returns is why: the
+        version has landed and the human's verb is done, so a name the
+        store will not take costs the app a starting point and nothing
+        else. The row then carries no origin, which every reader
+        already has to handle.
+        """
+        tag = _origin_tag(pub, version)
+        try:
+            self._store.tags.add(Ref(session, commit), tag)
+        except Exception as e:
+            log.warning("publish: %s has no origin tag: %s", tag, e)
+            return {}
+        return {"origin": tag}
+
+    @staticmethod
+    def _origin_tags(entry: dict) -> list[str]:
+        """The origin tags an app's versions record. A version that
+        carries none contributes nothing — there is no name to drop and
+        no commit pinned to release."""
+        return [
+            row["origin"]
+            for row in (entry.get("versions") or {}).values()
+            if row.get("origin")
+        ]
 
     def _point_store_at(self, pub: str, token: str, version: str) -> None:
         """Point nontainer's registry at the version this app's
@@ -3534,8 +3618,7 @@ class Registry:
             log.warning("publish: could not unpublish %s/%s", pub, version)
 
     def _delete_tags(self, names: Iterable[str]) -> None:
-        """Drop store-scoped tags — the shape a version had before
-        publications, removed by the migration that replaces it.
+        """Drop store-scoped tags by name.
 
         No session owns these names, so the store says it directly and
         no workspace is opened at all — which also means no executor is

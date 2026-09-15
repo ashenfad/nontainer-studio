@@ -834,6 +834,96 @@ def test_delete_version_refuses_the_current_and_the_last(studio):
     assert client.delete(f"/api/apps/{token}/versions/v1").status_code == 400
 
 
+def _origin_of(client, token: str, version: str) -> str | None:
+    """The origin tag the app's row records for one version."""
+    app = next(a for a in client.get("/api/apps").json()["apps"] if a["token"] == token)
+    return next(v["origin"] for v in app["versions"] if v["name"] == version)
+
+
+def _drop_origin(registry, token: str, version: str) -> None:
+    """Rewrite a version's row without its origin field — the shape of
+    a row written before publishing named the commit."""
+    manifest = registry._manifest()
+    manifest["apps"][token]["versions"][version].pop("origin", None)
+    registry._save_manifest(manifest)
+
+
+def test_publishing_names_the_origin_commit(studio, tmp_path):
+    """A version's `app/` tree is the app; the ORIGIN is the whole
+    session at that publish. The studio names that commit store-scoped
+    so it has a token an agent can spell, and so the history behind it
+    is pinned for as long as the version is."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+
+    pub = _publish(client, "s1")
+    token = pub["token"]
+    assert pub["origin"] == f"{token}/v1/origin"
+    assert _origin_of(client, token, "v1") == pub["origin"]
+    # the name is on the commit the row records, not on the derived one
+    assert _store_tags(tmp_path)[f"@store/{pub['origin']}"] == pub["commit"]
+
+    # and a second version gets one of its own
+    registry.get("s1").ws.files.fs.write("/workspace/app/index.html", b"<h1>two</h1>")
+    registry.get("s1").ws.commit()
+    v2 = _publish(client, "s1")
+    assert v2["origin"] == f"{token}/v2/origin" and v2["commit"] != pub["commit"]
+    assert _store_tags(tmp_path)[f"@store/{v2['origin']}"] == v2["commit"]
+
+
+def test_deleting_a_version_releases_its_origin_tag(studio, tmp_path):
+    """The tag is a GC root over the origin session's history. The
+    version it was kept for going is what releases it — nontainer's
+    unpublish removes only what its own publish wrote."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+    pub = _publish(client, "s1")
+    v2 = _publish(client, "s1")
+    token = pub["token"]
+
+    assert client.delete(f"/api/apps/{token}/versions/v1").status_code == 200
+    tags = _store_tags(tmp_path)
+    assert f"@store/{pub['origin']}" not in tags
+    assert f"@store/{v2['origin']}" in tags  # the version that stayed kept its
+
+
+def test_unpublishing_releases_every_origin_tag(studio, tmp_path):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+    pub = _publish(client, "s1")
+    v2 = _publish(client, "s1")
+
+    assert client.delete(f"/api/apps/{pub['token']}").json() == {"ok": True}
+    tags = _store_tags(tmp_path)
+    assert f"@store/{pub['origin']}" not in tags
+    assert f"@store/{v2['origin']}" not in tags
+
+
+def test_a_version_row_with_no_origin_is_read_and_deleted_as_it_is(studio, tmp_path):
+    """A version whose commit was never named has no origin, and every
+    reader says so rather than reconstructing one: the app lists with
+    none, and removing it drops the row and looks for no tag."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+    pub = _publish(client, "s1")
+    v2 = _publish(client, "s1")
+    token = pub["token"]
+    _drop_origin(registry, token, "v1")
+
+    assert _origin_of(client, token, "v1") is None
+    assert client.delete(f"/api/apps/{token}/versions/v1").status_code == 200
+    assert [
+        v["name"] for v in client.get("/api/apps").json()["apps"][0]["versions"]
+    ] == ["v2"]
+    # the row went; the name nothing recorded is still on the store,
+    # which is what makes it safe to leave rows like this alone
+    assert f"@store/{v2['origin']}" in _store_tags(tmp_path)
+
+
 def test_deleting_the_origin_session_leaves_the_app_served(studio, tmp_path):
     """The publication promise: a store-scoped tag outlives the branch
     that made it, and the app's row still names the db — so the URL
