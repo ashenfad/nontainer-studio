@@ -100,8 +100,10 @@ VERSIONING = (
 def brief(parent: str, commit: str | None, *, versioning: bool) -> str:
     """The whole frame a delegated task carries, ready to prepend.
 
-    ``versioning`` follows ``register_wsgit``'s own gate: an executor
-    with no terminal verbs would be taught a spelling it cannot run.
+    ``versioning`` is whether the delegate can type ``ws-git``, which
+    is what ``register_wsgit`` answered when its session was wired: an
+    agent on an executor with no terminal verbs would otherwise be
+    taught a spelling it cannot run.
     """
     return (
         provenance_header(parent, commit)
@@ -204,13 +206,14 @@ class StudioRunner:
         return turns if turns > 0 else self._turns
 
     def _brief(self, child: "Session", forked_at: str | None) -> str:
-        """The header the delegate's first turn opens with."""
-        runtime = child.ws.runtime
-        return brief(
-            self._parent,
-            forked_at,
-            versioning=runtime.supports_commands or runtime.supports_ws_verbs,
-        )
+        """The header the delegate's first turn opens with.
+
+        Whether it carries the ws-git half is the child session's own
+        record of what ``register_wsgit`` installed — the same answer
+        the child's primer was built from, so one session is never told
+        two things about one verb.
+        """
+        return brief(self._parent, forked_at, versioning=child.wsgit)
 
     def _turn(self, child: "Session", prompt: str) -> tuple[str, str | None]:
         """One turn, run the way a human's turn runs; its prose and error.
