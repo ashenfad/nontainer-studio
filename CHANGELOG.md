@@ -55,6 +55,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the version is. Removing the version releases it, and so does taking
   the app down; a row written without one reads as an app with nothing
   to start from, and no reader invents a name for it.
+- **The agent can see what the human published, and start from it.**
+  The `sessions` tool is the studio's now: nontainer's shape and its
+  actions, plus `published`, which lists each app with its title, its
+  current version and its origin tag. A listed tag goes straight into
+  the terminal — `ws-git worktree add <dir> <tag>` mounts that session,
+  `ws-git checkout <tag> -- <paths>` takes files out of it, `ws-git
+  diff <tag>` compares it with here — or into `sessions ask` as
+  `fork_from=<tag>` with `inherit="full"`, which puts the task to a
+  clone of the agent that built the app, carrying its memory as of the
+  publish. "Another one like that" now starts from the app.
 - **A delegate opens, read-only.** Its name in the rail's ⑂ listing is
   now a way in: the delegate's own transcript renders in the ordinary
   chat view, with a breadcrumb up to the session that forked it and,
