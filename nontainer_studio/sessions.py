@@ -52,7 +52,12 @@ from nontainer.adapters.agno import WorkspaceTools
 from nontainer.adapters.agno_db import KvgitStoreDb, fork_session
 from nontainer.adapters.render import SESSIONS_DESCRIPTION
 from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
-from nontainer.errors import JobRunning, SessionsError, WorkspaceError
+from nontainer.errors import (
+    JobRunning,
+    SessionIdError,
+    SessionsError,
+    WorkspaceError,
+)
 from nontainer.sessions import Sessions, run_action
 from nontainer.wsgit import register_wsgit
 
@@ -475,6 +480,18 @@ def _head_tree(ws: Workspace) -> str | None:
     None on a workspace with no history at all."""
     head = next(iter(ws.log(limit=1)), None)
     return head.tree if head is not None else None
+
+
+class SweptSessionError(SessionIdError):
+    """A name that names nothing openable: the delegates record still
+    lists it, and its branch is gone.
+
+    A ``SessionIdError`` because it is the same kind of answer — this
+    name cannot become a session — and its own class because the
+    reason differs and the answer a server gives differs with it: a
+    malformed name is the caller's mistake, where this is a name that
+    was valid and whose state has since been collected.
+    """
 
 
 DEFAULT_TITLE = "New session"
@@ -1564,13 +1581,40 @@ class Registry:
         the server may lazily open on GET (never creating new ones)."""
         return self._load_manifest() | set(self._sessions)
 
-    def open(self, name: str) -> Session:
-        """Create-or-return. Raises SessionIdError for bad names."""
+    def open(self, name: str, *, minting: bool = False) -> Session:
+        """Create-or-return. Raises ``SessionIdError`` for a name that
+        cannot become a session: a malformed one, or a swept delegate's
+        (``SweptSessionError``).
+
+        ``minting`` says the caller is CREATING this session right now
+        — :meth:`open_delegate`, which writes the record for a branch
+        it is about to assemble — and stands the swept-name refusal
+        down for it. That refusal is about a name arriving from
+        outside for a delegate there is nothing left of.
+        """
         with self._lock:
             existing = self._sessions.get(name)
             if existing is not None:
                 return existing
             manifest = self._manifest()
+            if (
+                not minting
+                and name in manifest["delegates"]
+                and not self._store.exists(name)
+            ):
+                # A delegate whose branch the retention sweep took. The
+                # create-or-return rule below would mint a fresh empty
+                # session under that name, which is the one answer that
+                # is wrong for it: the record says whose delegate it is
+                # and the parent is still reading the exchange, so what
+                # would open is a blank session wearing the name of work
+                # that is gone. The UI refuses to click one; this is the
+                # same refusal for every other caller.
+                raise SweptSessionError(
+                    f"{name} was a delegate of "
+                    f"{manifest['delegates'][name]['parent']} and its branch "
+                    "has been swept — there is nothing left to open"
+                )
             model = manifest["models"].get(name) or self._default_model
             # A name that is already a session opens the file its row
             # names — its own, or a parent's. A name that is not is
@@ -2113,7 +2157,9 @@ class Registry:
             # child's python config over the file its row names.
             self._record(name, db=self._db_of(parent, manifest))
         try:
-            return self.open(name)
+            # minting: the record above is this call's own doing, and
+            # the branch is the fork that brought us here.
+            return self.open(name, minting=True)
         except BaseException:
             # An unopened name whose record stayed would hide a session
             # that does not exist from a rail that never showed it, and
