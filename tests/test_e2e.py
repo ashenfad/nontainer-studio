@@ -1018,9 +1018,11 @@ def test_a_delegate_opens_read_only_and_the_crumb_leads_back(page, server):
     expect(bar).to_be_visible(timeout=20000)
     expect(bar).to_contain_text("delegate of e2e-drill")
     expect(bar).to_contain_text("answered")
-    # no composer: there is nothing here for a human to say
+    # no composer, and no handle that would rewind the transcript: there
+    # is nothing here for a human to say
     expect(page.locator(".input-wrap")).to_have_count(0)
     expect(page.locator("textarea")).to_have_count(0)
+    expect(page.locator("button.edit")).to_have_count(0)
     # its own transcript, replayed from its own event log
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "Had a look.", timeout=15000
