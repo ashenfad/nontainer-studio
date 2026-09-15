@@ -3604,6 +3604,11 @@ def _named_turn(client, registry, name: str, message: str) -> None:
     event would be racing the generator it is asserting about.
     """
     _turn(client, name, message)
+    _wait_for_turn(registry, name)
+
+
+def _wait_for_turn(registry, name: str) -> None:
+    """Block until the session's turn task is finished, naming and all."""
     session = registry.get(name)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -3710,6 +3715,51 @@ def test_a_human_title_hides_the_generated_name_but_does_not_stop_it(titling):
     assert client.post("/api/sessions/s1/title", json={"title": ""}).json()[
         "title"
     ] == ("Name 2")
+
+
+def test_an_older_naming_run_never_overwrites_a_newer_one(titling, monkeypatch):
+    """Naming runs overlap: the turn lock is released before a session
+    is named, so a second turn's run can start while the first's model
+    call is still out, and they can finish in either order. The older
+    answer describes a transcript the session has moved past — storing
+    it would step the rail backwards, and announcing it would tell the
+    shell to."""
+    client, registry, titler = titling
+    client.post("/api/sessions", json={"name": "s1"})
+    _named_turn(client, registry, "s1", "one")
+    assert registry.title_of("s1") == "Name 1"
+
+    # every turn is due, so the two runs below both get as far as the
+    # model call they are racing in
+    monkeypatch.setattr(sessions_mod, "TITLE_TURNS", 0)
+    asked, release, answered = [], threading.Event(), []
+
+    def racing(spec, transcript):
+        asked.append(transcript)
+        if len(asked) == 1:
+            release.wait(10)  # the older run, held open past the newer
+            return "Stale name"
+        return "Newer name"
+
+    monkeypatch.setattr(summaries_mod, "generate_title", racing)
+    older = threading.Thread(
+        target=lambda: answered.append(registry.retitle(registry.get("s1")))
+    )
+    older.start()
+    deadline = time.monotonic() + 10
+    while not asked and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert asked, "the older run never reached its model call"
+
+    # a whole turn, named, lands while the older run is still waiting
+    _named_turn(client, registry, "s1", "two")
+    assert registry.title_of("s1") == "Newer name"
+
+    release.set()
+    older.join(10)
+    assert answered == [None]  # it stored nothing and says so
+    assert registry.title_of("s1") == "Newer name"
+    assert _titles(client, "s1", "agent") == ["Name 1", "Newer name"]
 
 
 def test_a_delegate_is_never_named(titling):
