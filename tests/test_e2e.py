@@ -40,14 +40,30 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+class _Server(str):
+    """The base URL, with the store the server is running on hung off
+    it.
+
+    A str subclass so every `f"{server}/..."` in this file goes on
+    reading as a URL. The store is here because some of what the
+    studio does is only visible on disk — a manifest write outlives
+    the job table a route reads from, and a test that asserted it
+    through the same route it just called would be asking the cache
+    whether the cache is right.
+    """
+
+    store: Path
+
+
 @pytest.fixture(scope="module")
 def server(tmp_path_factory):
     port = _free_port()
+    store = tmp_path_factory.mktemp("store")
     env = {
         **os.environ,
         "NONTAINER_STUDIO_MODEL": "dummy",
         "NONTAINER_STUDIO_PORT": str(port),
-        "NONTAINER_STUDIO_STORE": str(tmp_path_factory.mktemp("store")),
+        "NONTAINER_STUDIO_STORE": str(store),
     }
     proc = subprocess.Popen(
         [sys.executable, "-m", "nontainer_studio"],
@@ -55,7 +71,8 @@ def server(tmp_path_factory):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    base = f"http://127.0.0.1:{port}"
+    base = _Server(f"http://127.0.0.1:{port}")
+    base.store = store
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         try:
@@ -946,3 +963,32 @@ def test_a_delegates_answer_reaches_the_parent_next_turn(page, server):
     expect(card).to_contain_text("ws-git merge e2e-delegate.scout")
     # and delivering it clears the rail badge
     expect(page.locator(".rail .waiting")).to_have_count(0, timeout=20000)
+
+
+def test_the_rail_lists_a_sessions_delegates_and_keeps_one(page, server):
+    """A delegate is not a rail row, but its branch ages out on the
+    studio's retention TTL — so the human can see what this session
+    delegated, and say `keep` about one, from the rail."""
+    page.goto(f"{server}/?session=e2e-keep")
+    _send(
+        page,
+        '!tool sessions {"action": "ask", "name": "scout", '
+        '"task": "!text Had a look."}\n'
+        "!text Sent a scout.",
+    )
+    _title(server, "e2e-keep", "keeper")
+    row = page.locator(".rail .row", has_text="keeper")
+    expect(row.locator(".waiting")).to_be_visible(timeout=20000)
+
+    row.locator(".waiting").click()
+    listed = page.locator(".rail .delegate")
+    expect(listed).to_have_count(1, timeout=10000)
+    expect(listed).to_contain_text("scout")
+
+    listed.locator("button.keep").click()
+    expect(listed.locator("button.keep.on")).to_be_visible(timeout=10000)
+
+    # the record is what outlives the job table the badge reads from,
+    # so that is where a keep has to land
+    record = json.loads((server.store / "sessions.json").read_text())["delegates"]
+    assert record["e2e-keep.scout"]["kept"] is True

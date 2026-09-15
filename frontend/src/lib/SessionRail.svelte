@@ -2,7 +2,14 @@
     // Session list: server view overlaid with live runtime status.
     // Pulsing dot = a turn in flight; steady green = finished while
     // you were elsewhere (cleared on focus).
-    import { rail, published, peekRuntime, renameSession } from './runtime.svelte.js'
+    import {
+        rail,
+        published,
+        peekRuntime,
+        renameSession,
+        loadDelegates,
+        setDelegateKept,
+    } from './runtime.svelte.js'
 
     const DEFAULT_TITLE = 'New session' // mirrors the server's fallback
 
@@ -83,6 +90,50 @@
         onFork(s.name)
     }
 
+    // -- delegates: the listing behind the ⑂ badge ----------------------
+    // Delegates are not rail rows (they are forked by a tool call, not
+    // by a human), but they are branches that age out, so the human
+    // needs somewhere to see them and to say `keep`. One session's list
+    // at a time, fetched on open: nothing here polls.
+    let listing = $state(null) // session whose delegates are showing
+    let delegates = $state([])
+    let delegateError = $state('')
+
+    async function toggleDelegates(s, e) {
+        e.stopPropagation()
+        if (listing === s.name) {
+            listing = null
+            return
+        }
+        listing = s.name
+        delegates = []
+        delegateError = ''
+        try {
+            const rows = await loadDelegates(s.name)
+            if (listing === s.name) delegates = rows
+        } catch (err) {
+            delegateError = err.message
+        }
+    }
+
+    async function toggleKeep(s, d) {
+        delegateError = ''
+        try {
+            const next = await setDelegateKept(s.name, d.name, !d.kept)
+            delegates = delegates.map((r) => (r.name === next.name ? next : r))
+        } catch (err) {
+            delegateError = err.message
+        }
+    }
+
+    // `boss.scout` under `boss` — the label says what the parent does
+    const childOf = (s, d) =>
+        d.name.startsWith(s.name + '.') ? d.name.slice(s.name.length + 1) : d.name
+
+    // A swept delegate's branch is gone and its answer with it; that is
+    // the one status worth saying in plainer words than the job's own.
+    const said = (d) => (d.status === 'expired' ? 'swept' : d.status)
+
     function status(s) {
         // server busy is the truth for background sessions (they hold
         // no event stream); the foreground runtime is fresher between
@@ -133,18 +184,33 @@
                         <span class="name" title="{s.title} (double-click to rename)"
                             >{s.title}</span
                         >
+                        <!-- svelte-ignore a11y_click_events_have_key_events -->
+                        <!-- svelte-ignore a11y_no_static_element_interactions -->
                         {#if s.delegates}
                             <!-- A delegate this session sent off has
                                  answered. Pull, not push: the answer is
                                  waiting and reaches the agent on this
-                                 session's next turn, which is when the
-                                 badge clears. -->
+                                 session's next turn, which is when this
+                                 clears. -->
                             <span
                                 class="waiting"
                                 title="{s.delegates} delegate answer{s.delegates === 1
                                     ? ''
-                                    : 's'} waiting — they reach this session on its next turn"
+                                    : 's'} waiting — they reach this session on its next turn. Click to list them."
+                                onclick={(e) => toggleDelegates(s, e)}
                                 >⑂{s.delegates}</span
+                            >
+                        {:else if s.delegate_count}
+                            <!-- Nothing waiting, but the branches are
+                                 still there and still ageing out: a way
+                                 into the list, not news. -->
+                            <span
+                                class="forked"
+                                title="{s.delegate_count} delegate{s.delegate_count === 1
+                                    ? ''
+                                    : 's'} — click to list them"
+                                onclick={(e) => toggleDelegates(s, e)}
+                                >⑂{s.delegate_count}</span
                             >
                         {/if}
                     </button>
@@ -169,6 +235,44 @@
                     </button>
                 {/if}
             </div>
+            {#if listing === s.name}
+                <!-- Branches, listed where the human can act on them: a
+                     delegate nobody deals with is swept on the studio's
+                     retention TTL, and `keep` is what exempts one. -->
+                <div class="delegates">
+                    {#if delegateError}
+                        <div class="delegate-note error">{delegateError}</div>
+                    {:else if !delegates.length}
+                        <div class="delegate-note">nothing delegated yet</div>
+                    {:else}
+                        {#each delegates as d (d.name)}
+                            <div class="delegate">
+                                <span class="delegate-name" title={d.name}
+                                    >{childOf(s, d)}</span
+                                >
+                                <span
+                                    class="delegate-meta"
+                                    title={d.known
+                                        ? ''
+                                        : 'no job table survived the last restart — this is what the record knows'}
+                                    >{said(d)}{d.known ? '' : '?'} · {ago(
+                                        d.touched,
+                                    )}</span
+                                >
+                                <button
+                                    class="keep"
+                                    class:on={d.kept}
+                                    disabled={d.status === 'expired'}
+                                    title={d.kept
+                                        ? 'kept — the sweep leaves this branch alone; click to let it age out'
+                                        : 'keep this branch from the retention sweep'}
+                                    onclick={() => toggleKeep(s, d)}>keep</button
+                                >
+                            </div>
+                        {/each}
+                    {/if}
+                </div>
+            {/if}
         {/each}
     </div>
     <div class="new">
@@ -393,7 +497,64 @@
         margin: 0 0.15rem;
         outline: none;
     }
+    .delegates {
+        display: flex;
+        flex-direction: column;
+        gap: 0.1rem;
+        padding: 0.15rem 0.5rem 0.4rem 1.05rem;
+    }
+    .delegate {
+        display: flex;
+        align-items: baseline;
+        gap: 0.35rem;
+    }
+    .delegate-name {
+        color: var(--text-muted);
+        font-size: 0.72rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .delegate-meta {
+        color: var(--text-muted);
+        font-size: 0.62rem;
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .delegate-note {
+        color: var(--text-muted);
+        font-size: 0.62rem;
+    }
+    .delegate-note.error {
+        color: var(--error);
+    }
+    .keep {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        font-family: inherit;
+        font-size: 0.62rem;
+        padding: 0.05rem 0.25rem;
+        border-radius: 999px;
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+    .keep:hover:not(:disabled) {
+        color: var(--accent);
+    }
+    .keep.on {
+        color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 16%, transparent);
+    }
+    .keep:disabled {
+        cursor: default;
+        opacity: 0.5;
+    }
     .waiting {
+        cursor: pointer;
         flex-shrink: 0;
         font-size: 0.62rem;
         line-height: 1;
@@ -401,6 +562,18 @@
         border-radius: 999px;
         color: var(--accent);
         background: color-mix(in srgb, var(--accent) 16%, transparent);
+    }
+    /* nothing waiting: a way into the list, not news */
+    .forked {
+        cursor: pointer;
+        flex-shrink: 0;
+        font-size: 0.62rem;
+        line-height: 1;
+        padding: 0.15rem 0.3rem;
+        color: var(--text-muted);
+    }
+    .forked:hover {
+        color: var(--accent);
     }
     .dot {
         width: 7px;
