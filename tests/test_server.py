@@ -250,26 +250,24 @@ def test_new_sessions_seed_skills(studio):
     )
 
 
-def test_seeded_skill_teaches_curl_only_where_it_exists(studio):
-    """The apps `curl` builtin is a LocalExecutor affordance. Under any
-    dud backend the terminal is real bash, where `curl api/x` reaches
-    the NETWORK instead of the dispatcher — it fails open, silently, so
-    the seeded text has to be gated rather than merely softened.
-
-    In the audited session this was half of a compound failure: the
-    log rung was invisible (fixed in nontainer) and this rung was
-    actively misleading, which left the documented debugging ladder
-    with no working step at all under dud-vm.
+def test_the_seeded_skill_teaches_the_verbs_the_session_has(studio):
+    """The debugging ladder names terminal verbs, and an agent sent to
+    type one that is not there loses the step. `ws-curl` is the verb on
+    every rung — plain `curl` is the real one, which reaches the network
+    instead of the app — so the ladder teaches that spelling and no
+    other, and the same holds for the two unit-test verbs it ends on.
     """
     client, registry = studio
     client.post("/api/sessions", json={"name": "sk"})
     session = registry.get("sk")
     text = session.ws.files.fs.read("/workspace/skills/building-apps/SKILL.md").decode()
 
-    # the studio fixture runs the default (Local) executor
-    assert session.ws.runtime.supports_commands
-    assert "curl api/x" in text
-    assert "There is no `curl` builtin" not in text
+    for verb in ("ws-curl", "ws-pytest", "ws-vitest"):
+        assert verb in text
+        assert verb in session.ws.runtime.commands
+    # never the bare spelling as an instruction: `curl api/x` reaches
+    # the network on a rung whose shell is real
+    assert "`curl api/x`" not in text
     # markers are resolved away, never seeded raw
     assert "<!--if:" not in text and "<!--endif-->" not in text
 

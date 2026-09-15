@@ -83,25 +83,20 @@ def _executor_factory() -> Callable[[], Any] | None:
     ``_ws_kwargs``).
 
     Caveat: the subprocess backend has NO isolation (own-machine
-    posture). Apps dispatch works under dud as of stage 3c — the live
-    preview and ``test_app`` (both drive ``dispatch`` host-side) run,
-    and the apps.md-recommended handler pattern (state in cache/an
-    external store) crosses the boundary cleanly. Two gaps remain:
+    posture). Apps dispatch works under dud — the live preview and
+    ``test_app`` (both drive ``dispatch`` host-side) run, and the
+    apps.md-recommended handler pattern (state in cache/an external
+    store) crosses the boundary cleanly. The workspace's own verbs
+    (``ws-curl``, ``ws-git``, ``ws-pytest``, ``ws-vitest``) relay out of
+    the guest to the host that answers them, so the apps loop, the
+    session's git and the unit-test tier are the same on every rung.
+    They are spelled ``ws-`` because a real ``curl`` is on the guest's
+    PATH and would reach the network instead of the app.
 
-    - ``curl`` is a termish command and doesn't exist in dud's real
-      bash — on ANY dud backend, not just the subprocess one. Worse
-      than absent: real curl IS on the guest PATH, so a `curl api/x`
-      reaches the network rather than failing. Both places that could
-      teach it are gated on ``ws.runtime.supports_commands`` — nontainer's apps
-      primer, and the seeded skill text (see
-      ``_resolve_skill_conditionals``) — so the agent is steered to
-      test_app / the preview instead. Closing it needs a guest->host
-      channel reachable from the shell (dud DESIGN.md, "The apps
-      loop").
-    - Absolute paths under the SUBPROCESS backend live in the guest's
-      own temp dir rather than ``/workspace``. This one the VM backends
-      do close: they mount the workspace AT ``/workspace``, so absolute
-      paths match the local sandbox everywhere else.
+    One gap remains: absolute paths under the SUBPROCESS backend live
+    in the guest's own temp dir rather than ``/workspace``. The VM
+    backends close it — they mount the workspace AT ``/workspace``, so
+    absolute paths match the local sandbox everywhere else.
 
     The analyst loop (terminal + run_python over the real data stack)
     is unaffected.
@@ -1446,13 +1441,14 @@ class Registry:
         except Exception:
             pass  # a skill that won't resolve is still better than none
 
-    # Conditional blocks in seeded SKILL.md files. The terminal-command
-    # affordances (the apps `curl` builtin) exist only on LocalExecutor;
-    # under dud the terminal is real bash, where `curl api/x` silently
-    # hits the NETWORK instead of the dispatcher. nontainer already
-    # gates its tool-description primer on ws.runtime.supports_commands; seeded
-    # skill text has to be gated the same way or it teaches a debugging
-    # step that fails open.
+    # Conditional blocks in seeded SKILL.md files: a `commands` block is
+    # kept where the executor runs injected terminal builtins, a
+    # `no-commands` block where the terminal is a real shell that does
+    # not. Skill text that teaches a builtin on a rung without one costs
+    # the agent a turn to discover, so text about one is written in a
+    # block rather than unconditionally. The portable `ws-*` verbs are
+    # NOT this distinction — they ferry into a guest, so they answer on
+    # every rung and need no gate.
     _IF_BLOCK = re.compile(
         r"[ \t]*<!--if:(commands|no-commands)-->[ \t]*\n(.*?)[ \t]*<!--endif-->[ \t]*\n?",
         re.DOTALL,
