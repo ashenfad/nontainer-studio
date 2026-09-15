@@ -2,10 +2,12 @@
 lifecycle, preview/publish, time travel — exercised with a fake agent
 (no LLM, no key)."""
 
+import asyncio
 import json
 import re
 import shutil
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +41,23 @@ class FakeAgent:
         yield SimpleNamespace(event="RunContent", content="hello ", run_id=run_id)
         yield SimpleNamespace(event="RunContent", content="world")
         yield SimpleNamespace(event="RunCompleted")
+
+
+class GatedAgent(FakeAgent):
+    """A FakeAgent that holds its turn open until a gate is set —
+    a delegate that is still running while the test looks at it."""
+
+    def __init__(self, gate: threading.Event) -> None:
+        super().__init__()
+        self._gate = gate
+
+    async def arun(self, message: str, stream: bool = True, stream_events: bool = True):
+        while not self._gate.is_set():
+            await asyncio.sleep(0.01)
+        async for event in super().arun(
+            message, stream=stream, stream_events=stream_events
+        ):
+            yield event
 
 
 @pytest.fixture
@@ -4737,6 +4756,22 @@ DRIVING = [
 ]
 
 
+def _wait_for_delegate(client, child: str, status: str, timeout: float = 20) -> dict:
+    """The child's row once it reads ``status``. Polls through 404: the
+    runner opens the delegate on a worker thread, so the name exists a
+    beat after the ask returns."""
+    deadline = time.monotonic() + timeout
+    seen: object = None
+    while time.monotonic() < deadline:
+        res = client.get(f"/api/sessions/{child}")
+        if res.status_code == 200:
+            seen = res.json()["delegate"]
+            if seen is not None and seen["status"] == status:
+                return seen
+        time.sleep(0.05)
+    raise AssertionError(f"{child} never read {status!r} (last: {seen})")
+
+
 def test_the_session_route_says_whose_delegate_this_is(studio):
     """A delegate has no rail row, so a shell that lands on its name has
     only the name — this is the request that tells it the rest."""
@@ -4816,6 +4851,31 @@ def test_an_ordinary_session_still_publishes(studio):
 
     assert made.status_code == 200
     assert made.json()["url"].startswith("/apps/")
+
+
+def test_the_session_route_follows_a_running_delegate(tmp_path):
+    """A delegate's status is its parent's job table's, and nothing
+    about it lands on the delegate's own event feed — so the row has to
+    be askable again rather than read once."""
+    gate = threading.Event()
+    registry = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    registry._build_agent = lambda name, *a, **k: (
+        FakeAgent() if name == "boss" else GatedAgent(gate)
+    )
+    try:
+        with TestClient(server.build_app(registry)) as client:
+            parent = registry.open("boss")
+            job = parent.delegates.ask("go and look")
+
+            running = _wait_for_delegate(client, job.name, "running")
+            assert running["parent"] == "boss" and running["known"] is True
+
+            gate.set()
+            answered = _wait_for_delegate(client, job.name, "answered")
+            assert answered["known"] is True
+    finally:
+        gate.set()
+        registry.close()
 
 
 def test_a_delegate_has_delegates_of_its_own(studio):
