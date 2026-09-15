@@ -315,9 +315,10 @@ export class SessionRuntime {
             // in the tool result — never double-appends the artifact.
             this.#addArt(ev.name, ev.path)
         } else if (ev.type === 'title') {
-            // the agent named the session. Re-read the rail rather than
-            // display ev.title: the server resolves user > agent, and a
-            // human title outranks this one — only the server knows.
+            // the studio named the session from its transcript. Re-read
+            // the rail rather than display ev.title: the server resolves
+            // user > generated, and a human title outranks this one —
+            // only the server knows.
             refreshSessions()
         } else if (ev.type === 'truncate') {
             // an edit rewound the session: only user messages carry a

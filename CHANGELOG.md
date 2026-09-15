@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The studio names a session; the agent is not asked to.** The
+  `recommend_title` tool is gone. After the first turn that was a real
+  exchange, and every five messages after that, the studio runs a
+  second, stateless model pass over the session's transcript and stores
+  what comes back as the title — no db, no history, no tools, off the
+  turn lock, and a failure leaves the previous name standing. A tool
+  the model may or may not call cost a turn's attention, arrived when
+  the model felt like it, and was missing exactly where a name is most
+  wanted: the session nobody named. The human's own title still
+  outranks it — theirs is the name that shows, while the generated one
+  goes on being read underneath, so clearing theirs reveals a name for
+  the session as it now stands. `NONTAINER_STUDIO_SUMMARY_MODEL`
+  picks the model this runs on (the session's own by default) —
+  naming a transcript is a job a small, cheap model does as well as
+  the one doing the building. Delegates are never named: they are
+  labelled by the handle their parent gave them.
 - **The nontainer floor is 0.7.3.** A full-inherit delegate is the
   agent that was at the fork point: the fork carries the conversation
   as the child's own, where before the copied record still named the

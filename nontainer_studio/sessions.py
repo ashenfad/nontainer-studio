@@ -498,6 +498,15 @@ DEFAULT_TITLE = "New session"
 
 TITLE_MAX = 60  # the rail is ~200px; anything longer is ellipsis anyway
 
+TITLE_TURNS = 5
+"""User turns between one generated title and the next. A session's
+subject moves, and the name in the rail should move with it — but a
+name that changed every turn would be something the human has to
+re-read to find the session they left, and every generation is a model
+call. Five turns is far enough apart to be cheap and near enough that
+a session that became something else is not listed under what it was.
+"""
+
 
 def _clean_title(title: object) -> str | None:
     """Free text -> a rail label, or None for "no title".
@@ -561,11 +570,7 @@ STUDIO_PRIMER = (
     "be buried in prose; when the SHAPE of the data is the story, "
     "prefer raw plotly figures in `ui` — they render interactively "
     "right in the reply. Need a static image file instead? Use "
-    "matplotlib savefig; plotly's write_image cannot run here. A new "
-    "session is listed as 'New session' until it has a name: once you "
-    "know what this one is about — usually after the first substantial "
-    "exchange — call recommend_title so the human can find it again. "
-    "Every "
+    "matplotlib savefig; plotly's write_image cannot run here. Every "
     "turn is a commit the human can rewind by editing an earlier "
     "prompt — prefer small complete "
     "steps over big-bang changes. They may also PUBLISH the app: a "
@@ -1181,21 +1186,140 @@ class Registry:
         return self._set_title(name, "user", title)
 
     def set_agent_title(self, name: str, title: str | None) -> str:
-        """The agent's suggestion. Always stored, even when a user title
-        is hiding it: clearing theirs should reveal the agent's latest,
-        not a stale one."""
+        """The generated name. Always stored, even when a user title is
+        hiding it: clearing theirs should reveal the latest name for the
+        session, not a stale one."""
         return self._set_title(name, "agent", title)
 
-    def _set_title(self, name: str, tier: str, title: str | None) -> str:
-        # takes _lock: the agent's tool writes titles from a worker
-        # thread, and this is a read-modify-write of the whole manifest
+    def _set_title(
+        self,
+        name: str,
+        tier: str,
+        title: str | None,
+        cursor: tuple[int, int] | None = None,
+    ) -> str:
+        """Write one tier of a session's title. ``cursor`` is where a
+        GENERATED title was read from — the transcript seq it was
+        produced at, and how many user turns the transcript held then —
+        which is what the cadence measures the next generation against.
+
+        Takes ``_lock``: a title is written from a worker thread, and
+        this is a read-modify-write of the whole manifest.
+        """
         with self._lock:
             manifest = self._manifest()
             entry = dict(manifest["titles"].get(name) or {})
             entry[tier] = _clean_title(title)
+            if cursor is not None:
+                entry["at_seq"], entry["turns"] = cursor
             manifest["titles"][name] = entry
             self._save_manifest(manifest)
             return self.title_of(name, manifest)  # manifest passed: no re-lock
+
+    def retitle(self, session: Session) -> str | None:
+        """Name the session from its own transcript, when the cadence
+        says a name is due. Returns the name it generated, or ``None``
+        when it generated none. That name is what was STORED, which a
+        human title may be hiding — :meth:`title_of` says what shows.
+
+        The studio's answer, not the agent's: a second, tiny model run
+        over the transcript this registry already holds, made after the
+        turn it reads and owing that turn nothing. A failure is logged
+        and costs the previous title nothing.
+
+        Blocking — a model call and a manifest write — so callers run
+        it off the event loop, and never while holding the turn lock.
+        """
+        from . import summaries
+
+        spec = self._summary_spec(session)
+        manifest = self._manifest()
+        turns = self._turn_count(session)
+        if spec is None or not self._title_due(session, manifest, turns):
+            return None
+        # Read BEFORE the run and stamped after it: the cursor says
+        # which transcript the stored name was read from, so a turn
+        # that lands while the model is answering is one this title
+        # does not claim to have seen.
+        at = session.next_seq
+        transcript = summaries.transcript_text(session)
+        try:
+            title = summaries.generate_title(spec, transcript)
+        except Exception as e:  # noqa: BLE001 - a name is never worth a turn
+            log.info("titles: %s went unnamed (%s)", session.name, e)
+            return None
+        if title is None:
+            return None
+        self._set_title(session.name, "agent", title, cursor=(at, turns))
+        return title
+
+    def _summary_spec(self, session: Session) -> str | None:
+        """The model a generated title or description is read by:
+        ``NONTAINER_STUDIO_SUMMARY_MODEL``, else this session's own
+        model, else the registry's default.
+
+        ``None`` means there is no model configured at all, and then
+        nothing is generated — a registry built without a default model
+        is one whose embedder never chose a provider, and a summary is
+        not the thing to go looking for one on its behalf. The server
+        resolves the default at startup and fails fast without one, so
+        this is None only where the studio itself would have nothing to
+        run a turn on either.
+        """
+        from . import summaries
+
+        return summaries.summary_spec(session.model or self._default_model)
+
+    def _title_due(self, session: Session, manifest: dict, turns: int) -> bool:
+        """Whether to generate a title for ``session`` right now.
+
+        The first one lands after the first turn that was a real
+        exchange — a message and an answer with words in it. After
+        that, every ``TITLE_TURNS`` user turns: a session whose subject
+        moved gets the name it has now, and one that did not costs a
+        small run once in five turns.
+
+        A human title changes nothing here. Theirs is the name that
+        shows, and the generated one is kept current underneath it, so
+        clearing theirs reveals a name for the session as it now stands
+        rather than the one it was given before they renamed it.
+
+        A delegate is never named: it is labelled by the handle its
+        parent gave it, and the rail lists no row for a name to go in.
+        """
+        if self.is_delegate(session.name, manifest):
+            return False
+        entry = manifest["titles"].get(session.name) or {}
+        if not entry.get("agent"):
+            return self._real_exchange(session)
+        return turns - int(entry.get("turns") or 0) >= TITLE_TURNS
+
+    @classmethod
+    def _turn_count(cls, session: Session) -> int:
+        """How many messages the human has sent, as the transcript
+        stands — through the projection, so an edit's rewind lowers it
+        the way it lowers everything else."""
+        return sum(
+            1 for _, e in cls._visible(list(session.events)) if e.get("type") == "user"
+        )
+
+    @classmethod
+    def _real_exchange(cls, session: Session) -> bool:
+        """Whether the transcript holds a message and an answer to it.
+
+        A turn that errored, was stopped, or spent itself on tool calls
+        has produced nothing to name the session after — and a name
+        read off one of those is the name the session keeps for the
+        next five turns.
+        """
+        asked = False
+        for _, event in cls._visible(list(session.events)):
+            kind = event.get("type")
+            if kind == "user":
+                asked = True
+            elif asked and kind == "text" and (event.get("delta") or "").strip():
+                return True
+        return False
 
     def _manifest_path(self) -> Path:
         return self._store.path / "sessions.json"
@@ -1203,7 +1327,8 @@ class Registry:
     def _manifest(self) -> dict:
         """{"sessions": {name: {db}}, "apps": {token: app}, "published":
         {token: {branch, session, checkpoint}}, "models": {name: spec},
-        "titles": {name: {user, agent}}, "created": {name: epoch},
+        "titles": {name: {user, agent, at_seq, turns}},
+        "created": {name: epoch},
         "delegates": {child: {parent, touched, kept}}} — tolerant of the
         older formats that wrote ``sessions`` as a bare list and
         ``delegates`` as ``{child: parent}``, and of any key simply
@@ -1220,6 +1345,11 @@ class Registry:
         and not a naming rule: a session is somebody's delegate because
         the studio wrote it down when it opened one, never because of
         what its name looks like.
+
+        A title entry carries both tiers plus, where one was generated,
+        the transcript cursor it was read from — ``at_seq`` and the
+        ``turns`` the transcript held then, which is what the cadence
+        measures the next generation against (see :meth:`retitle`).
 
         ``apps`` maps a capability token to the app's publication name,
         db and versions (see :meth:`publish`);
@@ -1879,32 +2009,6 @@ class Registry:
             e.setdefault("seq", i)
         return _compact(events)[-MAX_EVENTS:]
 
-    def _title_tool(self, name: str) -> Callable:
-        """The agent's handle on the session list.
-
-        A studio tool, not a WorkspaceTools one: titles live in the
-        registry, not the workspace. The closure captures only ``self``
-        and ``name`` — both stable across the model-switch rebuild, and
-        nothing turn-scoped, so a rebuilt agent's tool still works.
-        """
-
-        def recommend_title(title: str) -> str:
-            """Give this session a short title for the human's session list.
-
-            Call this once you know what the session is about — usually
-            right after the first substantial exchange — and again only if
-            the topic changes materially, not every turn. Prefer 3-6 words
-            naming the work ("Revenue dashboard", "Debugging the CSV
-            import"). The human can rename a session themselves, and their
-            name always wins over yours.
-            """
-            # returns the RESOLVED label: when a human title is in force
-            # this reports theirs, so the agent can see its suggestion is
-            # stored but not shown
-            return f"the session list now shows {self.set_agent_title(name, title)!r}"
-
-        return recommend_title
-
     def _sessions_tool(self, delegates: Any) -> Callable:
         """The agent's handle on delegation, and on what the human has
         published.
@@ -2068,7 +2172,7 @@ class Registry:
             # helper to delegate through, which is nontainer's gate for
             # it too: an agent told to delegate with nothing to delegate
             # to spends a call finding out.
-            tools=[toolkit, self._title_tool(name)]
+            tools=[toolkit]
             + ([self._sessions_tool(delegates)] if delegates is not None else []),
             compress_tool_results=compression is not None,
             compression_manager=compression,
@@ -2830,7 +2934,12 @@ class Registry:
         prior = [e for e in session.events if e["seq"] < seq]
         for _, ev in self._visible(prior):
             if ev.get("type") == "title":
-                surviving_title = ev.get("title") or surviving_title
+                # A title event carries the label that was in force and,
+                # under ``agent``, the generated name beneath it. The
+                # tier this puts back is the generated one; an event
+                # from before the two were told apart carries only the
+                # label, and back then that WAS the generated name.
+                surviving_title = ev.get("agent") or ev.get("title") or surviving_title
         session.ws.checkout(head)
         # Best-effort within the event window: revert to the last title
         # the agent gave BEFORE the cut. None surviving is ambiguous —

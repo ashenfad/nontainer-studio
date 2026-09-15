@@ -82,6 +82,12 @@ the env default or the picker's custom field.
 A `.env` file next to where you launch is loaded at startup (real env
 wins) — see `.env.example`.
 
+`NONTAINER_STUDIO_SUMMARY_MODEL` picks the model the studio names
+sessions with — a second, tiny run over the transcript, on the
+session's own model unless this says otherwise. Naming a conversation
+is a job a small, cheap model does as well as the one doing the
+building.
+
 Other knobs: `NONTAINER_STUDIO_PORT`, `NONTAINER_STUDIO_STORE`
 (defaults to `~/.nontainer-studio`), `NONTAINER_STUDIO_CSP` (override
 the published-app CSP; `none` disables), `NONTAINER_STUDIO_SKILLS`
@@ -242,6 +248,19 @@ agno's cross-session tables — user memories, metrics — sit at
 must not rewind with any one branch. Conversations from before the
 move into the branch (the old `store/chat.sqlite`) are not carried
 over; those sessions keep their files and start with an empty memory.
+
+**Sessions name themselves.** After the first real exchange the studio
+runs a second, stateless model pass over the transcript and stores what
+comes back as the session's title; it re-reads it every five of your
+messages, so a session that became something else is not listed under
+what it was. The agent is never asked for this — a tool it may or may
+not call costs a turn's attention and is missing exactly where it is
+most wanted, on the session nobody named. Rename from the rail
+(double-click the label) and your title wins from then on: yours is
+what the rail shows, while the generated one goes on being read
+underneath it, so clearing yours reveals a name for the session as it
+now stands rather than the one it had when you renamed it. Delegates are not named at all — they are labelled by
+the handle their parent gave them.
 
 ### Delegation
 

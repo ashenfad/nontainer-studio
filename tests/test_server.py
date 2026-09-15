@@ -19,6 +19,7 @@ from starlette.testclient import TestClient
 
 from nontainer_studio import server
 from nontainer_studio import sessions as sessions_mod
+from nontainer_studio import summaries as summaries_mod
 
 
 class FakeAgent:
@@ -3436,49 +3437,247 @@ def test_titles_and_birthday_survive_restart(studio, tmp_path):
     reborn.close()
 
 
-def test_recommend_title_tool_names_the_session(studio):
-    client, registry = studio
+class Scripted:
+    """A scripted stand-in for one of the summary generators.
+
+    It answers with the next thing it was handed (a counted one once
+    those run out), raises an exception it was handed instead of
+    answering it, and keeps every call — so a test can assert the
+    CADENCE as well as the answer.
+    """
+
+    def __init__(self, *answers, default: str = "Name") -> None:
+        self.answers = list(answers)
+        self.default = default
+        self.calls: list[tuple] = []
+
+    def __call__(self, spec, transcript):
+        self.calls.append((spec, transcript))
+        answer = (
+            self.answers.pop(0) if self.answers else f"{self.default} {len(self.calls)}"
+        )
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+@pytest.fixture
+def titling(tmp_path, monkeypatch):
+    """The `studio` fixture with the naming path armed: a registry that
+    HAS a model (nothing is generated without one) and a stand-in where
+    the model call would be.
+
+    The plain `studio` fixture names nothing, which is why every other
+    test in this file sees the transcripts it always saw.
+    """
+    titler = Scripted()
+    monkeypatch.setattr(summaries_mod, "generate_title", titler)
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a: None, store=tmp_path, default_model="dummy"
+    )
+    registry._build_agent = lambda *a, **k: FakeAgent()
+    with TestClient(server.build_app(registry)) as client:
+        yield client, registry, titler
+    registry.close()
+
+
+def _named_turn(client, registry, name: str, message: str) -> None:
+    """Run a turn and wait for the whole TASK, not just its last event.
+
+    The session is named after the turn's `done` — off the lock, so the
+    next turn need not wait for it — and a test that stopped at the
+    event would be racing the generator it is asserting about.
+    """
+    _turn(client, name, message)
+    session = registry.get(name)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        task = session.turn_task
+        if task is None or task.done():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"{name}'s turn never finished")
+
+
+def _titles(client, name: str, key: str = "title") -> list[str]:
+    """The title events' labels — `title` is what the rail shows,
+    `agent` the generated name stored beneath it."""
+    events = client.get(f"/api/sessions/{name}/events?since=0&wait=0").json()["events"]
+    return [e[key] for e in events if e["type"] == "title"]
+
+
+def test_the_first_real_exchange_names_the_session(titling):
+    """The studio names a session out of its own transcript — the agent
+    is not asked and spends no turn on it."""
+    client, registry, titler = titling
     client.post("/api/sessions", json={"name": "s1"})
-    tool = registry._title_tool("s1")
+    assert registry.title_of("s1") == "New session"
 
-    assert "Revenue dashboard" in tool("Revenue dashboard")
-    assert registry.title_of("s1") == "Revenue dashboard"
-    # it can rename on a topic shift
-    tool("Debugging the CSV import")
-    assert registry.title_of("s1") == "Debugging the CSV import"
+    _named_turn(client, registry, "s1", "chart the revenue csv")
+    assert registry.title_of("s1") == "Name 1"
+    # the shell relabels off the transcript, not the next rail poll
+    assert _titles(client, "s1") == ["Name 1"]
+
+    # and what it read was this turn: both halves of the exchange, with
+    # the tool call named
+    spec, transcript = titler.calls[0]
+    assert spec == "dummy"
+    assert "user: chart the revenue csv" in transcript
+    assert "assistant: hello world" in transcript
+    assert "[tool] terminal" in transcript
 
 
-def test_recommend_title_cannot_override_the_human(studio):
-    """The agent's suggestion is stored but not shown — and the tool
-    result says so, rather than claiming a title it didn't get."""
-    client, registry = studio
+def test_a_turn_with_nothing_said_names_nothing(titling):
+    """A turn that produced tool calls and no answer has nothing to name
+    the session after — and a name read off one would be the name it
+    keeps for the next five turns."""
+    client, registry, titler = titling
+
+    class QuietAgent(FakeAgent):
+        async def arun(self, message, stream=True, stream_events=True):
+            self.seen.append(message)
+            yield SimpleNamespace(
+                event="ToolCallStarted",
+                tool=SimpleNamespace(tool_name="terminal", tool_args={}, run_id="r1"),
+            )
+            yield SimpleNamespace(event="RunCompleted")
+
+    registry._build_agent = lambda *a, **k: QuietAgent()
+    client.post("/api/sessions", json={"name": "s1"})
+    _named_turn(client, registry, "s1", "do the thing")
+
+    assert titler.calls == []
+    assert registry.title_of("s1") == "New session"
+
+
+def test_a_session_is_not_renamed_every_turn(titling):
+    """A name that moved every turn is one the human has to re-read to
+    find the session they left, and every generation is a model call."""
+    client, registry, titler = titling
+    client.post("/api/sessions", json={"name": "s1"})
+    _named_turn(client, registry, "s1", "one")
+    assert len(titler.calls) == 1
+
+    for message in ("two", "three", "four", "five"):
+        _named_turn(client, registry, "s1", message)
+    assert len(titler.calls) == 1 and registry.title_of("s1") == "Name 1"
+
+    # the fifth turn since the name was read is far enough
+    _named_turn(client, registry, "s1", "six")
+    assert len(titler.calls) == 2 and registry.title_of("s1") == "Name 2"
+
+    # the cursor says which transcript that name came off
+    entry = registry._manifest()["titles"]["s1"]
+    assert entry["turns"] == 6 and entry["at_seq"] > 0
+
+
+def test_a_human_title_hides_the_generated_name_but_does_not_stop_it(titling):
+    """Theirs is the name that shows, and the generated one is kept
+    current beneath it — so clearing theirs reveals a name for the
+    session as it now stands, not the one it had when they renamed it."""
+    client, registry, titler = titling
     client.post("/api/sessions", json={"name": "s1"})
     client.post("/api/sessions/s1/title", json={"title": "Mine"})
 
-    said = registry._title_tool("s1")("Something the agent picked")
-    assert "Mine" in said  # reports what's SHOWN, not what it asked for
+    for message in ("one", "two", "three", "four", "five", "six"):
+        _named_turn(client, registry, "s1", message)
+    # the cadence ran unchanged under their title: once on the first
+    # exchange, once five turns later
+    assert len(titler.calls) == 2
+    assert registry._manifest()["titles"]["s1"]["agent"] == "Name 2"
+    # and nothing the human is looking at moved, the title event
+    # included — it carries the label in force, which is theirs
     assert registry.title_of("s1") == "Mine"
-    # ...but it was remembered: clearing the human's reveals it
+    assert _titles(client, "s1") == ["Mine", "Mine"]
+    assert _titles(client, "s1", "agent") == ["Name 1", "Name 2"]
+
+    # clearing reveals the latest generated name, not a stale one
     assert client.post("/api/sessions/s1/title", json={"title": ""}).json()[
         "title"
-    ] == ("Something the agent picked")
+    ] == ("Name 2")
 
 
-def test_title_tool_survives_a_model_switch(studio):
-    """The closure captures only (registry, name) — nothing turn-scoped
-    — so the agent rebuilt by a model switch still titles the right
-    session."""
+def test_a_delegate_is_never_named(titling):
+    """A delegate is labelled by the handle its parent gave it, and the
+    rail lists no row for a name to go in."""
+    client, registry, titler = titling
+    client.post("/api/sessions", json={"name": "boss"})
+    child = registry.open_delegate("boss", "boss.scout")
+
+    session = registry.get(child.name)
+    asyncio.run(_drive(session, "look into it"))
+    assert registry.retitle(session) is None
+    assert titler.calls == []
+
+
+async def _drive(session, message: str) -> None:
+    """One turn straight through `_run_turn`, without a route in front
+    of it — a delegate's turns are not driven by the human's."""
+    session.turn_lock.acquire()
+    await server._run_turn(session, message)
+
+
+def test_a_generator_that_fails_leaves_the_name_alone(titling):
+    """A name is never worth a turn: the model call is best-effort, and
+    what the session was called stands."""
+    client, registry, titler = titling
+    titler.answers = ["First name", RuntimeError("no provider")]
+    client.post("/api/sessions", json={"name": "s1"})
+    for message in ("one", "two", "three", "four", "five", "six"):
+        _named_turn(client, registry, "s1", message)
+
+    assert len(titler.calls) == 2  # it tried again, and the try failed
+    assert registry.title_of("s1") == "First name"
+
+
+def test_a_generator_that_answers_nothing_names_nothing(titling):
+    """An empty answer is not a name: nothing is stored and no event
+    claims one was."""
+    client, registry, titler = titling
+    titler.answers = [None]
+    client.post("/api/sessions", json={"name": "s1"})
+    _named_turn(client, registry, "s1", "one")
+
+    assert registry.title_of("s1") == "New session"
+    assert _titles(client, "s1") == []
+
+
+def test_the_generator_runs_on_the_sessions_own_model(titling):
+    """A session that switched models is named by the model it is now
+    running on — and the knob overrides both."""
+    client, registry, titler = titling
+    client.post("/api/sessions", json={"name": "s1"})
+    registry.set_model(registry.get("s1"), "openai:gpt-5.6")
+    _named_turn(client, registry, "s1", "one")
+    assert titler.calls[0][0] == "openai:gpt-5.6"
+
+
+def test_the_summary_model_knob_wins(titling, monkeypatch):
+    """Naming a transcript is a job a small, cheap model does as well as
+    the one doing the building."""
+    client, registry, titler = titling
+    monkeypatch.setenv("NONTAINER_STUDIO_SUMMARY_MODEL", "openrouter:tiny")
+    client.post("/api/sessions", json={"name": "s1"})
+    _named_turn(client, registry, "s1", "one")
+    assert titler.calls[0][0] == "openrouter:tiny"
+
+
+def test_nothing_is_generated_without_a_model(studio):
+    """A registry built with no default model has nothing to name a
+    session with, and a summary is not the thing to go looking for a
+    provider on the embedder's behalf."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
-    tool_before = registry._title_tool("s1")
-    client.post("/api/sessions/s1/model", json={"model": "dummy"})
-    tool_before("Still works")
-    assert registry.title_of("s1") == "Still works"
+    _turn(client, "s1", "one")
+    assert registry.retitle(registry.get("s1")) is None
+    assert registry.title_of("s1") == "New session"
 
 
-def test_agent_is_given_the_title_tool(studio):
-    """The wiring the rest of stage 3 rests on: a studio tool riding
-    alongside the nontainer toolkit in the same agno Agent."""
+def test_no_tool_asks_the_agent_for_a_title(studio):
+    """The studio names the session; the agent's tools are the ones it
+    works with. The primer must not teach a verb that is gone either —
+    it is the prompt-cache prefix, and a dead tool name in it costs a
+    call to find out about."""
     pytest.importorskip("agno")
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
@@ -3487,12 +3686,8 @@ def test_agent_is_given_the_title_tool(studio):
         registry, "s1", registry.get("s1").ws, registry.get("s1").runtime
     )
     names = {getattr(t, "name", getattr(t, "__name__", "")) for t in agent.tools}
-    assert "recommend_title" in names
-
-
-def test_primer_teaches_when_to_title(studio):
-    assert "recommend_title" in sessions_mod.STUDIO_PRIMER
-    assert "New session" in sessions_mod.STUDIO_PRIMER
+    assert "recommend_title" not in names
+    assert "recommend_title" not in sessions_mod.STUDIO_PRIMER
 
 
 def test_the_primer_names_only_verbs_the_session_carries(studio):
@@ -3529,87 +3724,26 @@ def test_the_db_primer_says_the_store_is_shared():
     assert "the published app owns" not in sessions_mod.STUDIO_PRIMER
 
 
-class TitlingAgent(FakeAgent):
-    """Calls recommend_title mid-turn, like the real thing.
-
-    The real loop EXECUTES the tool and THEN emits ToolCallCompleted —
-    two separate effects (the manifest write and the transcript event).
-    A fake that only yielded the event would leave the manifest unwritten
-    and quietly test half the feature."""
-
-    def __init__(self, registry, name: str, title: str = "Revenue dashboard") -> None:
-        super().__init__()
-        self._tool = registry._title_tool(name)
-        self.title = title
-
-    async def arun(self, message, stream=True, stream_events=True):
-        self.seen.append(message)
-        run_id = f"run-{len(self.seen)}"
-        result = self._tool(self.title)  # the tool really runs
-        yield SimpleNamespace(
-            event="ToolCallCompleted",
-            tool=SimpleNamespace(
-                tool_name="recommend_title",
-                tool_args={"title": self.title},
-                result=result,
-                run_id=run_id,
-            ),
-        )
-        yield SimpleNamespace(event="RunContent", content="named it", run_id=run_id)
-
-
-def test_title_event_rides_the_transcript(studio):
-    """The tool writes the manifest; the EVENT is the temporal record —
-    it marks when the session got its name."""
-    client, registry = studio
-    registry._build_agent = lambda n, *a, **k: TitlingAgent(registry, n)
-    client.post("/api/sessions", json={"name": "s1"})
-    client.post("/api/sessions/s1/chat", json={"message": "hi"})
-    events = _collect_until_done(client, "s1")
-
-    titled = [e for e in events if e["type"] == "title"]
-    assert len(titled) == 1 and titled[0]["title"] == "Revenue dashboard"
-    # the tool_end stays too — the human sees the agent named the session
-    assert any(e["type"] == "tool_end" for e in events)
-
-
-def test_title_event_carries_the_stored_form(studio):
-    """Clamped like the manifest stores it, and junk emits nothing at
-    all rather than an empty label."""
-    client, registry = studio
-    registry._build_agent = lambda n, *a, **k: TitlingAgent(
-        registry, n, "  ragged\ntitle  "
-    )
-    client.post("/api/sessions", json={"name": "s1"})
-    client.post("/api/sessions/s1/chat", json={"message": "hi"})
-    events = _collect_until_done(client, "s1")
-    assert [e["title"] for e in events if e["type"] == "title"] == ["ragged title"]
-
-    registry._build_agent = lambda n, *a, **k: TitlingAgent(registry, n, "   ")
-    client.post("/api/sessions", json={"name": "s2"})
-    client.post("/api/sessions/s2/chat", json={"message": "hi"})
-    events = _collect_until_done(client, "s2")
-    assert not [e for e in events if e["type"] == "title"]
-
-
-def test_edit_rewinds_the_agents_title(studio):
-    """Rollback-follow: the agent named the session out of a conversation
-    the edit is unsaying, so the title goes back to the one that was in
+def test_edit_rewinds_the_generated_title(titling, monkeypatch):
+    """Rollback-follow: the session was named out of a conversation the
+    edit is unsaying, so the title goes back to the one that was in
     force before the cut."""
-    client, registry = studio
-    registry._build_agent = lambda n, *a, **k: TitlingAgent(registry, n, "First topic")
+    client, registry, titler = titling
+    # every turn, so the two names the rewind is about are two turns
+    # apart rather than ten
+    monkeypatch.setattr(sessions_mod, "TITLE_TURNS", 1)
+    titler.answers = ["First topic", "Second topic"]
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    _turn(client, "s1", "one")
-    assert registry.title_of("s1") == "First topic"
 
-    session.agent.title = "Second topic"
-    _turn(client, "s1", "two")
+    _named_turn(client, registry, "s1", "one")
+    assert registry.title_of("s1") == "First topic"
+    _named_turn(client, registry, "s1", "two")
     assert registry.title_of("s1") == "Second topic"
 
-    # Unsay turn two: the title it gave goes with it. This drives the
-    # registry half directly — the /edit route then runs a FRESH turn,
-    # which re-titles and would mask the rewind we're asserting.
+    # Unsay turn two: the name it was given goes with it. This drives
+    # the registry half directly — the /edit route then runs a FRESH
+    # turn, which re-names and would mask the rewind we're asserting.
     seq = _user_seqs(session)[1]
     registry.rewind_to_event(session, seq)
     assert registry.title_of("s1") == "First topic"
@@ -3617,34 +3751,37 @@ def test_edit_rewinds_the_agents_title(studio):
 
 def test_edit_keeps_a_title_it_cannot_prove_was_undone(studio):
     """No title event survives the cut. That is ambiguous — never
-    titled, or titled before the event window — so the manifest's value
+    named, or named before the event window — so the manifest's value
     stands rather than being wiped."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    _turn(client, "s1", "one")  # plain FakeAgent: no title event
-    registry.set_agent_title("s1", "Titled long ago")
+    _turn(client, "s1", "one")  # the studio fixture names nothing
+    registry.set_agent_title("s1", "Named long ago")
 
     seq = _user_seqs(session)[0]
     r = client.post("/api/sessions/s1/edit", json={"seq": seq, "message": "redo"})
     _collect_until_done(client, "s1", since=r.json()["since"] - 1)
-    assert registry.title_of("s1") == "Titled long ago"
+    assert registry.title_of("s1") == "Named long ago"
 
 
-def test_edit_never_rewinds_the_humans_title(studio):
+def test_edit_never_rewinds_the_humans_title(titling, monkeypatch):
     """The human's title isn't a conversational fact — an edit must not
     touch it."""
-    client, registry = studio
-    registry._build_agent = lambda n, *a, **k: TitlingAgent(registry, n, "Agent's idea")
+    client, registry, titler = titling
+    monkeypatch.setattr(sessions_mod, "TITLE_TURNS", 1)
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    _turn(client, "s1", "one")
+    _named_turn(client, registry, "s1", "one")
     client.post("/api/sessions/s1/title", json={"title": "Mine"})
 
     seq = _user_seqs(session)[0]
     r = client.post("/api/sessions/s1/edit", json={"seq": seq, "message": "redo"})
     _collect_until_done(client, "s1", since=r.json()["since"] - 1)
     assert registry.title_of("s1") == "Mine"
+    # and what the rewind put back is the GENERATED tier: a title event
+    # carries their label too, and that half is not a tier
+    assert registry._manifest()["titles"]["s1"]["agent"] != "Mine"
 
 
 def test_delete_forgets_the_title_and_birthday(studio):

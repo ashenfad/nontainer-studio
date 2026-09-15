@@ -33,12 +33,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from . import delegates
-from .sessions import (
-    Registry,
-    SweptSessionError,
-    _clean_title,
-    repair_aborted_run,
-)
+from .sessions import Registry, SweptSessionError, repair_aborted_run
 
 log = logging.getLogger(__name__)
 
@@ -230,22 +225,6 @@ def _client_events(ev: Any) -> list[dict]:
                         "kind": artifact_kind(path),
                     }
                 )
-        # The title the agent just gave, as a first-class event. The TOOL
-        # already wrote it to the manifest (it can't emit — it's sync code
-        # inside agno's run, and emit is loop-bound), so this is not the
-        # write path: it is the temporal record, which buys two things the
-        # manifest can't. It marks WHEN the session got that name, so an
-        # edit's rewind can put the title back the way the conversation
-        # was; and it lets the shell relabel now instead of on the next
-        # rail poll. Carries the agent's SUGGESTION (clamped as stored) —
-        # a human title may outrank it, so the client re-reads the
-        # resolved label rather than trusting this text.
-        if getattr(tool, "tool_name", None) == "recommend_title":
-            args = _tool_args(tool)
-            asked = args.get("title") if isinstance(args, dict) else None
-            titled = _clean_title(asked)
-            if titled:
-                events.append({"type": "title", "title": titled})
         return events
     if kind == "RunCancelled":
         return [{"type": "notice", "text": "turn stopped"}]
@@ -506,6 +485,36 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
         # kept one during the turn, and both live only in a job table
         # until this writes them down.
         await asyncio.to_thread(snapshot)
+        # And after that, the session's own name, read off the
+        # transcript this turn just extended. It is a second model run,
+        # so it happens where it can cost nothing: the turn is over,
+        # the lock is released, and the next turn may start on top of
+        # it — a failure logs and leaves the name the session had.
+        if registry is not None:
+            await _name_the_session(session, registry)
+
+
+async def _name_the_session(session: Any, registry: Any) -> None:
+    """Generate the session's title when the cadence says one is due,
+    and mark the moment in the transcript.
+
+    The `title` event is not the write path — the manifest is — it is
+    the temporal record, and it buys two things the manifest cannot. It
+    marks WHEN the session got that name, so an edit's rewind can put
+    the title back the way the conversation was; and it lets the shell
+    relabel now instead of on the next rail poll. `title` is the label
+    now in force, which under a human title is theirs — the row the
+    human is looking at does not move — and `agent` is the generated
+    name stored beneath it, which is the one a rewind puts back.
+    """
+    try:
+        generated = await asyncio.to_thread(registry.retitle, session)
+    except Exception as e:  # noqa: BLE001 - a name is never worth a turn
+        log.info("titles: %s went unnamed (%s)", session.name, e)
+        return
+    if generated:
+        shown = await asyncio.to_thread(registry.title_of, session.name)
+        await session.emit({"type": "title", "title": shown, "agent": generated})
 
 
 # ---------------------------------------------------------------------------
