@@ -128,7 +128,7 @@ dependencies = [
     # can name. And `enable_apps` registers `ws-pytest` and `ws-vitest`
     # beside `ws-curl`, so the tier below a request exists on every
     # rung — which is what the README and the primer now say.
-    "nontainer[agno,apps]>=0.7.0",
+    "nontainer[agno,apps]>=0.7.1",
     # session identity is a minted slug (sleepy-meerkat), never a
     # typed name — the label the human reads is the title
     "petname>=2.6",
