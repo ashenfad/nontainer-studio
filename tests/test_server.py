@@ -3914,6 +3914,76 @@ def test_edit_rewinds_the_generated_title(titling, monkeypatch):
     assert registry.title_of("s1") == "First topic"
 
 
+def test_a_rewind_puts_the_cadence_cursor_back_with_the_name(titling):
+    """The cadence counts from where a name was READ. Restoring the old
+    name and leaving the new one's cursor behind would leave the session
+    waiting out an interval measured against a transcript the edit has
+    unsaid."""
+    client, registry, titler = titling
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    _named_turn(client, registry, "s1", "one")  # named at turn 1
+    for message in ("two", "three", "four", "five", "six"):
+        _named_turn(client, registry, "s1", message)  # and again at six
+    entry = registry._manifest()["titles"]["s1"]
+    assert (entry["agent"], entry["turns"]) == ("Name 2", 6)
+
+    # the registry half directly: the /edit route then runs a fresh
+    # turn, which would move the cursor this is asserting about
+    registry.rewind_to_event(session, _user_seqs(session)[5])
+    entry = registry._manifest()["titles"]["s1"]
+    assert (entry["agent"], entry["turns"]) == ("Name 1", 1)
+
+
+def test_the_turn_that_replaces_an_edited_one_is_named(titling):
+    """Which is what the restored cursor buys: the replacement sixth
+    turn is as due as the one it replaces was."""
+    client, registry, titler = titling
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    for message in ("one", "two", "three", "four", "five", "six"):
+        _named_turn(client, registry, "s1", message)
+    assert registry.title_of("s1") == "Name 2"
+
+    seq = _user_seqs(session)[5]
+    r = client.post("/api/sessions/s1/edit", json={"seq": seq, "message": "redo"})
+    _collect_until_done(client, "s1", since=r.json()["since"] - 1)
+    _wait_for_turn(registry, "s1")
+    assert registry.title_of("s1") == "Name 3"
+
+
+def test_a_restored_name_nothing_can_date_is_read_again(titling, monkeypatch):
+    """A title event from before the cursor rode along says what the
+    session was called and not when that was read. The cursor is
+    cleared rather than guessed at, and a name nothing can date is read
+    again at the next real exchange."""
+    client, registry, titler = titling
+    monkeypatch.setattr(sessions_mod, "TITLE_TURNS", 1)
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _named_turn(client, registry, "s1", "one")
+    _named_turn(client, registry, "s1", "two")
+
+    # the shape those events had: a label, and nothing to date it by
+    for event in session.events:
+        if event["type"] == "title":
+            event.pop("at_seq", None)
+            event.pop("turns", None)
+    registry.rewind_to_event(session, _user_seqs(session)[1])
+    entry = registry._manifest()["titles"]["s1"]
+    assert entry["agent"] == "Name 1"
+    assert "turns" not in entry and "at_seq" not in entry
+
+    # back to an interval the replacement turn is nowhere near: it is
+    # named because the name it would replace cannot be dated, not
+    # because enough turns have gone by
+    monkeypatch.setattr(sessions_mod, "TITLE_TURNS", 5)
+    _named_turn(client, registry, "s1", "redo")
+    assert registry.title_of("s1") == "Name 3"
+
+
 def test_edit_keeps_a_title_it_cannot_prove_was_undone(studio):
     """No title event survives the cut. That is ambiguous — never
     named, or named before the event window — so the manifest's value
