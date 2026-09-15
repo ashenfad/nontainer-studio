@@ -12,6 +12,7 @@ import time
 
 import pytest
 from agno.models.response import ModelResponse
+from nontainer.errors import BranchExpired
 from nontainer.sessions import Sessions
 
 from nontainer_studio import delegates, server
@@ -388,3 +389,65 @@ def test_a_failure_after_partial_prose_is_failed_not_answered(tmp_path):
     assert answer.status == "failed"
     assert "Got part of the way." in answer.text
     assert "provider exploded" in answer.text
+
+
+# -- a swept branch: the `expired` status ------------------------------------
+
+
+def test_a_swept_delegate_is_not_deliverable(registry):
+    """Retention for a delegate's branch is an idle TTL, and a sweep
+    takes the branch of a job nobody read. What is left is a row whose
+    status is `expired`, with no answer behind it: `result` on one
+    raises rather than answering, so an expired job is not something the
+    next turn can deliver and not something the rail should count."""
+    parent = registry.open("boss")
+    _turn(parent, ASK_ASYNC)
+    _await_delegates(parent)
+    assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [1]
+
+    assert parent.delegates.sweep(idle=0, min_age=0) == ["boss.scout"]
+
+    assert parent.answered_delegates() == []
+    assert parent.take_delegate_answers() == []
+    # the badge counts what a turn would deliver, so it clears with it
+    assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [0]
+    assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok"))
+
+
+class _SweptBetween:
+    """A job table whose answered job is swept between the listing and
+    the read — the race the delivery loop has to survive."""
+
+    def __init__(self) -> None:
+        self.status = "answered"
+        self.reads = 0
+
+    def list(self):
+        from types import SimpleNamespace
+
+        return [SimpleNamespace(name="boss.scout", status=self.status)]
+
+    def result(self, name):
+        self.reads += 1
+        raise BranchExpired(f"job {name!r} expired: its branch was swept")
+
+    def close(self):
+        """Closing the session closes its job table; this one holds
+        nothing to release."""
+
+
+def test_a_delegate_swept_mid_delivery_is_dropped_not_retried(registry):
+    """A sweep can land between the listing and the read. The turn
+    skips that job instead of failing, and the turn after it does not
+    try again: the row says `expired` by then, and a job with no branch
+    left has nothing to deliver however many turns ask."""
+    parent = registry.open("boss")
+    parent.delegates = _SweptBetween()
+
+    assert parent.take_delegate_answers() == []
+    assert parent.delegates.reads == 1
+
+    parent.delegates.status = "expired"
+    assert parent.answered_delegates() == []
+    assert parent.take_delegate_answers() == []
+    assert parent.delegates.reads == 1  # never asked for a swept branch again
