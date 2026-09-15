@@ -62,6 +62,7 @@ from nontainer.sessions import Sessions, run_action
 from nontainer.wsgit import register_wsgit
 
 from .delegates import DELEGATE_TURNS, StudioRunner
+from .summaries import _clean_description
 
 log = logging.getLogger(__name__)
 
@@ -704,6 +705,11 @@ def _render_published(rows: list[dict]) -> str:
     rail shows — so the agent and the human are looking at one list. An
     app whose current version carries no origin tag says so: there is
     nothing to mount, take from or fork there.
+
+    An app that has a description carries it on a line of its own,
+    indented under the app it belongs to: a title names the app and a
+    description says what is in it, which is what decides whether
+    starting from this one beats starting from a blank page.
     """
     if not rows:
         return "The human has published nothing yet."
@@ -719,6 +725,8 @@ def _render_published(rows: list[dict]) -> str:
             f"- {row['title']} ({current}) — "
             + (origin or "no origin tag: nothing to start from here")
         )
+        if row.get("description"):
+            lines.append(f"    {row['description']}")
     return "\n".join(lines)
 
 
@@ -1352,7 +1360,7 @@ class Registry:
         measures the next generation against (see :meth:`retitle`).
 
         ``apps`` maps a capability token to the app's publication name,
-        db and versions (see :meth:`publish`);
+        db, description and versions (see :meth:`publish`);
         ``published`` is the anchor-branch shape that preceded it and
         is empty after :meth:`_migrate_published` has run once."""
         try:
@@ -3414,6 +3422,11 @@ class Registry:
         marker would then rewind the files under a prompt still on
         screen. So the route holds one reservation across both."""
         name = session.name
+        # Before the lock, because it is a model run: what an app is
+        # FOR is read off the conversation that built it, and holding
+        # the registry lock across that would stall every session open
+        # behind a provider call.
+        description = self._describe(session)
         with self._lock:
             manifest = self._manifest()
             token, entry = self._target_app(name, app, manifest["apps"])
@@ -3476,6 +3489,15 @@ class Registry:
                 # should rename the app, not leave it under a name
                 # nobody uses any more
                 entry["title"] = title
+                # Same rule for the description, and one tier down: the
+                # human's own words for an app outrank every later
+                # publish, and a generation that failed leaves whatever
+                # the app already said rather than blanking it.
+                if description is not None:
+                    entry["description"] = {
+                        **(entry.get("description") or {}),
+                        "agent": description,
+                    }
                 row = published.version(version)
                 entry["versions"][version] = {
                     # Two commits, because they answer two questions.
@@ -3605,15 +3627,71 @@ class Registry:
         rows.sort(key=lambda r: -r["published"])
         return rows
 
+    def _describe(self, session: Session) -> str | None:
+        """What this session built, in a sentence or two, for whoever
+        meets the app without the conversation behind it — a human
+        scanning what they have published, or an agent weighing whether
+        to start from its origin tag.
+
+        Best-effort by design: an app that publishes is worth more than
+        a description of it, so a model that will not answer costs a
+        log line and the app keeps whatever it already said.
+        """
+        from . import summaries
+
+        spec = self._summary_spec(session)
+        transcript = summaries.transcript_text(session)
+        # Nothing said, nothing to say about it: a session can publish
+        # an app somebody built by hand, or on a transcript the window
+        # has scrolled past.
+        if spec is None or not transcript.strip():
+            return None
+        try:
+            return summaries.generate_description(spec, transcript)
+        except Exception as e:  # noqa: BLE001 - never worth a publish
+            log.info("apps: %s went undescribed (%s)", session.name, e)
+            return None
+
+    def set_app_description(self, token: str, text: str | None) -> dict:
+        """The human's own words for an app; returns its row.
+        ``None``/blank CLEARS them, falling back to what the last
+        publish generated. ``KeyError`` for a token nothing published.
+
+        The same two tiers a title has, for the same reason: what a
+        person wrote about their own app outranks what a model read off
+        a transcript, and the generated one is still stored underneath
+        so clearing theirs reveals it rather than emptying the row.
+        """
+        with self._lock:
+            manifest = self._manifest()
+            entry = manifest["apps"].get(token)
+            if entry is None:
+                raise KeyError(token)
+            entry = dict(
+                entry,
+                description={
+                    **(entry.get("description") or {}),
+                    "user": _clean_description(text),
+                },
+            )
+            manifest["apps"][token] = entry
+            self._save_manifest(manifest)
+            return self._app_row(entry)
+
     @staticmethod
     def _app_row(entry: dict) -> dict:
         """One app, as the API says it. Versions come back as a LIST in
         publish order — the order they are read in — rather than the
         manifest's name-keyed map."""
         versions = entry.get("versions") or {}
+        description = entry.get("description") or {}
         return {
             "token": entry["token"],
             "title": entry.get("title") or DEFAULT_TITLE,
+            # RESOLVED, like the title: the human's own words win, the
+            # generated ones fill the gap, and "" means the app has no
+            # description at all.
+            "description": description.get("user") or description.get("agent") or "",
             "session": entry.get("session"),
             "created": entry.get("created", 0),
             "published": Registry._last_published(entry),

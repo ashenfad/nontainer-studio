@@ -140,6 +140,13 @@
                 </button>
             </div>
             <code class="token">{app.url}</code>
+            {#if app.description}
+                <!-- What the app IS, generated from the session that
+                     built it at each publish (the human's own words win
+                     where they wrote any). Read-only here: it is a
+                     label on the app, not a verb. -->
+                <p class="app-desc">{app.description}</p>
+            {/if}
             <ul>
                 {#each app.versions as v (v.name)}
                     <li class:current={v.name === app.current}>
@@ -291,6 +298,12 @@
         text-overflow: ellipsis;
         white-space: nowrap;
         margin: 0.1rem 0 0.35rem;
+    }
+    .app-desc {
+        margin: 0 0 0.45rem;
+        color: var(--text-muted);
+        font-size: 0.72rem;
+        line-height: 1.35;
     }
     ul {
         list-style: none;

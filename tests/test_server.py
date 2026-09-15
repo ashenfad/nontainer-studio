@@ -890,6 +890,121 @@ def test_deleting_a_version_releases_its_origin_tag(studio, tmp_path):
     assert f"@store/{v2['origin']}" in tags  # the version that stayed kept its
 
 
+# -- descriptions: what an app is, for whoever meets it later ----------------
+
+
+@pytest.fixture
+def describing(tmp_path, monkeypatch):
+    """The `studio` fixture with the description generator armed — a
+    registry that HAS a model, and a stand-in where the model call at
+    publish time would be."""
+    generator = Scripted(default="Describes")
+    monkeypatch.setattr(summaries_mod, "generate_description", generator)
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a: None, store=tmp_path, default_model="dummy"
+    )
+    registry._build_agent = lambda *a, **k: FakeAgent()
+    with TestClient(server.build_app(registry)) as client:
+        yield client, registry, generator
+    registry.close()
+
+
+def _app_row(client, token: str) -> dict:
+    return next(
+        a for a in client.get("/api/apps").json()["apps"] if a["token"] == token
+    )
+
+
+def test_publishing_describes_the_app(describing):
+    """A URL and a title say what an app is called. What it IS comes off
+    the conversation that built it, which is the thing a human scanning
+    their apps — or an agent weighing its origin tag — does not have."""
+    client, registry, generator = describing
+    client.post("/api/sessions", json={"name": "s1"})
+    _turn(client, "s1", "build me a revenue dashboard")
+    _seed_app(registry.get("s1").ws)
+
+    token = _publish(client, "s1")["token"]
+    assert _app_row(client, token)["description"] == "Describes 1"
+    # read off the session's transcript, on the session's own model
+    spec, transcript = generator.calls[0]
+    assert spec == "dummy" and "build me a revenue dashboard" in transcript
+
+    # it rides the APP, not the version: publishing again describes the
+    # app as it now stands
+    _publish(client, "s1")
+    assert _app_row(client, token)["description"] == "Describes 2"
+    versions = _app_row(client, token)["versions"]
+    assert len(versions) == 2 and not any("description" in v for v in versions)
+
+
+def test_a_description_that_fails_is_not_a_failed_publish(describing):
+    """An app that publishes is worth more than a sentence about it."""
+    client, registry, generator = describing
+    generator.answers = [RuntimeError("no provider")]
+    client.post("/api/sessions", json={"name": "s1"})
+    _turn(client, "s1", "build me a thing")
+    _seed_app(registry.get("s1").ws)
+
+    token = _publish(client, "s1")["token"]
+    assert _app_row(client, token)["description"] == ""
+
+    # and the next publish, which answers, fills the tier that was left
+    _publish(client, "s1")
+    assert _app_row(client, token)["description"] == "Describes 2"
+
+
+def test_the_humans_description_outranks_the_generated_one(describing):
+    """The same two tiers a title has: what a person wrote about their
+    own app wins, and the generated one stays underneath."""
+    client, registry, generator = describing
+    client.post("/api/sessions", json={"name": "s1"})
+    _turn(client, "s1", "build me a thing")
+    _seed_app(registry.get("s1").ws)
+    token = _publish(client, "s1")["token"]
+
+    r = client.post(
+        f"/api/apps/{token}/description", json={"description": "  Our  team's  board "}
+    )
+    assert r.status_code == 200 and r.json()["description"] == "Our team's board"
+    assert _app_row(client, token)["description"] == "Our team's board"
+
+    # a later publish still writes the tier underneath...
+    _publish(client, "s1")
+    assert _app_row(client, token)["description"] == "Our team's board"
+    # ...and clearing theirs reveals it
+    cleared = client.post(f"/api/apps/{token}/description", json={"description": ""})
+    assert cleared.json()["description"] == "Describes 2"
+
+    assert (
+        client.post("/api/apps/nosuchtoken/description", json={"description": "x"})
+    ).status_code == 404
+
+
+def test_an_app_published_from_a_wordless_session_has_no_description(describing):
+    """Nothing said, nothing to say about it — and no empty sentence
+    stored where the human's own words go."""
+    client, registry, generator = describing
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+
+    token = _publish(client, "s1")["token"]
+    assert _app_row(client, token)["description"] == ""
+    assert generator.calls == []  # an empty transcript asks no model
+
+
+def test_nothing_is_described_without_a_model(studio):
+    """The same rule titles run under: a registry with no model
+    configured generates nothing."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _turn(client, "s1", "build me a thing")
+    _seed_app(registry.get("s1").ws)
+
+    token = _publish(client, "s1")["token"]
+    assert _app_row(client, token)["description"] == ""
+
+
 def test_unpublishing_releases_every_origin_tag(studio, tmp_path):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})

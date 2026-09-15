@@ -17,6 +17,7 @@ from nontainer.sessions import Sessions
 
 from nontainer_studio import delegates, server
 from nontainer_studio import sessions as sessions_mod
+from nontainer_studio import summaries as summaries_mod
 from nontainer_studio.dummy import DummyModel
 
 WRITE_A_NOTE = (
@@ -407,6 +408,26 @@ def test_the_published_action_lists_the_apps_the_human_has(registry):
     assert lines[1] == f"- Signup funnel (v1) — {second['origin']}"
     assert lines[2] == f"- Revenue dashboard (v1) — {first['origin']}"
     assert len(lines) == 3
+
+
+def test_the_published_action_carries_the_description(registry, monkeypatch):
+    """A title names an app; the description says what is IN it, which
+    is what decides whether starting from this one beats starting from
+    a blank page. It rides an indented line under the app it belongs
+    to."""
+    monkeypatch.setattr(
+        summaries_mod,
+        "generate_description",
+        lambda spec, transcript: "Charts revenue by month over the sales db.",
+    )
+    boss = registry.open("boss")
+    alice = registry.open("alice")
+    _turn(alice, "!text Built the dashboard.")
+    published = _make_app(registry, alice, "Revenue dashboard")
+
+    lines = _tool_results(_turn(boss, PUBLISHED), "sessions")[0].splitlines()
+    assert lines[1] == f"- Revenue dashboard (v1) — {published['origin']}"
+    assert lines[2] == "    Charts revenue by month over the sales db."
 
 
 def test_a_version_with_no_origin_tag_says_so(registry):
