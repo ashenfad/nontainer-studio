@@ -247,8 +247,19 @@
                     {:else}
                         {#each delegates as d (d.name)}
                             <div class="delegate">
-                                <span class="delegate-name" title={d.name}
-                                    >{childOf(s, d)}</span
+                                <!-- the name opens the delegate's own
+                                     transcript, read-only: the parent
+                                     agent drives it, the human reads
+                                     it. A swept branch has nothing
+                                     left to read. -->
+                                <button
+                                    class="delegate-name"
+                                    disabled={d.status === 'expired'}
+                                    title={d.status === 'expired'
+                                        ? `${d.name} — swept, nothing left to read`
+                                        : `open ${d.name} (read-only)`}
+                                    onclick={() => onSwitch(d.name)}
+                                    >{childOf(s, d)}</button
                                 >
                                 <span
                                     class="delegate-meta"
@@ -509,11 +520,25 @@
         gap: 0.35rem;
     }
     .delegate-name {
+        background: none;
+        border: none;
+        padding: 0;
+        font-family: inherit;
+        text-align: left;
+        cursor: pointer;
         color: var(--text-muted);
         font-size: 0.72rem;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+    }
+    .delegate-name:hover:not(:disabled) {
+        color: var(--accent);
+        text-decoration: underline;
+    }
+    .delegate-name:disabled {
+        cursor: default;
+        opacity: 0.6;
     }
     .delegate-meta {
         color: var(--text-muted);

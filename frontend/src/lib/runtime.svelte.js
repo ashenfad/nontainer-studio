@@ -525,6 +525,14 @@ export class SessionRuntime {
     }
 }
 
+/** What one name IS: title, model, busy, and — when somebody forked
+ * it — the row its parent sees (`delegate`, else null). The rail's list
+ * answers this for every session it shows; a delegate has no row there,
+ * so a shell that lands on `?session=<child>` has only the name. */
+export async function loadSession(name) {
+    return await api(`/api/sessions/${name}`)
+}
+
 /** What a session delegated, and what became of each one. Asked for
  * when the human opens the rail's listing rather than polled: the ⑂
  * badge is on the session list already, and this is the detail behind
