@@ -494,3 +494,29 @@ def test_a_delegates_brief_follows_the_sessions_own_answer(registry, monkeypatch
 
     parent.wsgit = True
     assert delegates.VERSIONING in runner._brief(parent, None)
+
+
+def test_a_delegate_can_start_from_another_sessions_commit(registry):
+    """What the primer promises about `fork_from`, end to end: every
+    session in this studio is in one store, so a commit of one is a
+    fork point for a delegate of another — it opens holding that
+    session's tree, and its answer still comes back to the session that
+    asked."""
+    other = registry.open("other")
+    other.ws.files.write("/workspace/from_other.md", "written elsewhere")
+    other.ws.commit(info={"tool": "test"})
+    parent = registry.open("boss")
+
+    answer = _delegate(
+        registry,
+        parent,
+        '!tool terminal {"command": "cat /workspace/from_other.md"}\n'
+        "!text Read the other session's file.",
+        fork_from=f"other@{other.ws.head}",
+    )
+
+    assert answer.status == "answered"
+    child = registry.open(answer.branch)
+    assert child.ws.files.fs.read("/workspace/from_other.md") == b"written elsewhere"
+    # and it started there, not here: the asking session never had it
+    assert not parent.ws.files.fs.exists("/workspace/from_other.md")

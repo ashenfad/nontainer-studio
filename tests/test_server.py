@@ -3384,6 +3384,30 @@ def test_primer_teaches_when_to_title(studio):
     assert "New session" in sessions_mod.STUDIO_PRIMER
 
 
+def test_the_primer_names_only_verbs_the_session_carries(studio):
+    """The primer teaches terminal verbs, and a verb it names that the
+    session does not carry costs a turn to discover. The three it names
+    are wired by the same two calls every session gets, so the claim is
+    checked against the wiring rather than trusted."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    commands = registry.get("s1").ws.runtime.commands
+    for verb in ("ws-git", "ws-pytest", "ws-vitest"):
+        assert verb in sessions_mod.VERSIONING_PRIMER
+        assert verb in commands
+
+
+def test_the_primer_says_where_else_a_delegate_can_start():
+    """Which fork points exist is the studio's own answer: its sessions
+    share one store, so any commit of any of them is one. The rest of
+    what an ask takes is the `sessions` tool's own description, and
+    saying it twice is how the two drift."""
+    primer = sessions_mod.VERSIONING_PRIMER
+    assert "fork_from=<session>@<commit>" in primer
+    assert "ws-git branch" in primer  # how the agent learns the names
+    assert "resume" in primer
+
+
 def test_the_db_primer_says_the_store_is_shared():
     """An agent told its db is a copy would trust rows nobody else can
     see, and would not defend a handler against a concurrent writer."""
