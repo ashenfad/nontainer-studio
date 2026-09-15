@@ -10,6 +10,7 @@
         forkSession,
         getRuntime,
         loadCatalog,
+        loadSession,
         published,
         rail,
         refreshApps,
@@ -22,6 +23,7 @@
     import SplitPane from './lib/SplitPane.svelte'
     import MessageList from './lib/MessageList.svelte'
     import ChatInput from './lib/ChatInput.svelte'
+    import DelegateBar from './lib/DelegateBar.svelte'
     import Preview from './lib/Preview.svelte'
     import FilesTab from './lib/FilesTab.svelte'
 
@@ -38,6 +40,14 @@
     // Distinct from a per-session error: there's no message list to put
     // it in, so it renders as the body.
     let bootstrapError = $state(null)
+    // The open session's own metadata (GET /api/sessions/{name}), null
+    // while it is in flight. A delegate has no rail row, so this is the
+    // only thing that knows it is one and whose it is.
+    let info = $state(null)
+    // Root ancestor first, the open session last: one entry for an
+    // ordinary session, more when it is a delegate (of a delegate, of
+    // ...). Each is {name, label}.
+    let trail = $state([])
 
     // layout prefs: per-browser, survive reloads, no server involvement
     let showRail = $state(localStorage.getItem('nts.rail') !== '0')
@@ -64,8 +74,21 @@
         setForegroundName(name)
         const rt = getRuntime(name)
         rt.setForeground(true)
+        info = null
+        trail = []
+        // create-or-resume BEFORE asking what the name is: `?session=`
+        // may name a session that does not exist yet, and only the POST
+        // makes one. Opening a name the manifest already knows as a
+        // delegate leaves it one.
         ensureSession(name)
-            .then(() => (ready = true))
+            .then(() => loadSession(name))
+            .then(async (meta) => {
+                const walked = await trailTo(meta)
+                if (active !== name) return // switched while in flight
+                info = meta
+                trail = walked
+                ready = true
+            })
             // ready stays false on failure, so the chat pane never
             // appears — say why instead of showing an empty shell
             // forever (a stale ?session= in the URL lands here).
@@ -73,10 +96,40 @@
         return () => rt.setForeground(false)
     })
 
+    // A delegate's label is the handle its parent gave it (`boss.scout`
+    // reads as `scout`): nothing titles a session an agent forked.
+    function labelOf(meta) {
+        const parent = meta.delegate?.parent
+        if (!parent) return meta.title
+        return meta.name.startsWith(parent + '.')
+            ? meta.name.slice(parent.length + 1)
+            : meta.name
+    }
+
+    // Walk up to the rail-listed root. A session's own metadata names
+    // only its immediate parent, so each ancestor is asked in turn —
+    // delegation nests, and so does the breadcrumb.
+    async function trailTo(meta) {
+        const crumbs = [{ name: meta.name, label: labelOf(meta) }]
+        const seen = new Set([meta.name])
+        let at = meta
+        while (at.delegate && !seen.has(at.delegate.parent)) {
+            seen.add(at.delegate.parent)
+            at = await loadSession(at.delegate.parent)
+            crumbs.unshift({ name: at.name, label: labelOf(at) })
+        }
+        return crumbs
+    }
+
     const rt = $derived(active ? getRuntime(active) : null)
     // the rail row is the title's source of truth (the server resolves
     // user > agent > default); the slug never shows
     const title = $derived(rail.sessions.find((s) => s.name === active)?.title ?? '')
+    // the row the parent sees, when this session is somebody's delegate
+    const delegate = $derived(info?.name === active ? info.delegate : null)
+    // A delegate has no rail row of its own, so the rail highlights the
+    // ancestor it was drilled down from — the row that is still there.
+    const railActive = $derived(delegate ? (trail[0]?.name ?? active) : active)
 
     $effect(() => {
         refreshSessions()
@@ -188,7 +241,24 @@
             aria-label="toggle session drawer"
             onclick={() => (showRail = !showRail)}>☰</button
         >
-        <span class="session-name">{title}</span>
+        {#if trail.length > 1}
+            <!-- parent title › child: where in somebody else's work
+                 this transcript sits, and the way back up -->
+            <span class="crumbs">
+                {#each trail as c, i (c.name)}
+                    {#if i}<span class="sep">›</span>{/if}
+                    {#if i < trail.length - 1}
+                        <button class="crumb" onclick={() => switchTo(c.name)}
+                            >{c.label}</button
+                        >
+                    {:else}
+                        <span class="crumb here">{c.label}</span>
+                    {/if}
+                {/each}
+            </span>
+        {:else}
+            <span class="session-name">{title}</span>
+        {/if}
         <span class="grow"></span>
         {#if rt && !rt.connected}
             <span class="offline" title="event feed reconnecting…">⟳</span>
@@ -204,7 +274,7 @@
     <div class="body">
         {#if showRail}
             <SessionRail
-                {active}
+                active={railActive}
                 {activeApp}
                 onSwitch={switchTo}
                 onCreate={createAndSwitch}
@@ -231,7 +301,15 @@
                     {#snippet left()}
                         <div class="chat">
                             <MessageList {rt} />
-                            <ChatInput {rt} />
+                            {#if delegate}
+                                <DelegateBar
+                                    name={active}
+                                    {delegate}
+                                    onSwitch={switchTo}
+                                />
+                            {:else}
+                                <ChatInput {rt} />
+                            {/if}
                         </div>
                     {/snippet}
                     {#snippet right()}
@@ -265,7 +343,11 @@
                 <!-- full-width mode: cap the column so lines stay readable -->
                 <div class="chat solo">
                     <MessageList {rt} />
-                    <ChatInput {rt} />
+                    {#if delegate}
+                        <DelegateBar name={active} {delegate} onSwitch={switchTo} />
+                    {:else}
+                        <ChatInput {rt} />
+                    {/if}
                 </div>
             {/if}
         {/if}
@@ -310,6 +392,34 @@
         font-family: var(--font-display);
         font-size: 0.9rem;
         color: var(--text);
+    }
+    .crumbs {
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+        min-width: 0;
+    }
+    .crumbs .sep {
+        color: var(--text-muted);
+        font-size: 0.8rem;
+    }
+    .crumb {
+        font-family: var(--font-display);
+        font-size: 0.9rem;
+        background: none;
+        border: none;
+        padding: 0;
+        color: var(--text-muted);
+        cursor: pointer;
+        white-space: nowrap;
+    }
+    .crumb:hover {
+        color: var(--accent);
+        text-decoration: underline;
+    }
+    .crumb.here {
+        color: var(--text);
+        cursor: default;
     }
     .body {
         display: flex;
