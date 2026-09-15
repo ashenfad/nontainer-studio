@@ -527,6 +527,35 @@ def build_app(registry: Registry) -> Starlette:
 
         return wrapped
 
+    def human_driven(handler):
+        """``with_session`` for a verb a human may not aim at a
+        delegate — refuse with 409 instead.
+
+        A delegate is work one agent handed another: the parent writes
+        its prompts, judges its branch and integrates it. The studio
+        shows a delegate so a human can READ it; a human turn landing
+        in the middle of that exchange would rewrite a transcript the
+        parent is still reading. Reading verbs are untouched, and so
+        are fork (take the branch as your own session) and delete.
+        """
+
+        @with_session
+        async def wrapped(request: Any, session: Any) -> Any:
+            parent = await anyio.to_thread.run_sync(registry.parent_of, session.name)
+            if parent is not None:
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"{session.name} is a delegate of {parent}: "
+                            "the parent drives it"
+                        )
+                    },
+                    status_code=409,
+                )
+            return await handler(request, session)
+
+        return wrapped
+
     async def index(request: Any) -> FileResponse:
         return FileResponse(STATIC / "index.html")
 
@@ -556,6 +585,24 @@ def build_app(registry: Registry) -> Starlette:
         )
 
     @with_session
+    async def session_info(request: Any, session: Any) -> JSONResponse:
+        """What one name IS. The rail's own list answers this for every
+        session it shows; a delegate has no row there, so a shell that
+        lands on `?session=<child>` after a reload has nothing else to
+        ask. `delegate` is null for an ordinary session and otherwise
+        names the parent that drives it."""
+        delegate = await anyio.to_thread.run_sync(registry.delegate_of, session.name)
+        return JSONResponse(
+            {
+                "name": session.name,
+                "title": registry.title_of(session.name),
+                "model": session.model,
+                "busy": session.busy,
+                "delegate": delegate,
+            }
+        )
+
+    @human_driven
     async def set_title(request: Any, session: Any) -> JSONResponse:
         """The human's rename. A blank title CLEARS the override, so the
         rail falls back to whatever the agent last suggested."""
@@ -568,7 +615,7 @@ def build_app(registry: Registry) -> Starlette:
         )
         return JSONResponse({"ok": True, "name": session.name, "title": title})
 
-    @with_session
+    @human_driven
     async def chat(request: Any, session: Any) -> Any:
         body = await request.json()
         message = (body.get("message") or "").strip()
@@ -581,7 +628,7 @@ def build_app(registry: Registry) -> Starlette:
         session.turn_task = asyncio.create_task(_run_turn(session, message, registry))
         return JSONResponse({"ok": True, "since": session.next_seq})
 
-    @with_session
+    @human_driven
     async def edit(request: Any, session: Any) -> Any:
         """Edit an earlier prompt: rewind files + agent memory to just
         before that turn, drop it and everything after from the visible
@@ -730,7 +777,7 @@ def build_app(registry: Registry) -> Starlette:
     # the workspace lock serializes them safely. Same-name uploads
     # overwrite (idempotent re-drops).
 
-    @with_session
+    @human_driven
     async def upload(request: Any, session: Any) -> JSONResponse:
         filename = Path(request.query_params.get("name", "")).name  # basename only
         if not filename:
@@ -900,7 +947,7 @@ def build_app(registry: Registry) -> Starlette:
 
         return JSONResponse(providers.available())
 
-    @with_session
+    @human_driven
     async def set_model(request: Any, session: Any) -> JSONResponse:
         if session.busy:
             return JSONResponse(
@@ -1065,7 +1112,7 @@ def build_app(registry: Registry) -> Starlette:
             {"ok": True, "name": child.name, "title": registry.title_of(child.name)}
         )
 
-    @with_session
+    @human_driven
     async def restore(request: Any, session: Any) -> JSONResponse:
         """Rewind to one of this session's own publishes: files, agent
         memory and title go back to where that version was published, and
@@ -1184,6 +1231,7 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions", open_session, methods=["POST"]),
             Route("/api/sessions/{name}/model", set_model, methods=["POST"]),
             Route("/api/sessions/{name}/title", set_title, methods=["POST"]),
+            Route("/api/sessions/{name}", session_info, methods=["GET"]),
             Route("/api/sessions/{name}", delete_session, methods=["DELETE"]),
             Route("/api/sessions/{name}/chat", chat, methods=["POST"]),
             Route("/api/sessions/{name}/edit", edit, methods=["POST"]),
