@@ -15,6 +15,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   caller to re-read the executor flags behind it; and `enable_apps` is
   idempotent over a fork and registers `ws-pytest` and `ws-vitest`
   beside `ws-curl`.
+- **What `ui` renders is a closed set, and a plain dict is not in it.**
+  A value that is not a chart, a table, a card row, a picture or html
+  now writes no file and renders nothing; the tool result carries a note
+  naming the binding and the shapes that do render, which the tool
+  timeline shows. Assignments that used to come back as a JSON details
+  block come back as that note instead — the file it wrote was never
+  something the shell could render, and announcing it told the agent its
+  figure had arrived. A string naming a workspace file the agent wrote
+  itself still lands: that is a pointer to an artifact, not a value.
 - **A delegate whose branch was swept is not something a turn can
   deliver.** Retention for a delegate's branch is an idle TTL, and when
   a sweep takes one the job's row stays as `expired` with its answer

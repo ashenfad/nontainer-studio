@@ -166,26 +166,61 @@ def test_turn_streams_into_transcript(page, server):
 
 def test_ui_artifact_renders_from_server_event(page, server):
     """The full artifact path: run_python assigns `ui`, WorkspaceTools
-    materializes it into /workspace/ui and appends the `[ui artifacts: ...]` note,
-    the server harvests that into a first-class `artifact` event, and
-    the shell renders it (here the json floor as a details block). Prose
-    doesn't reference the path, so the done-time Jupyter rule appends it
-    after the reply."""
+    materializes it and appends the `[ui artifacts: ...]` note, the
+    server harvests that into a first-class `artifact` event, and the
+    shell renders it inline. Prose doesn't reference the path, so the
+    done-time Jupyter rule appends it after the reply.
+
+    The value here is a string naming a file the agent wrote itself —
+    a POINTER to an artifact rather than a value to render, and the one
+    spelling outside the rendered set that still lands. It is also the
+    smallest one that reaches the shell's text renderer: what renders is
+    a closed set of charts, tables, cards, pictures and html, and
+    nothing writes a file for data any more.
+    """
+    code = (
+        "open('/workspace/notes.txt', 'w').write('hello from the agent')\n"
+        "ui = {'notes': '/workspace/notes.txt'}"
+    )
     page.goto(f"{server}/?session=e2e-artifact")
     _send(
         page,
-        "!tool run_python {\"code\": \"ui = {'stats': {'hello': 'world'}}\"}\n"
-        "!text Made an artifact.",
+        "!tool run_python " + json.dumps({"code": code}) + "\n!text Made an artifact.",
     )
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "Made an artifact.", timeout=15000
     )
-    # the artifact rendered inline (json floor -> a details block named
-    # for the binding), NOT merely the raw note in the tool timeline
+    # rendered inline as a details block named for the binding, NOT
+    # merely the raw note in the tool timeline
     artifact = page.locator(".agent-msg .artifact-text")
     expect(artifact).to_be_visible(timeout=10000)
-    expect(artifact.locator("summary")).to_contain_text("stats")
-    expect(artifact).to_contain_text("hello")
+    expect(artifact.locator("summary")).to_contain_text("notes")
+    expect(artifact).to_contain_text("hello from the agent")
+
+
+def test_a_plain_dict_in_ui_renders_nothing_and_says_why(page, server):
+    """What `ui` renders is a closed set, and there is no JSON floor
+    under it: a plain dict is data, so no file is written and no
+    artifact event is emitted. Announcing one would tell the agent its
+    figure had arrived. What it gets instead is a note in the tool
+    result naming the binding and the shapes that do render — and the
+    studio shows the tool result, so the human reads the same thing.
+    """
+    page.goto(f"{server}/?session=e2e-ui-note")
+    _send(
+        page,
+        "!tool run_python {\"code\": \"ui = {'stats': {'hello': 'world'}}\"}\n"
+        "!text Nothing to show.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Nothing to show.", timeout=15000
+    )
+    page.locator(".chip", has_text="run_python").click()
+    expect(page.locator(".timeline")).to_contain_text(
+        "is a plain dict, which is data and not a UI artifact", timeout=10000
+    )
+    # and the turn carries no artifact: nothing was written to render
+    expect(page.locator(".agent-msg .artifact-text")).to_have_count(0)
 
 
 def test_cards_artifact_renders_stat_and_callout(page, server):
