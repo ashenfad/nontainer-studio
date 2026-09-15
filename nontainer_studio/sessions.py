@@ -732,14 +732,20 @@ class Session:
 
         A cancelled job is never among them: cancelling means the answer
         is discarded when it arrives, so there is nothing to deliver and
-        nothing to keep waiting for."""
+        nothing to keep waiting for. Neither is an EXPIRED one: a
+        delegate's branch is retained on an idle TTL, and a job whose
+        branch was swept has had its answer dropped with it — asking for
+        it raises. Both are the same rule, which is that this lists what
+        a turn could actually deliver, so it is also what the rail's
+        count means."""
         if self.delegates is None:
             return []
         shown = self.delivered_delegates()
         return [
             job
             for job in self.delegates.list()
-            if job.status not in ("running", "cancelled") and job.name not in shown
+            if job.status not in ("running", "cancelled", "expired")
+            and job.name not in shown
         ]
 
     def delivered_delegates(self) -> set:
@@ -773,9 +779,13 @@ class Session:
             try:
                 answer = self.delegates.result(job.name)
             except (JobRunning, SessionsError):
-                # Raced the landing, or the job was cancelled between the
-                # listing and here: leave it for the next turn, which is
-                # where an unfinished job belongs anyway.
+                # Raced the landing, or the job was cancelled or its
+                # branch swept between the listing and here (an expired
+                # job raises `BranchExpired`, which is a `SessionsError`).
+                # Skip it: an unfinished job belongs on a later turn, and
+                # a cancelled or expired one is never asked for again —
+                # neither is listed as deliverable once its status says
+                # so.
                 continue
             out.append((job.name, answer))
         return out
