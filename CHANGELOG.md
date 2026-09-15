@@ -33,8 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   flag, nothing would have taken it off that list. It is dropped the way
   a cancelled job is now, from the count and from the delivery alike,
   and a sweep landing mid-delivery skips the job for good rather than
-  retrying it every turn. Nothing schedules the sweep yet; this is what
-  the studio does when something does.
+  retrying it every turn. This is what the studio does when a sweep
+  lands; what schedules one is the retention TTL below.
 - **The primer asks the function that did the wiring.** Whether the
   agent can type `ws-git` was being re-derived from two runtime flags in
   two places — the primer's delegation half and a delegate's brief —
@@ -44,6 +44,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A delegate's branch has a TTL, and the studio schedules the sweep.**
+  `NONTAINER_STUDIO_DELEGATE_TTL` is the hours a delegate is kept after
+  anybody last dealt with it — 24 by default, `0` off. Past it the
+  branch is deleted and the answer dropped; reading an answer counts as
+  dealing with the delegate, and `sessions keep` exempts one for good.
+  It runs when the studio starts and hourly after that, which is the
+  half nontainer deliberately leaves to the embedder. The other half is
+  one it cannot reach: a job table is per live session in this process,
+  so a delegate asked for before the last restart is in no table at
+  all. The manifest's record of who forked whom now also carries when
+  that delegate was last dealt with and whether somebody kept it, so
+  the studio sweeps those itself and is honest about their age across a
+  restart. Older records (`{child: parent}`) are read as delegates
+  ageing from their session's birthday. The primer says the number and
+  that the sweep is on — nontainer's `sessions` tool already says
+  `keep` exists; what only the studio can say is whether anything ever
+  collects.
+- **The rail lists what a session delegated.** The ⑂ badge opens it:
+  every delegate with its status, how long since anybody dealt with it,
+  and a keep toggle — because those branches age out and a delegate has
+  no rail row of its own to say so from. A session whose answers have
+  all been read keeps a muted badge rather than losing the way in. A
+  swept delegate reads as swept, and one whose job table did not
+  survive a restart is marked as what the record knows rather than
+  passed off as a live status. `GET /api/sessions/{name}/delegates` and
+  `POST /api/sessions/{name}/delegates/{child}/keep` are the routes.
 - **The primer names the tier below a request.** `ws-pytest` asks a
   question of one Python function and `ws-vitest` of one frontend
   module, which is what an agent needs when `test_app` fails and the
@@ -55,6 +81,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the alternative to forking a second delegate. What an ask takes beyond
   that is the `sessions` tool's own description, which the primer does
   not repeat.
+
+- **CI runs the browser tests.** The python matrix installs no browser,
+  so everything behind an importorskip on playwright skipped there —
+  the whole browser E2E suite, and the third of the server suite that
+  drives the served page. One `browser` job runs both files against the
+  committed bundle, so a regression in the shell fails a pull request
+  instead of waiting to be noticed on somebody's laptop.
 
 ### Fixed
 
