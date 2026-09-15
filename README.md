@@ -25,7 +25,10 @@ you can rewind, fork, or publish.
   back as easily as forward. A version is `/workspace/app` and nothing
   else — the notes, the uploads and the conversation stay behind — and
   an app keeps serving over the session's live `db`, so a session can
-  be deleted without taking its apps down.
+  be deleted without taking its apps down. Below the request tier the
+  agent has `ws-pytest` and `ws-vitest` — one function or one frontend
+  module under test, so a failing assertion names the broken piece
+  where a blank page doesn't.
 - **Rich replies.** The agent can drop plots, tables, images, and HTML
   into its answers via `ui = {...}` — rendered inline, themed by the
   shell.
@@ -160,9 +163,13 @@ containment at all**, running as your user with your network. It buys
 fidelity for development, not a boundary — the server warns at startup.
 
 What changes under either: the terminal is real bash (GNU tools,
-command substitution) rather than the emulated shell, so the apps
-loop's `curl` builtin doesn't exist — the agent is told as much and
-uses `test_app` and the preview instead.
+command substitution) rather than the emulated shell. The workspace's
+own verbs come along — `ws-curl`, `ws-git`, `ws-pytest` and `ws-vitest`
+are relayed out of the guest and answered on the host, so the apps
+loop, the session's git and the unit-test tier read the same on every
+rung. They are spelled `ws-` for that reason: real `curl` is on the
+guest's PATH and would reach the network, and `ws-curl` reaches the
+app.
 
 ## What owns what
 
