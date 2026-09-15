@@ -1069,3 +1069,38 @@ def test_the_rail_listing_opens_a_delegate(page, server):
         "delegate of e2e-open", timeout=20000
     )
     expect(page.locator(".crumbs .crumb").last).to_have_text("scout")
+
+
+def test_deleting_the_parent_moves_the_view_off_its_delegate(page, server):
+    """A delete takes the whole subtree, so the delegate on screen goes
+    with the ancestor the rail still offers a delete for. The shell has
+    to notice — and the deleted name must not survive in the URL, where
+    a reload would ask for it back and get an empty session minted under
+    it."""
+    page.goto(f"{server}/?session=e2e-cascade")
+    _send(
+        page,
+        '!tool sessions {"action": "ask", "name": "scout", '
+        '"task": "!text Had a look."}\n'
+        "!text Sent a scout.",
+    )
+    _title(server, "e2e-cascade", "doomed")
+    row = page.locator(".rail .row", has_text="doomed")
+    expect(row.locator(".waiting")).to_be_visible(timeout=20000)
+
+    page.goto(f"{server}/?session=e2e-cascade.scout")
+    expect(page.locator(".delegate-bar")).to_be_visible(timeout=20000)
+
+    # the rail still shows the parent (the delegate has no row of its
+    # own), and its delete is two taps
+    row = page.locator(".rail .row", has_text="doomed")
+    row.locator("button.delete").click()
+    row.locator("button.delete").click()
+
+    expect(page.locator(".rail .row", has_text="doomed")).to_have_count(
+        0, timeout=20000
+    )
+    # the view moved to a session that still exists
+    expect(page.locator(".delegate-bar")).to_have_count(0, timeout=20000)
+    expect(page.locator("textarea")).to_have_count(1)
+    assert "e2e-cascade" not in page.url
