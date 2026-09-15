@@ -8,8 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **The nontainer floor is 0.7.1.** It buys the four things this
-  release is written against: a delegate's branch has retention, so a
+- **The nontainer floor is 0.7.2.** A store tag is a ref wherever
+  ws-git reads one — `worktree add`, `checkout -- <paths>`, `diff`,
+  `log`, `show` — and `inherit="full"` is allowed with `fork_from`, so
+  the two halves of starting from a published app are mechanisms and
+  not conventions. It also buys the four things this release is
+  written against: a delegate's branch has retention, so a
   swept job reads `expired` and its answer is gone; the agent's own
   `sessions keep` actually sets the flag the sweep honours; `register_wsgit`
   answers whether the agent can type the verb instead of leaving the
