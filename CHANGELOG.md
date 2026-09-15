@@ -8,9 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **The nontainer floor is 0.7.0.** It buys the three things this
+- **The nontainer floor is 0.7.1.** It buys the four things this
   release is written against: a delegate's branch has retention, so a
-  swept job reads `expired` and its answer is gone; `register_wsgit`
+  swept job reads `expired` and its answer is gone; the agent's own
+  `sessions keep` actually sets the flag the sweep honours; `register_wsgit`
   answers whether the agent can type the verb instead of leaving the
   caller to re-read the executor flags behind it; and `enable_apps` is
   idempotent over a fork and registers `ws-pytest` and `ws-vitest`
