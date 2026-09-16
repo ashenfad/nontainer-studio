@@ -560,12 +560,13 @@ def test_a_publish_marker_says_when_its_app_is_gone(page, server):
 
     # v1, then v2 — two markers, so the version-removed state has a
     # marker of its own to land on
+    markers = page.locator(".publish")
     page.get_by_role("button", name="publish", exact=True).click()
     page.get_by_role("button", name="publish", exact=True).click()
+    expect(markers).to_have_count(1, timeout=15000)
     page.get_by_role("button", name="live", exact=True).click()
     page.get_by_role("button", name="publish", exact=True).click()
     page.get_by_role("button", name="publish", exact=True).click()
-    markers = page.locator(".publish")
     expect(markers).to_have_count(2, timeout=15000)
     expect(markers.first).to_contain_text("v1")
     expect(markers.last).to_contain_text("v2")
