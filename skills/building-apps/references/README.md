@@ -33,8 +33,8 @@ does not go looking.
 ## Decisions
 
 Dated bullets, one per choice that a later change would have to respect,
-with the reason. Append; do not rewrite.
+with the reason. Append; do not rewrite. The line below is the shape,
+not a decision this app made: replace it with your first one.
 
-- 2026-09-16 — Aggregates are computed in the handler per request, not
-  precomputed into `cache`: the parquet is small and a projected read is
-  under 10 ms, so a cache would add a staleness rule for nothing.
+- YYYY-MM-DD — <the choice, in one clause>: <why, in one clause; what
+  it would cost to change>.
