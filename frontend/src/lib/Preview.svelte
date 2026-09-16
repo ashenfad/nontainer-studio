@@ -19,6 +19,10 @@
     let composing = $state(false) // the publish form is open
     let draft = $state('')
     let error = $state(null)
+    // A publish holds the session for as long as the version takes to
+    // land, and the route refuses a second one meanwhile. The buttons
+    // say so by waiting instead of offering a click that only fails.
+    let publishing = $state(false)
     let panel = $state(false)
 
     // the session's current app: the one it published to last, which is
@@ -69,11 +73,14 @@
         const name = draft.trim()
         composing = false
         error = null
+        publishing = true
         try {
             await rt.publish(name ? { name } : {})
             mode = 'published'
         } catch (e) {
             error = e.message
+        } finally {
+            publishing = false
         }
     }
 
@@ -154,12 +161,15 @@
                     else if (e.key === 'Escape') composing = false
                 }}
             />
-            <button class="small accent" onclick={publish}>publish</button>
+            <button class="small accent" onclick={publish} disabled={publishing}
+                >publish</button
+            >
             <button class="small" onclick={() => (composing = false)}>cancel</button>
         {:else}
             <button
                 class="small accent"
                 onclick={startPublish}
+                disabled={publishing}
                 title={app
                     ? `add a version to ${app.title} — the URL moves to it, the old versions stay`
                     : 'freeze this app behind a URL of its own that keeps serving while you keep working'}
