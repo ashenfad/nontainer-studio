@@ -39,13 +39,6 @@ faster than building up from nothing, and it is where the non-obvious
 parts already live: empty results, null aggregates, numpy casts,
 relative urls, stable selectors, a themed chart, a testable dropdown.
 
-A closer starting point beats the references. When the human has
-published an app like the one being asked for, `sessions` with
-`action="published"` lists it with an origin tag, and `ws-git checkout
-<tag> -- app/` takes that app's files straight into this session; the
-tag names the whole session behind the app, so `ws-git worktree add old
-<tag>` reads its notes and data too.
-
 There is one frontend stack here — MUI with React and JSX, compiled in
 the browser — so there is nothing to choose between. `app.html` is
 tiny: a `#root` div and one `<script src="vendor/jsx-loader.js">` tag.

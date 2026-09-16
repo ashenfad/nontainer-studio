@@ -27,6 +27,19 @@ WRITE_A_NOTE = (
 )
 
 
+@pytest.fixture(autouse=True)
+def delegation_on(monkeypatch):
+    """Both agent-facing knobs on for this file.
+
+    Delegation is what every test here is about, and `ws-git` is how a
+    delegate's work comes back — neither is given to an agent unless the
+    studio is told to. The default (both off) is asserted in
+    test_server.py, beside the primer it shapes.
+    """
+    monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")
+    monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
+
+
 @pytest.fixture
 def registry(tmp_path):
     reg = sessions_mod.Registry(
@@ -680,6 +693,7 @@ def test_a_session_records_whether_ws_git_installed(registry):
     session = registry.open("boss")
     assert session.wsgit is True
     assert sessions_mod._versioning_primer(True) is sessions_mod.VERSIONING_PRIMER
+    assert sessions_mod._versioning_primer(False) == ""
 
 
 def test_no_verb_no_delegation_half(registry, monkeypatch):
@@ -691,9 +705,10 @@ def test_no_verb_no_delegation_half(registry, monkeypatch):
     session = registry.open("verbless")
 
     assert session.wsgit is False
-    primer = sessions_mod._versioning_primer(False)
+    primer = sessions_mod._delegation_primer(True, False)
     assert primer is sessions_mod.NO_VERSIONING_PRIMER
     assert "ws-git" not in primer
+    assert "ws-git" not in session.agent.instructions
     # and a delegate of that session opens with the same honesty
     assert delegates.VERSIONING not in delegates.brief("boss", None, versioning=False)
     assert delegates.VERSIONING in delegates.brief("boss", None, versioning=True)

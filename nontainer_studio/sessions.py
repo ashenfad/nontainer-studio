@@ -317,6 +317,52 @@ def _hours(hours: float) -> str:
     return f"{hours:g} hour{'' if hours == 1 else 's'}"
 
 
+def _flag(name: str) -> bool:
+    """An on/off environment knob. ``1``/``true``/``yes``/``on`` (in any
+    case) turn it on; anything else, including unset, leaves it off."""
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def wsgit_enabled() -> bool:
+    """``NONTAINER_STUDIO_WSGIT``: whether the agent's terminal carries
+    the ``ws-git`` verb.
+
+    Off, ``register_wsgit`` is never called, so the verb is absent from
+    the terminal and the primer teaches no spelling for it. The
+    workspace is versioned either way — every mutating tool call still
+    commits, and the human's rewind, fork, publish and restore are
+    host-side verbs over that history — so this decides what the AGENT
+    can type, nothing about what the studio can do.
+    """
+    return _flag("NONTAINER_STUDIO_WSGIT")
+
+
+def sessions_tool_enabled() -> bool:
+    """``NONTAINER_STUDIO_SESSIONS``: whether the agent is given the
+    ``sessions`` tool, its handle on delegation and on what the human
+    has published.
+
+    Off, the tool is not registered and the primer says nothing about
+    delegating or about published apps. The session's ``Sessions``
+    helper is built regardless: the retention sweep, the drill-down
+    routes and the delegates listing all read it, and with no tool to
+    fork through they simply find nothing new.
+    """
+    return _flag("NONTAINER_STUDIO_SESSIONS")
+
+
+#: Starter skills whose subject is a studio feature that can be switched
+#: off, keyed by directory name: one is seeded only where its gate says
+#: the feature is on. A SKILL.md is a file of text with no conditions of
+#: its own, so the gate is on the install rather than inside the skill —
+#: text teaching a tool the agent was not given costs it a turn to find
+#: that out. Seeding happens once, at session creation, so a session
+#: keeps whatever the knobs said on the day it was made.
+_GATED_SKILLS: dict[str, Callable[[], bool]] = {
+    "starting-from-published": sessions_tool_enabled,
+}
+
+
 def _ensure_vm_cap() -> None:
     """Default dud's VM budget for the studio's long-running posture.
 
@@ -598,18 +644,26 @@ VERSIONING_PRIMER = (
     "and `ws-git commit -m '...'` mark a NAMED point in your history — "
     "distinct from the commit every mutating tool call already makes, "
     "which is what the human's rewind moves between — and `ws-git help` "
-    "lists the rest. Below a request there are two more verbs: "
+    "lists the rest."
+)
+
+UNIT_TEST_PRIMER = (
+    " Below a request there are two more verbs: "
     "`ws-pytest` asks a question of one Python function, in the same "
     "sandbox your code runs in, and `ws-vitest` asks one of a frontend "
     "module, in a browser page that reaches nothing but your own files. "
     "Reach for either when test_app fails and you cannot tell which half "
     "is wrong — a failing assertion names the function, where a blank "
-    "page names nothing. `ws-git` is also how delegated work comes back: "
-    "the `sessions` tool hands a task to a fork of this session, the delegate "
-    "works on a branch of its own, nothing it writes touches your files, "
-    "and when it answers you read its branch with `ws-git diff <name>`, "
-    "take all of it with `ws-git merge <name>`, or take part of it with "
-    "`ws-git checkout <name> -- <paths>`. A delegate need not start from "
+    "page names nothing."
+)
+
+DELEGATION_PRIMER = (
+    " The `sessions` tool hands a task to a fork of this session: the "
+    "delegate works on a branch of its own, nothing it writes touches "
+    "your files, and when it answers you read its branch with `ws-git "
+    "diff <name>`, take all of it with `ws-git merge <name>`, or take "
+    "part of it with `ws-git checkout <name> -- <paths>`. A delegate "
+    "need not start from "
     "here — `fork_from=<session>@<commit>` starts one from another "
     "session's state, and `ws-git branch` lists the sessions there are to "
     "name — and `resume` gives a delegate you already have its next task "
@@ -634,7 +688,7 @@ NO_VERSIONING_PRIMER = (
 
 
 def _versioning_primer(wsgit: bool) -> str:
-    """The delegation half of the primer, under ws-git's own gate.
+    """The ws-git half of the primer, under ws-git's own gate.
 
     ``wsgit`` is what ``register_wsgit`` answered when the session was
     wired: whether the agent can type the verb here. Asking the function
@@ -643,7 +697,33 @@ def _versioning_primer(wsgit: bool) -> str:
     `command not found` — an agent told to run one spends a call
     discovering it is not there.
     """
-    return VERSIONING_PRIMER if wsgit else NO_VERSIONING_PRIMER
+    return VERSIONING_PRIMER if wsgit else ""
+
+
+def _unit_test_primer(ws: Workspace) -> str:
+    """The tier below a request, under its own gate: the workspace's
+    own command table says whether ``ws-pytest`` is there to type.
+
+    ``enable_apps`` installs the two unit-test verbs, and ``ws-git`` is
+    a separate registration, so neither one's presence answers for the
+    other.
+    """
+    return UNIT_TEST_PRIMER if "ws-pytest" in ws.runtime.commands else ""
+
+
+def _delegation_primer(delegates: bool, wsgit: bool) -> str:
+    """The delegation half of the primer, under the `sessions` tool's
+    gate and then under ws-git's.
+
+    ``delegates`` is whether that tool was registered; an agent told to
+    delegate with no tool for it spends a turn finding out. ``wsgit``
+    decides which half is true here: with the verb, a delegate's branch
+    is something to read, merge and start from, and without it the
+    delegate's answer is all that ever comes back.
+    """
+    if not delegates:
+        return ""
+    return DELEGATION_PRIMER if wsgit else NO_VERSIONING_PRIMER
 
 
 def _retention_primer(hours: float) -> str:
@@ -1906,6 +1986,9 @@ class Registry:
         if root.is_dir():
             for child in sorted(root.iterdir()):
                 if child.is_dir() and (child / "SKILL.md").is_file():
+                    gate = _GATED_SKILLS.get(child.name)
+                    if gate is not None and not gate():
+                        continue
                     try:
                         skills.install(ws, child)
                     except Exception:
@@ -2042,7 +2125,9 @@ class Registry:
         # work comes back as `ws-git merge <name>` or `ws-git checkout
         # <name> -- <paths>`, and there is no host-side verb for either.
         # STUDIO_PRIMER carries the teaching, under the same gate.
-        wsgit = register_wsgit(ws)
+        # NONTAINER_STUDIO_WSGIT decides whether the verb exists at all;
+        # register_wsgit then answers whether this executor can carry it.
+        wsgit = wsgit_enabled() and register_wsgit(ws)
         log_dir = self._store.path / "events"
         log_dir.mkdir(parents=True, exist_ok=True)
         # One helper per session, built here so the studio holds it: the
@@ -2198,10 +2283,10 @@ class Registry:
         wsgit: bool = False,
     ) -> Any:
         """``wsgit`` is whether ``register_wsgit`` installed the verb on
-        this workspace, which decides the primer's delegation half. It
-        defaults to the conservative answer: an agent that is not told
-        about a verb it has loses a spelling, where one told about a
-        verb it lacks loses a turn."""
+        this workspace, which decides the primer's ws-git half and which
+        delegation half is true. It defaults to the conservative answer:
+        an agent that is not told about a verb it has loses a spelling,
+        where one told about a verb it lacks loses a turn."""
         from agno.agent import Agent
 
         from . import providers
@@ -2242,14 +2327,17 @@ class Registry:
 
             compression = CompressionManager(compress_token_limit=limit)
 
+        # The `sessions` tool is registered only where there is a helper
+        # to delegate through, which is nontainer's gate for it too: an
+        # agent told to delegate with nothing to delegate to spends a
+        # call finding out. NONTAINER_STUDIO_SESSIONS is the studio's
+        # own gate on top of that — the helper is built either way, and
+        # with the knob off nothing hands the agent a name for it.
+        delegation = delegates is not None and sessions_tool_enabled()
+
         return Agent(
             model=self._model_factory(model),
-            # The `sessions` tool is registered only where there is a
-            # helper to delegate through, which is nontainer's gate for
-            # it too: an agent told to delegate with nothing to delegate
-            # to spends a call finding out.
-            tools=[toolkit]
-            + ([self._sessions_tool(delegates)] if delegates is not None else []),
+            tools=[toolkit] + ([self._sessions_tool(delegates)] if delegation else []),
             compress_tool_results=compression is not None,
             compression_manager=compression,
             # runs per ATTEMPT, which is what makes it the right seam for
@@ -2259,10 +2347,15 @@ class Registry:
             # the MECHANICS (workspace, handlers, curl); this covers the
             # product the human is looking at (preview, artifacts,
             # commits, publish)
+            # The retention sentence rides with delegation: what it
+            # describes is a delegate's branch, and an agent with no way
+            # to fork one has nothing for it to be about.
             instructions=(
                 STUDIO_PRIMER
                 + _versioning_primer(wsgit)
-                + _retention_primer(self.delegate_ttl_hours)
+                + _unit_test_primer(ws)
+                + _delegation_primer(delegation, wsgit)
+                + (_retention_primer(self.delegate_ttl_hours) if delegation else "")
             ),
             # Durable chat, keyed by the session name and stored in that
             # session's own workspace branch: after a server restart the
