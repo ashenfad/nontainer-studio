@@ -11,26 +11,37 @@ come back when debugging.
 
 ## Do this first
 
-The references are WORKING FILES, not illustrations. Read all three
-before you write anything:
+The references are WORKING FILES, not illustrations. Read the four the
+app is made of before you write anything:
 
 ```sh
 cat /workspace/skills/building-apps/references/api-handler.py
 cat /workspace/skills/building-apps/references/app.jsx
 cat /workspace/skills/building-apps/references/app.html
+cat /workspace/skills/building-apps/references/format.js
 ```
 
 They are one matched app: `api-handler.py` is filters in / chart-ready
-JSON out, and `app.{html,jsx}` is the frontend that calls it — filters,
-stat cards, a plotly chart, a table, and a details dialog, in MUI.
+JSON out, `app.{html,jsx}` is the frontend that calls it — filters, stat
+cards, a plotly chart, a table, and a details dialog, in MUI — and
+`format.js` is the plain-JavaScript half `app.jsx` imports.
 
-Copy rather than retype; it is three calls instead of a few hundred
+Copy rather than retype; it is four calls instead of a few hundred
 lines:
 
 ```sh
-cp /workspace/skills/building-apps/references/app.html      /workspace/app/index.html
-cp /workspace/skills/building-apps/references/app.jsx       /workspace/app/app.jsx
+cp /workspace/skills/building-apps/references/app.html       /workspace/app/index.html
+cp /workspace/skills/building-apps/references/app.jsx        /workspace/app/app.jsx
+cp /workspace/skills/building-apps/references/format.js      /workspace/app/format.js
 cp /workspace/skills/building-apps/references/api-handler.py /workspace/app/api/summary.py
+```
+
+Two more go under `tests/`, and the **Tests** section below says what
+they are for:
+
+```sh
+cp /workspace/skills/building-apps/references/test-summary.py /workspace/tests/test_summary.py
+cp /workspace/skills/building-apps/references/format.test.js  /workspace/tests/format.test.js
 ```
 
 Then **cut it down to your data** — rename the columns, delete the
@@ -273,8 +284,10 @@ than changing it.
   compiled, so `import Chart from './chart.jsx'` does NOT work — the
   browser fetches that file itself and chokes on the raw JSX. Keep your
   components in `app.jsx` and use ordinary functions to organize them.
-  If it genuinely outgrows one file, split the plain-JavaScript parts
-  (fetch helpers, formatting) into a `.js` module and import that.
+  The plain-JavaScript parts (fetch helpers, formatting) DO split into
+  a `.js` module: the reference pair already does it, with `app.jsx`
+  importing `./format.js`, and a `.js` module is also the piece
+  `ws-vitest` can ask a question of.
 - **Grow in verified steps.** Get one endpoint plus one rendered number
   working, THEN add charts and filters. A big-bang first draft moves all
   the debugging to the point where you have the least idea which part
@@ -308,13 +321,46 @@ section.
    dispatcher directly, so it isolates backend from frontend in one
    call. The verb is `ws-curl`, never plain `curl`: real curl may be on
    the PATH, and it would reach the NETWORK instead of your app.
-3. `ws-pytest` when the failing piece is one function — put plain
-   `assert` tests in tests/test_<name>.py, never under app/, and reach
-   a handler with `call('x', params={...}, db=fake)`. A failing
-   assertion names the function; a blank page names nothing.
-   `ws-vitest` is the same tier for a frontend module.
+3. `ws-pytest` when the failing piece is one Python function,
+   `ws-vitest` when it is a frontend module — plain `assert` tests in
+   `tests/`, and a handler reached with `call('x', params={...})`. A
+   failing assertion names the function; a blank page names nothing.
+   **Tests** below has the rest.
 4. test_app for the page: errors carry file:line for runtime errors;
    parse errors mean bisecting your <script> blocks.
+
+## Tests
+
+The ladder above ends in two verbs, and they are the cheap end of it:
+`ws-pytest` when the failing piece is one Python function, `ws-vitest`
+when it is a frontend module, `test_app` when it is the page. A failing
+assertion names the function; a blank page names nothing.
+
+Tests live in `tests/`, **never under `app/`** — `app/` is what
+publishes, so a test file there ships with the app and is fetchable from
+it. Python is `tests/test_<name>.py`, JavaScript is
+`tests/<name>.test.js`. Run them with `ws-pytest -v` and `ws-vitest
+--reporter=verbose`.
+
+`references/test-summary.py` and `references/format.test.js` are the
+working pair for the reference app — copy them with the rest and adapt
+them as you cut the app down.
+
+`ws-pytest --help` is the authority on the Python side; the part worth
+knowing before you read it: `call('summary', params={...})` runs a
+handler the way a request does and returns a response with `.status`,
+`.json` (a property, not a method), `.text` and `.ok`, so a
+`raise HttpError(400, ...)` arrives as `.status == 400` rather than as
+an exception; `Request`, `Response` and `HttpError` are in scope, so a
+helper you call directly and that raises one is tested with
+`except HttpError`; and a keyword argument (`db=fake`) substitutes what
+the handler reads when a test wants isolation. There are no fixtures and
+no conftest — setup is the test's own code, written in the test.
+
+Pure functions are what this tier is cheap for, which is the second
+reason to split formatting and query-building out of `app.jsx` into
+`format.js`: `ws-vitest` answers a question about them in a second,
+where the same question asked through `test_app` needs the whole page.
 
 ## Verification that means something
 

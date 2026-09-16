@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The app skill ships unit tests.** A **Tests** section says where
+  tests live (`tests/`, never under `app/`), how to run them
+  (`ws-pytest -v`, `ws-vitest --reporter=verbose`) and the one line of
+  the `call` contract worth knowing before `ws-pytest --help`. Two
+  reference files come with it: `test-summary.py`, which passes against
+  `api-handler.py` as shipped — happy path, an empty selection, and the
+  400 an unknown category earns — and `format.test.js`, over a new
+  `format.js` that carries the value formatting and query building
+  `app.jsx` used to do inline (copied to `app/format.js`, imported as
+  `./format.js`). Both are run through a session in the suite, so a
+  template that stops passing stops the build rather than reaching an
+  agent. The Python reference is spelled with a hyphen because a bare
+  `ws-pytest` collects `test_*.py` anywhere outside `app/`, and a
+  reference that ran itself would write its fixture parquet over the
+  app's data.
+
 - **`ws-git` and the `sessions` tool are behind knobs, both off.**
   `NONTAINER_STUDIO_WSGIT` registers the `ws-git` terminal verb and
   `NONTAINER_STUDIO_SESSIONS` registers the `sessions` tool; unset,
