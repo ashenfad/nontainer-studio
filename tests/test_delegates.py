@@ -556,10 +556,15 @@ def test_an_agent_starts_from_an_app_whose_session_is_gone(registry, tmp_path):
     assert tag in _tool_results(_turn(builder, PUBLISHED), "sessions")[0]
 
     # MOUNTED: the origin is the whole tree, where the version is `app/`
-    _turn(
+    mounted = _turn(
         builder,
         f'!tool terminal {{"command": "ws-git worktree add old {tag}"}}\n'
         "!text Mounted it.",
+    )
+    # the verb's own answer first, so a mount that did not happen is
+    # reported as what the terminal said and not as a missing file
+    assert "worktree" in _tool_results(mounted, "terminal")[0], _tool_results(
+        mounted, "terminal"
     )
     fs = builder.ws.files.fs
     assert fs.read("/workspace/old/app/index.html") == b"<h1>revenue</h1>"
