@@ -668,9 +668,12 @@ UNIT_TEST_PRIMER = (
     "`ws-pytest` asks a question of one Python function, in the same "
     "sandbox your code runs in, and `ws-vitest` asks one of a frontend "
     "module, in a browser page that reaches nothing but your own files. "
-    "Reach for either when test_app fails and you cannot tell which half "
-    "is wrong — a failing assertion names the function, where a blank "
-    "page names nothing."
+    "An app is not done until both have run on it and your report quotes "
+    "their count lines, or says in a sentence which tier had nothing to "
+    "test and why; a failing assertion names the function, where a blank "
+    "page names nothing. The project's `README.md` at the workspace root "
+    "records what the app does, its data, its endpoints, its tests and "
+    "the decisions behind it."
 )
 
 DELEGATION_PRIMER = (
