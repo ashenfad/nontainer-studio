@@ -5798,6 +5798,6 @@ def test_the_primer_makes_the_unit_test_runs_part_of_done():
     rule that an app is not done until both runners have run on it (or
     the report says which tier had nothing to test) lives there too."""
     primer = sessions_mod.UNIT_TEST_PRIMER
-    assert "not done until both have run" in primer
+    assert "not done until both have run on it and passed" in primer
     assert "count lines" in primer
     assert "README.md" in primer
