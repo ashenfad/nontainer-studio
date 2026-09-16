@@ -37,11 +37,13 @@ cp /workspace/skills/building-apps/references/api-handler.py /workspace/app/api/
 ```
 
 Two more go under `tests/`, and the **Tests** section below says what
-they are for:
+they are for; the last is the project's README, which **Done** below
+says what to put in:
 
 ```sh
 cp /workspace/skills/building-apps/references/test-summary.py /workspace/tests/test_summary.py
 cp /workspace/skills/building-apps/references/format.test.js  /workspace/tests/format.test.js
+cp /workspace/skills/building-apps/references/README.md       /workspace/README.md
 ```
 
 Then **cut it down to your data** — rename the columns, delete the
@@ -353,8 +355,10 @@ it. Python is `tests/test_<name>.py`, JavaScript is
 --reporter=verbose`.
 
 `references/test-summary.py` and `references/format.test.js` are the
-working pair for the reference app — copy them with the rest and adapt
-them as you cut the app down.
+working pair for the reference app. Copy them with the rest, then make
+them pass against YOUR app before you reach for `test_app`, and delete
+the ones that test something you removed. A copied test that was never
+run is worse than none: it sits in `tests/` looking like coverage.
 
 `ws-pytest --help` is the authority on the Python side; the part worth
 knowing before you read it: `from host import call`, and
@@ -372,6 +376,27 @@ Pure functions are what this tier is cheap for, which is the second
 reason to split formatting and query-building out of `app.jsx` into
 `format.js`: `ws-vitest` answers a question about them in a second,
 where the same question asked through `test_app` needs the whole page.
+
+## Done
+
+An app is done when all of these are true, and your report to the human
+says so with the evidence, not a summary of it:
+
+1. `test_app` passed with data-bearing assertions (below), and the
+   report quotes what it asserted.
+2. `ws-pytest -v` ran and passed, and the report quotes its count line.
+   The copied handler test is adapted to your handler or deleted.
+3. `ws-vitest` ran and passed, and the report quotes its count line.
+   The copied module test is adapted to your `format.js` or deleted.
+4. `/workspace/README.md` is filled in from the reference: what the app
+   does, the data, the endpoints, how to run the tests, and the
+   decisions with their reasons.
+
+The one escape is a stated waiver: if a tier has nothing to test — a
+page with no handler, a frontend with no pure functions — the report
+says which tier and why, in a sentence. Skipping without saying so is
+the failure this list exists to catch. For a genuinely small app the
+README may be two sections; it may not be missing.
 
 ## Verification that means something
 
