@@ -29,7 +29,7 @@ import theme from "house/theme";
 // but a .js module does, and formatting and query-building belong in
 // one: they are pure functions, which makes them the cheap thing to
 // test (tests/format.test.js, run by ws-vitest).
-import { filterQuery, formatValue } from "./format.js";
+import { filterQuery, formatLabel, formatValue } from "./format.js";
 
 // Plotly draws on white paper unless told otherwise, so a chart on a
 // dark page is a glaring white rectangle — the most visible way an app
@@ -139,8 +139,14 @@ function App() {
         <Stat id="total" label="Rows" value={formatValue(data.total)} />
         {/* mean_value is null when there was nothing to average (no rows,
             or an all-null column). formatValue renders the dash —
-            null.toLocaleString() throws and takes the render down. */}
-        <Stat id="mean" label="Mean value" value={formatValue(data.mean_value)} />
+            null.toLocaleString() throws and takes the render down. The
+            two fractional places are this column's display choice; with
+            no `digits` the value would render at full precision. */}
+        <Stat
+          id="mean"
+          label="Mean value"
+          value={formatValue(data.mean_value, { digits: 2 })}
+        />
       </Stack>
 
       {/* An empty result is a normal outcome, not an error state. */}
@@ -173,12 +179,15 @@ function App() {
               // React escapes them, so a category called `North "A"`
               // renders as itself instead of truncating the markup.
               <TableRow key={row.id} data-key={row.id}>
-                <TableCell>{row.category}</TableCell>
-                <TableCell>{row.region}</TableCell>
                 {/* Any field can be null — the handler sends None for
-                    anything pandas calls missing — so formatValue
-                    renders the dash rather than a blank cell. */}
-                <TableCell>{formatValue(row.year)}</TableCell>
+                    anything pandas calls missing — so both helpers
+                    render the dash rather than a blank cell. The split
+                    is what the value IS: a year is an identifier and
+                    must not be grouped into "2,023", where the measure
+                    beside it should be. */}
+                <TableCell>{formatLabel(row.category)}</TableCell>
+                <TableCell>{formatLabel(row.region)}</TableCell>
+                <TableCell>{formatLabel(row.year)}</TableCell>
                 <TableCell align="right">{formatValue(row.value)}</TableCell>
                 <TableCell>
                   <Button size="small" id={`open-${row.id}`} onClick={() => setSelected(row)}>

@@ -261,6 +261,15 @@ renders a real `<select>` and keeps the page testable. If you do use the
 default, drive it with a click on the control followed by a click on the
 option.
 
+**A year is not a quantity.** `toLocaleString()` groups digits and caps
+at three fractional places, so it turns `2023` into `2,023`, `1.23456`
+into `1.235` and `0.00001` into `0` — the page then shows a value nobody
+computed, with nothing to say it happened. Split the two: an identifier
+(a year, an id, a code) renders as itself, and a measure is grouped and
+rounded only where a call site asks. `format.js` is that split —
+`formatLabel` and `formatValue(x, { digits })` — and both render null as
+a dash.
+
 Let JSX render your data — `{row.category}` — rather than assembling
 markup as a string. React escapes values, so a category called
 `North "A"` renders as itself; the same value interpolated into

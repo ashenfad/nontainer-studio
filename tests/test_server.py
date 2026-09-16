@@ -4775,6 +4775,16 @@ def test_the_reference_app_actually_runs(studio):
         [
             {"assert": "document.querySelectorAll('#rows tbody tr').length === 2"},
             {"assert": "document.querySelector('#total').textContent === '2'"},
+            # A year is an identifier: it renders as itself, never as
+            # the "2,020" a number formatter would make of it.
+            {
+                "assert": "document.querySelector('#rows').textContent"
+                ".includes('2020') && !document.querySelector('#rows')"
+                ".textContent.includes('2,020')"
+            },
+            # ...and the measure beside it takes the fixed width the
+            # call site asked for.
+            {"assert": "document.querySelector('#mean').textContent === '2.00'"},
             # Plotly drew into the ref'd Box, not into a detached node.
             {"assert": "document.querySelector('#chart .plot-container') !== null"},
             # A native <select>, so this drives the real control.
@@ -5295,7 +5305,7 @@ def test_the_reference_tests_pass_against_the_reference_app(scripted):
     vitest_out = _terminal(client, "s1", "ws-vitest --reporter=verbose")
     if "unavailable" in vitest_out or "playwright install" in vitest_out:
         pytest.skip(vitest_out)
-    assert "7 passed" in vitest_out, vitest_out
+    assert "14 passed" in vitest_out, vitest_out
     assert "tests/format.test.js" in vitest_out, vitest_out
 
 

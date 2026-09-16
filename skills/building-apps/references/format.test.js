@@ -7,11 +7,50 @@
 // The import is relative from tests/ to app/ — they are siblings under
 // one root, so '../app/format.js'. describe, it and expect are globals
 // here; there is nothing to import for them.
-import { filterQuery, formatValue } from "../app/format.js";
+import { filterQuery, formatLabel, formatValue } from "../app/format.js";
+
+describe("formatLabel", () => {
+  // The bug this closes: a year through a number formatter renders as
+  // "2,023". An identifier is not a quantity and takes no separators.
+  it("leaves a year ungrouped", () => {
+    expect(formatLabel(2023)).toBe("2023");
+  });
+
+  it("leaves a string alone", () => {
+    expect(formatLabel("north")).toBe("north");
+  });
+
+  it("renders a missing label as a dash", () => {
+    expect(formatLabel(null)).toBe("—");
+    expect(formatLabel(undefined)).toBe("—");
+  });
+});
 
 describe("formatValue", () => {
-  it("renders a number the way the page shows it", () => {
+  it("groups a measure for reading", () => {
     expect(formatValue(1234)).toBe("1,234");
+  });
+
+  // Bare toLocaleString() caps at three fractional digits, so this
+  // would come back "1.235" — a different number, silently.
+  it("keeps every digit it was given", () => {
+    expect(formatValue(1.23456)).toBe("1.23456");
+  });
+
+  // ...and the same cap renders a small value as "0", which reads as
+  // "there is nothing here" when there is.
+  it("does not flatten a tiny value to zero", () => {
+    expect(formatValue(0.00001)).toBe("0.00001");
+  });
+
+  it("groups the integer part without touching the fraction", () => {
+    expect(formatValue(1234.5678)).toBe("1,234.5678");
+  });
+
+  // Rounding is the caller's choice, per column, never the default.
+  it("rounds to a fixed width when asked", () => {
+    expect(formatValue(1.23456, { digits: 2 })).toBe("1.23");
+    expect(formatValue(50, { digits: 2 })).toBe("50.00");
   });
 
   // The whole reason the function exists. A null reaches the page from
@@ -22,14 +61,14 @@ describe("formatValue", () => {
     expect(formatValue(undefined)).toBe("—");
   });
 
-  it("leaves a string alone", () => {
-    expect(formatValue("north")).toBe("north");
-  });
-
   // 0 is a real value, not a missing one. A `value || "—"` guard would
   // hide it, and the page would show a dash where the answer is zero.
   it("keeps a zero", () => {
     expect(formatValue(0)).toBe("0");
+  });
+
+  it("leaves a string alone", () => {
+    expect(formatValue("north")).toBe("north");
   });
 });
 
