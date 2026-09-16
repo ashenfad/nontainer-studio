@@ -4716,6 +4716,7 @@ def _reference_app(studio):
     ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
     ws.files.fs.write("/workspace/app/index.html", (refs / "app.html").read_bytes())
     ws.files.fs.write("/workspace/app/app.jsx", (refs / "app.jsx").read_bytes())
+    ws.files.fs.write("/workspace/app/format.js", (refs / "format.js").read_bytes())
     ws.files.fs.write("/workspace/app/api/summary.py", REFERENCE_HANDLER)
     ws.commit()
     return registry.get("s1")
@@ -5206,6 +5207,63 @@ def test_the_reference_handler_survives_a_null_year(studio):
     body = json.loads(response.text)
     assert body["rows"][1]["year"] is None
     assert body["rows"][0]["year"] == 2020  # a real year still casts to int
+
+
+def _terminal(client, session: str, command: str) -> str:
+    """One terminal command, run the way the agent runs one: a scripted
+    turn through agno and WorkspaceTools, not a direct call into the
+    runtime. What comes back is the tool result the model would read."""
+    events = _run(
+        client,
+        session,
+        f"!tool terminal {json.dumps({'command': command})}\n!text ran it",
+    )
+    return next(e for e in events if e["type"] == "tool_end")["result"]
+
+
+def test_the_reference_tests_pass_against_the_reference_app(scripted):
+    """The templates, run. `test-summary.py` and `format.test.js` are
+    copied into sessions by agents who then adapt them, so a template
+    that no longer passes against the handler and module it was written
+    for is worse than no template: it teaches a spelling that fails and
+    costs the turn that discovers it.
+
+    Everything the pair needs is here — the parquet is written by the
+    Python template's own `_seed()`, since ws-pytest has no fixtures and
+    setup is the test's own code."""
+    pytest.importorskip("pandas")
+    pytest.importorskip("playwright")
+    refs = Path(__file__).parent.parent / "skills" / "building-apps" / "references"
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.makedirs("/workspace/tests", exist_ok=True)
+    for src, dest in (
+        ("app.html", "/workspace/app/index.html"),
+        ("app.jsx", "/workspace/app/app.jsx"),
+        ("format.js", "/workspace/app/format.js"),
+        ("api-handler.py", "/workspace/app/api/summary.py"),
+        ("test-summary.py", "/workspace/tests/test_summary.py"),
+        ("format.test.js", "/workspace/tests/format.test.js"),
+    ):
+        ws.files.fs.write(dest, (refs / src).read_bytes())
+    ws.commit()
+
+    pytest_out = _terminal(client, "s1", "ws-pytest -v")
+    assert "3 passed" in pytest_out, pytest_out
+    assert "failed" not in pytest_out, pytest_out
+    # A bare run walks the whole tree but app/, so the seeded skill's own
+    # copy is in scope. It is spelled with a hyphen precisely so nothing
+    # collects it where it sits — a reference that ran itself would seed
+    # its fixture parquet over whatever app the session is building.
+    assert "references/" not in pytest_out, pytest_out
+
+    vitest_out = _terminal(client, "s1", "ws-vitest --reporter=verbose")
+    if "unavailable" in vitest_out or "playwright install" in vitest_out:
+        pytest.skip(vitest_out)
+    assert "7 passed" in vitest_out, vitest_out
+    assert "tests/format.test.js" in vitest_out, vitest_out
 
 
 def test_the_loader_does_not_mistake_another_stylesheet_for_the_house_one(studio):

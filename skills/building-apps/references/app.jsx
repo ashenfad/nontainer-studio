@@ -1,5 +1,6 @@
 // Reference frontend, half two of two: filters -> fetch -> stats, chart,
-// table, dialog. Copy this AND app.html; it pairs with api-handler.py.
+// table, dialog. Copy this AND app.html AND format.js, which it imports;
+// it pairs with api-handler.py.
 //
 // This is a WORKING FILE, not an illustration. Copy it, then cut it down
 // to your data — rename the columns, delete the parts you don't need.
@@ -22,6 +23,13 @@ import {
 // than calling createTheme yourself — an app that picks its own colours
 // looks like a different product from the page embedding it.
 import theme from "house/theme";
+
+// The plain-JavaScript half, in a module of its own. Only the entry
+// named by `data-app` is compiled, so './chart.jsx' would not work —
+// but a .js module does, and formatting and query-building belong in
+// one: they are pure functions, which makes them the cheap thing to
+// test (tests/format.test.js, run by ws-vitest).
+import { filterQuery, formatValue } from "./format.js";
 
 // Plotly draws on white paper unless told otherwise, so a chart on a
 // dark page is a glaring white rectangle — the most visible way an app
@@ -70,14 +78,10 @@ function App() {
   const [selected, setSelected] = useState(null);
 
   useEffect(() => {
-    const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(filters)) {
-      if (value) params.set(key, value);
-    }
     // RELATIVE url, always. The app is served under a path prefix, so a
     // leading slash ('/api/summary') escapes it and 404s. And never put
     // .py in the url — the route is the filename without it.
-    fetch("api/summary?" + params)
+    fetch("api/summary?" + filterQuery(filters))
       .then(async (res) => {
         // Errors come back as JSON too, so read the body either way and
         // surface data.error rather than showing a blank page.
@@ -132,15 +136,11 @@ function App() {
       </Stack>
 
       <Stack direction="row" spacing={2} sx={{ mb: 3 }}>
-        <Stat id="total" label="Rows" value={data.total.toLocaleString()} />
+        <Stat id="total" label="Rows" value={formatValue(data.total)} />
         {/* mean_value is null when there was nothing to average (no rows,
-            or an all-null column). Render the dash — null.toLocaleString()
-            throws and takes the whole render down with it. */}
-        <Stat
-          id="mean"
-          label="Mean value"
-          value={data.mean_value === null ? "—" : data.mean_value.toLocaleString()}
-        />
+            or an all-null column). formatValue renders the dash —
+            null.toLocaleString() throws and takes the render down. */}
+        <Stat id="mean" label="Mean value" value={formatValue(data.mean_value)} />
       </Stack>
 
       {/* An empty result is a normal outcome, not an error state. */}
@@ -176,10 +176,10 @@ function App() {
                 <TableCell>{row.category}</TableCell>
                 <TableCell>{row.region}</TableCell>
                 {/* Any field can be null — the handler sends None for
-                    anything pandas calls missing — so render the dash
-                    rather than a blank cell. */}
-                <TableCell>{row.year ?? "—"}</TableCell>
-                <TableCell align="right">{row.value ?? "—"}</TableCell>
+                    anything pandas calls missing — so formatValue
+                    renders the dash rather than a blank cell. */}
+                <TableCell>{formatValue(row.year)}</TableCell>
+                <TableCell align="right">{formatValue(row.value)}</TableCell>
                 <TableCell>
                   <Button size="small" id={`open-${row.id}`} onClick={() => setSelected(row)}>
                     Details
