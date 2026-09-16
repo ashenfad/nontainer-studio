@@ -39,8 +39,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ws-git: `enable_apps` installs `ws-pytest` and `ws-vitest`, and they
   are there to teach whether or not the versioning verb is. Starting
   from a published app moved out of the app-building skill into a
-  `starting-from-published` skill of its own, seeded only when the
-  `sessions` tool is on.
+  `starting-from-published` skill of its own, seeded only where a
+  session can follow it: the `sessions` tool on AND that session's own
+  `ws-git` answer true, since the workflow after the listing is the
+  ws-git verbs that read an origin tag.
 
 - **The studio names a session; the agent is not asked to.** The
   `recommend_title` tool is gone. After the first turn that was a real

@@ -351,15 +351,31 @@ def sessions_tool_enabled() -> bool:
     return _flag("NONTAINER_STUDIO_SESSIONS")
 
 
+def _can_start_from_published(wsgit: bool) -> bool:
+    """Whether the ``starting-from-published`` skill can be followed in
+    a session, given whether that session carries ``ws-git``.
+
+    Its workflow is two things and needs both: the ``sessions`` tool's
+    ``published`` action lists the apps and their origin tags, and the
+    ws-git verbs are what read a tag — mount it, take files out of it,
+    diff it. With the tool and no verb, every step after the listing is
+    a spelling the terminal answers ``command not found`` to, and the
+    primer has already told that agent nothing brings files over.
+    """
+    return sessions_tool_enabled() and wsgit
+
+
 #: Starter skills whose subject is a studio feature that can be switched
 #: off, keyed by directory name: one is seeded only where its gate says
-#: the feature is on. A SKILL.md is a file of text with no conditions of
-#: its own, so the gate is on the install rather than inside the skill —
-#: text teaching a tool the agent was not given costs it a turn to find
-#: that out. Seeding happens once, at session creation, so a session
-#: keeps whatever the knobs said on the day it was made.
-_GATED_SKILLS: dict[str, Callable[[], bool]] = {
-    "starting-from-published": sessions_tool_enabled,
+#: the session can follow it. A SKILL.md is a file of text with no
+#: conditions of its own, so the gate is on the install rather than
+#: inside the skill — text teaching a tool or a verb the agent was not
+#: given costs it a turn to find that out. Each gate is asked the
+#: session's own ``ws-git`` answer, because an env knob says what was
+#: asked for and that flag says what the session got. Seeding happens
+#: once, at session creation, so a session keeps what it was told then.
+_GATED_SKILLS: dict[str, Callable[[bool], bool]] = {
+    "starting-from-published": _can_start_from_published,
 }
 
 
@@ -1930,8 +1946,13 @@ class Registry:
                     # Seed skills once, at session CREATION — after that
                     # they are the session's own versioned state (agents
                     # may edit or add them; a reseed would clobber that).
+                    # The ws-git answer is settled first because a gated
+                    # skill reads it, and seeding cannot simply wait for
+                    # _assemble: the toolkit catalogs the seeded skills
+                    # when the agent is built, so a skill installed after
+                    # that is one no agent is told about.
                     if not ws.files.fs.isdir(f"{ws.root}/skills"):
-                        self._seed_skills(ws)
+                        self._seed_skills(ws, wsgit=self._wsgit(ws))
                     session = self._assemble(name, ws, db, model)
                     loaded = self._load_events(session.log_path)
                     session.events.extend(loaded)
@@ -1965,12 +1986,16 @@ class Registry:
             return session
 
     @staticmethod
-    def _seed_skills(ws: Workspace) -> None:
+    def _seed_skills(ws: Workspace, *, wsgit: bool) -> None:
         """Install starter skills into a fresh session: each child
         directory of NONTAINER_STUDIO_SKILLS (default: the repo's
         skills/) plus any skills EMBEDDED in granted python libraries
         (<pkg>/skills/ — the nontainer convention). Best-effort: a bad
         skill must never block a session.
+
+        ``wsgit`` is whether this session carries the verb, which a
+        gated skill's own predicate may need: what decides is what the
+        session GOT, not what a knob asked for.
 
         Skill text is resolved for the executor first (see
         ``_resolve_skill_text``) — the seeded copy must not teach
@@ -1986,7 +2011,7 @@ class Registry:
             for child in sorted(root.iterdir()):
                 if child.is_dir() and (child / "SKILL.md").is_file():
                     gate = _GATED_SKILLS.get(child.name)
-                    if gate is not None and not gate():
+                    if gate is not None and not gate(wsgit):
                         continue
                     try:
                         skills.install(ws, child)
@@ -2110,6 +2135,25 @@ class Registry:
             warm_view_workers=_view_workers(),
         )
 
+    @staticmethod
+    def _wsgit(ws: Workspace) -> bool:
+        """Put ``ws-git`` in this workspace's terminal, and say whether
+        it is there.
+
+        nontainer leaves the registration to the embedder and no adapter
+        calls it, so the verb exists only where the studio asks for it:
+        ``NONTAINER_STUDIO_WSGIT`` decides whether to ask, and
+        ``register_wsgit`` answers whether this executor can carry it.
+        The primer teaches the verb under this answer, so does a
+        delegate's brief, and so does a skill whose workflow is the
+        verb — nothing re-derives it from the knob.
+
+        Safe to ask twice, which opening a session does: registration is
+        a no-op once the verb is there, and the answer does not change
+        within a session.
+        """
+        return wsgit_enabled() and register_wsgit(ws)
+
     def _assemble(
         self, name: str, ws: Workspace, db: Db, model: str | None = None
     ) -> Session:
@@ -2118,14 +2162,7 @@ class Registry:
         # self.apps, not a fresh AppsConfig: the router serves published
         # snapshots under this same declaration (see apps_config).
         runtime = enable_apps(ws, self.apps)
-        # ws-git in the terminal. nontainer leaves the registration to
-        # the embedder and no adapter calls it, so the verb is there only
-        # where the studio asks for it: NONTAINER_STUDIO_WSGIT decides
-        # whether to ask, and register_wsgit answers whether this
-        # executor can carry it. The primer teaches the verb under the
-        # same answer, and so does a delegate's brief — nothing else
-        # brings a delegate's work back, and nothing re-derives this.
-        wsgit = wsgit_enabled() and register_wsgit(ws)
+        wsgit = self._wsgit(ws)
         log_dir = self._store.path / "events"
         log_dir.mkdir(parents=True, exist_ok=True)
         # One helper per session, built here so the studio holds it: the
