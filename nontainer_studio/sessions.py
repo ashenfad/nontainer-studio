@@ -680,22 +680,22 @@ DELEGATION_PRIMER = (
 )
 
 NO_VERSIONING_PRIMER = (
-    " The `sessions` tool hands a task to a fork of this session, and on "
-    "this executor its ANSWER is all that comes back: the delegate's files "
-    "stay on its own branch, and there are no terminal verbs here to bring "
-    "them over. Ask for findings, not for edits."
+    " The `sessions` tool hands a task to a fork of this session, and its "
+    "ANSWER is all that comes back here: the delegate's files stay on its "
+    "own branch, and this terminal has no verb that brings them over. Ask "
+    "for findings, not for edits."
 )
 
 
 def _versioning_primer(wsgit: bool) -> str:
     """The ws-git half of the primer, under ws-git's own gate.
 
-    ``wsgit`` is what ``register_wsgit`` answered when the session was
-    wired: whether the agent can type the verb here. Asking the function
-    that did the wiring, rather than re-reading the executor flags it
-    read, is what keeps the primer from teaching a spelling that answers
-    `command not found` — an agent told to run one spends a call
-    discovering it is not there.
+    ``wsgit`` is what the session recorded when it was wired: whether
+    the agent can type the verb here. Asking that one answer, rather
+    than re-deriving it from the knob and the executor's flags, is what
+    keeps the primer from teaching a spelling that answers `command not
+    found` — an agent told to run one spends a call discovering it is
+    not there.
     """
     return VERSIONING_PRIMER if wsgit else ""
 
@@ -902,12 +902,11 @@ class Session:
     — the handle the stop button needs (agno's cancel-by-run-id)."""
 
     wsgit: bool = False
-    """Whether the agent can type ``ws-git`` in this session's terminal
-    — ``register_wsgit``'s own answer, kept rather than re-derived.
-    False where the executor can neither run an injected command nor
-    ferry a ``ws-*`` verb into a guest, which is also where
-    ``enable_apps`` installs no ``ws-pytest`` or ``ws-vitest``: one gate
-    decides all three. What teaches the verbs reads this."""
+    """Whether the agent can type ``ws-git`` in this session's terminal:
+    ``NONTAINER_STUDIO_WSGIT`` and then ``register_wsgit``'s own answer,
+    kept rather than re-derived. The second is False where the executor
+    can neither run an injected command nor ferry a ``ws-*`` verb into a
+    guest. What teaches the verb reads this."""
 
     delegates: Any = None
     """This session's ``nontainer.sessions.Sessions`` — the job table
@@ -2119,14 +2118,13 @@ class Registry:
         # self.apps, not a fresh AppsConfig: the router serves published
         # snapshots under this same declaration (see apps_config).
         runtime = enable_apps(ws, self.apps)
-        # The versioning verbs in the terminal. nontainer leaves this to
-        # the embedder and no adapter calls it, so an agent has them only
-        # where something teaches them — which delegation is: a delegate's
-        # work comes back as `ws-git merge <name>` or `ws-git checkout
-        # <name> -- <paths>`, and there is no host-side verb for either.
-        # STUDIO_PRIMER carries the teaching, under the same gate.
-        # NONTAINER_STUDIO_WSGIT decides whether the verb exists at all;
-        # register_wsgit then answers whether this executor can carry it.
+        # ws-git in the terminal. nontainer leaves the registration to
+        # the embedder and no adapter calls it, so the verb is there only
+        # where the studio asks for it: NONTAINER_STUDIO_WSGIT decides
+        # whether to ask, and register_wsgit answers whether this
+        # executor can carry it. The primer teaches the verb under the
+        # same answer, and so does a delegate's brief — nothing else
+        # brings a delegate's work back, and nothing re-derives this.
         wsgit = wsgit_enabled() and register_wsgit(ws)
         log_dir = self._store.path / "events"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -2282,8 +2280,8 @@ class Registry:
         *,
         wsgit: bool = False,
     ) -> Any:
-        """``wsgit`` is whether ``register_wsgit`` installed the verb on
-        this workspace, which decides the primer's ws-git half and which
+        """``wsgit`` is whether the ``ws-git`` verb was installed on this
+        workspace, which decides the primer's ws-git half and which
         delegation half is true. It defaults to the conservative answer:
         an agent that is not told about a verb it has loses a spelling,
         where one told about a verb it lacks loses a turn."""

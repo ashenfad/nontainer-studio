@@ -101,9 +101,9 @@ def brief(parent: str, commit: str | None, *, versioning: bool) -> str:
     """The whole frame a delegated task carries, ready to prepend.
 
     ``versioning`` is whether the delegate can type ``ws-git``, which
-    is what ``register_wsgit`` answered when its session was wired: an
-    agent on an executor with no terminal verbs would otherwise be
-    taught a spelling it cannot run.
+    is what its session recorded when it was wired: an agent whose
+    terminal does not carry the verb would otherwise be taught a
+    spelling it cannot run.
     """
     return (
         provenance_header(parent, commit)
@@ -209,9 +209,9 @@ class StudioRunner:
         """The header the delegate's first turn opens with.
 
         Whether it carries the ws-git half is the child session's own
-        record of what ``register_wsgit`` installed — the same answer
-        the child's primer was built from, so one session is never told
-        two things about one verb.
+        record of whether the verb was installed — the same answer the
+        child's primer was built from, so one session is never told two
+        things about one verb.
         """
         return brief(self._parent, forked_at, versioning=child.wsgit)
 
