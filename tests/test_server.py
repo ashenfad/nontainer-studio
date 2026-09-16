@@ -4047,20 +4047,53 @@ def test_the_humans_own_verbs_need_no_ws_git(scripted):
     assert child.ws.files.fs.isdir("/workspace/skills")
 
 
-def test_the_published_skill_is_seeded_only_with_the_sessions_tool(studio, monkeypatch):
-    """A SKILL.md is text with no conditions in it, so a skill about a
-    tool the agent was not given is withheld at the seed. Starting from
-    a published app is the `sessions` tool's `published` action plus the
-    ws-git verbs, so it rides with the knob that hands those over."""
+def test_the_published_skill_is_seeded_only_where_it_can_be_followed(
+    studio, monkeypatch
+):
+    """A SKILL.md is text with no conditions in it, so a skill the
+    session cannot follow is withheld at the seed. Starting from a
+    published app takes the `sessions` tool's `published` action AND the
+    ws-git verbs that read the origin tag it names — with the tool and
+    no verb, every step after the listing is a spelling the terminal
+    answers `command not found` to."""
     client, registry = studio
-    client.post("/api/sessions", json={"name": "off"})
-    seeded = registry.get("off").ws.files.fs.list("/workspace/skills")
-    assert "building-apps" in seeded
+
+    client.post("/api/sessions", json={"name": "neither"})
+    seeded = registry.get("neither").ws.files.fs.list("/workspace/skills")
+    assert "building-apps" in seeded  # the ungated one is always there
     assert "starting-from-published" not in seeded
 
+    # the tool alone is not enough: the workflow after the listing is
+    # ws-git, and this session has no ws-git
     monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")
-    client.post("/api/sessions", json={"name": "on"})
-    assert "starting-from-published" in registry.get("on").ws.files.fs.list(
+    client.post("/api/sessions", json={"name": "tool-only"})
+    tool_only = registry.get("tool-only")
+    assert tool_only.wsgit is False
+    assert "starting-from-published" not in tool_only.ws.files.fs.list(
+        "/workspace/skills"
+    )
+
+    monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
+    client.post("/api/sessions", json={"name": "both"})
+    both = registry.get("both")
+    assert both.wsgit is True
+    assert "starting-from-published" in both.ws.files.fs.list("/workspace/skills")
+
+
+def test_the_published_skill_follows_the_verb_the_session_got(studio, monkeypatch):
+    """The gate reads the session's own ws-git answer, not the knob that
+    asked for it: an executor that cannot carry the verb leaves the
+    knob on and the verb absent, and a skill seeded on the knob alone
+    would teach four spellings that are not there."""
+    monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")
+    monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
+    monkeypatch.setattr(sessions_mod, "register_wsgit", lambda ws: False)
+    client, registry = studio
+
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    assert session.wsgit is False
+    assert "starting-from-published" not in session.ws.files.fs.list(
         "/workspace/skills"
     )
 
