@@ -12,8 +12,8 @@ whatever app the session is building.
 
 `call` reaches a handler the way a request does — the same envelope, so
 `raise HttpError(400, ...)` comes back as `.status == 400` instead of
-raising. It is already in scope, like `Request`, `Response` and
-`HttpError`; there is nothing to import. The handler name is a literal
+raising. It comes from `host`, like `db`; `Request`, `Response` and
+`HttpError` are in scope without an import. The handler name is a literal
 string because the handler is composed into this program before the
 test runs, so a computed name cannot be resolved in time. What comes
 back has `.status`, `.json`, `.text`, `.headers` and `.ok` — `.json` is
@@ -35,6 +35,8 @@ overwrites the app's parquet every time.
 import os
 
 import pandas as pd
+
+from host import call
 
 DATA = "/workspace/app/data/records.parquet"
 
