@@ -12,7 +12,7 @@ dependencies = [
     # Floors on nontainer are hard: the studio speaks the current
     # surface with no compatibility layer. What each release changed
     # is in nontainer's changelog.
-    "nontainer[agno,apps]>=0.7.4",
+    "nontainer[agno,apps]>=0.7.5",
     # session ids are minted slugs; the label a human reads is the title
     "petname>=2.6",
     "uvicorn>=0.30",
