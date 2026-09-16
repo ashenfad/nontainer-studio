@@ -99,6 +99,13 @@ repo's `nontainer_studio/appassets/` — see **Works offline** below),
 compression watermark), `NONTAINER_STUDIO_DELEGATE_TTL` (hours a
 delegate's branch is kept after anyone last dealt with it; 24 by
 default, `0` turns the sweep off — see **Delegation** below),
+`NONTAINER_STUDIO_WSGIT` (give the agent the `ws-git` terminal verb —
+**off by default for now**, while the app-building path is polished;
+the human's rewind, fork, publish and restore are host-side and work
+either way), `NONTAINER_STUDIO_SESSIONS` (give the agent the `sessions`
+tool, so it can delegate and list published apps — **off by default for
+now**, for the same reason; the delegates rail, the drill-down and the
+retention sweep stay wired),
 `NONTAINER_STUDIO_ISOLATION` (`process` by default — agent code runs in
 a worker process of its own so a segfault/OOM in C-extension guts costs
 the turn, not the server; the
@@ -269,6 +276,10 @@ weighing where to start. It follows the same two tiers, so
 your own words outrank it.
 
 ### Delegation
+
+Behind `NONTAINER_STUDIO_SESSIONS`, which is **off by default for
+now** — everything below is wired and tested, and the knob is what
+hands the agent the tool.
 
 The agent can delegate. One tool, `sessions`, with an action argument:
 

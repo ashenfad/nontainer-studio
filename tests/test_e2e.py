@@ -64,6 +64,11 @@ def server(tmp_path_factory):
         "NONTAINER_STUDIO_MODEL": "dummy",
         "NONTAINER_STUDIO_PORT": str(port),
         "NONTAINER_STUDIO_STORE": str(store),
+        # The delegation tests below drive the agent's `sessions` tool
+        # and read a delegate's branch back with `ws-git`; neither is
+        # given to an agent unless the studio is told to.
+        "NONTAINER_STUDIO_SESSIONS": "1",
+        "NONTAINER_STUDIO_WSGIT": "1",
     }
     proc = subprocess.Popen(
         [sys.executable, "-m", "nontainer_studio"],

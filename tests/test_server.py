@@ -61,6 +61,16 @@ class GatedAgent(FakeAgent):
             yield event
 
 
+@pytest.fixture(autouse=True)
+def knobs_off(monkeypatch):
+    """Every test in this file runs the studio as it ships: the `ws-git`
+    verb and the `sessions` tool are both withheld from the agent unless
+    a test says otherwise. Said out loud rather than inherited from
+    whatever the machine running the tests happens to export."""
+    monkeypatch.delenv("NONTAINER_STUDIO_WSGIT", raising=False)
+    monkeypatch.delenv("NONTAINER_STUDIO_SESSIONS", raising=False)
+
+
 @pytest.fixture
 def studio(tmp_path):
     """A real Registry over a tmp store, with the agent faked out —
@@ -3855,17 +3865,55 @@ def test_no_tool_asks_the_agent_for_a_title(studio):
     assert "recommend_title" not in sessions_mod.STUDIO_PRIMER
 
 
-def test_the_primer_names_only_verbs_the_session_carries(studio):
+def _real_agent(registry, name: str):
+    """The agent the `studio` fixture fakes out, built for real. Every
+    claim about the primer or the tool list is a claim about this one."""
+    pytest.importorskip("agno")
+    session = registry.get(name)
+    return sessions_mod.Registry._build_agent(
+        registry,
+        name,
+        session.ws,
+        session.runtime,
+        delegates=session.delegates,
+        wsgit=session.wsgit,
+    )
+
+
+def test_the_primer_names_only_verbs_the_session_carries(studio, monkeypatch):
     """The primer teaches terminal verbs, and a verb it names that the
-    session does not carry costs a turn to discover. The three it names
-    are wired by the same two calls every session gets, so the claim is
-    checked against the wiring rather than trusted."""
+    session does not carry costs a turn to discover. Each is wired by a
+    call every session gets, so the claim is checked against the wiring
+    rather than trusted."""
+    monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
-    commands = registry.get("s1").ws.runtime.commands
+    session = registry.get("s1")
+    instructions = _real_agent(registry, "s1").instructions
+
+    assert "ws-git" in sessions_mod.VERSIONING_PRIMER
+    for verb in ("ws-pytest", "ws-vitest"):
+        assert verb in sessions_mod.UNIT_TEST_PRIMER
     for verb in ("ws-git", "ws-pytest", "ws-vitest"):
-        assert verb in sessions_mod.VERSIONING_PRIMER
-        assert verb in commands
+        assert verb in session.ws.runtime.commands
+        assert verb in instructions
+
+
+def test_the_unit_test_verbs_are_taught_without_ws_git(studio):
+    """`enable_apps` installs `ws-pytest` and `ws-vitest`; `ws-git` is a
+    registration of its own. So a session without the versioning verb
+    still carries the tier below a request, and is still told about
+    it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    instructions = _real_agent(registry, "s1").instructions
+
+    assert session.wsgit is False
+    assert "ws-git" not in instructions
+    for verb in ("ws-pytest", "ws-vitest"):
+        assert verb in session.ws.runtime.commands
+        assert verb in instructions
 
 
 def test_the_primer_says_where_else_a_delegate_can_start():
@@ -3873,10 +3921,164 @@ def test_the_primer_says_where_else_a_delegate_can_start():
     share one store, so any commit of any of them is one. The rest of
     what an ask takes is the `sessions` tool's own description, and
     saying it twice is how the two drift."""
-    primer = sessions_mod.VERSIONING_PRIMER
+    primer = sessions_mod.DELEGATION_PRIMER
     assert "fork_from=<session>@<commit>" in primer
     assert "ws-git branch" in primer  # how the agent learns the names
     assert "resume" in primer
+
+
+# -- the two agent-facing knobs --------------------------------------------
+
+
+def _tool_names(agent) -> set[str]:
+    return {getattr(t, "name", getattr(t, "__name__", "")) for t in agent.tools}
+
+
+def test_the_agent_gets_neither_ws_git_nor_the_sessions_tool_by_default(studio):
+    """Unset, both knobs are off: the verb is not in the terminal the
+    agent types into, the tool is not among its tools, and the primer
+    names neither — a primer that taught either would cost a turn to
+    find out it was not there."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    agent = _real_agent(registry, "s1")
+
+    assert session.wsgit is False
+    assert "ws-git" not in session.ws.runtime.commands
+    assert "sessions" not in _tool_names(agent)
+    assert "ws-git" not in agent.instructions
+    assert "sessions" not in agent.instructions
+
+
+def test_ws_git_in_the_terminal_is_not_found_by_default(scripted):
+    """The other end of the same claim, typed: an agent that reaches for
+    the verb is told there is no such command."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    events = _run(
+        client, "s1", '!tool terminal {"command": "ws-git status"}\n!text tried it'
+    )
+
+    result = next(e for e in events if e["type"] == "tool_end")["result"]
+    assert "ws-git" in result and "not found" in result
+
+
+def test_the_wsgit_knob_puts_the_verb_back(studio, monkeypatch):
+    """On, `register_wsgit` runs and the primer teaches the verb it
+    installed."""
+    monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    assert session.wsgit is True
+    assert "ws-git" in session.ws.runtime.commands
+    assert sessions_mod.VERSIONING_PRIMER in _real_agent(registry, "s1").instructions
+
+
+def test_the_sessions_knob_puts_the_tool_back(studio, monkeypatch):
+    """On, the agent is handed the tool and told what a delegate's
+    answer and the human's published apps are good for."""
+    monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")
+    monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    agent = _real_agent(registry, "s1")
+
+    assert "sessions" in _tool_names(agent)
+    assert sessions_mod.DELEGATION_PRIMER in agent.instructions
+    assert 'action="published"' in sessions_mod.SESSIONS_TOOL_DESCRIPTION
+
+
+def test_the_delegates_machinery_stands_with_the_tool_switched_off(studio):
+    """Only the agent's handle is withheld. The session still holds its
+    job table, the sweep still has something to sweep, and the route the
+    rail reads still answers — they just never see a new delegate."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+
+    assert registry.get("s1").delegates is not None
+    r = client.get("/api/sessions/s1/delegates")
+    assert r.status_code == 200 and r.json()["delegates"] == []
+    registry.sweep_delegates()  # nothing to sweep, and no error finding that out
+
+
+def test_the_humans_own_verbs_need_no_ws_git(scripted):
+    """Rewind, publish, restore and fork are host-side workspace verbs
+    over a history every session keeps. None of them types the terminal
+    verb, so all four work in a session that does not carry it."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    assert registry.get("s1").wsgit is False
+
+    _run(client, "s1", _script("/workspace/app/index.html", "one", "made one"))
+    pub = _publish(client, "s1")
+    marker = next(
+        e
+        for e in client.get("/api/sessions/s1/events?wait=0").json()["events"]
+        if e["type"] == "publish"
+    )
+    _run(client, "s1", _script("/workspace/app/index.html", "two", "made two"))
+    session = registry.get("s1")
+    assert session.ws.files.fs.read("/workspace/app/index.html") == b"two"
+
+    # restore to the publish marker: files and memory both go back
+    assert (
+        client.post("/api/sessions/s1/restore", json={"seq": marker["seq"]}).status_code
+        == 200
+    )
+    assert session.ws.files.fs.read("/workspace/app/index.html") == b"one"
+    assert client.get(pub["url"]).status_code == 200
+
+    # rewind by editing the turn that made the file
+    user_seq = next(
+        e["seq"]
+        for e in client.get("/api/sessions/s1/events?wait=0").json()["events"]
+        if e["type"] == "user"
+    )
+    assert _edit(client, "s1", user_seq, "!text nothing at all").status_code == 200
+    assert not session.ws.files.fs.exists("/workspace/app/index.html")
+
+    # and a fork opens holding what its parent holds
+    r = client.post("/api/sessions/s1/fork", json={})
+    assert r.status_code == 200, r.text
+    child = registry.get(r.json()["name"])
+    assert child.ws.files.fs.isdir("/workspace/skills")
+
+
+def test_the_published_skill_is_seeded_only_with_the_sessions_tool(studio, monkeypatch):
+    """A SKILL.md is text with no conditions in it, so a skill about a
+    tool the agent was not given is withheld at the seed. Starting from
+    a published app is the `sessions` tool's `published` action plus the
+    ws-git verbs, so it rides with the knob that hands those over."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "off"})
+    seeded = registry.get("off").ws.files.fs.list("/workspace/skills")
+    assert "building-apps" in seeded
+    assert "starting-from-published" not in seeded
+
+    monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")
+    client.post("/api/sessions", json={"name": "on"})
+    assert "starting-from-published" in registry.get("on").ws.files.fs.list(
+        "/workspace/skills"
+    )
+
+
+def test_the_app_skill_teaches_no_hidden_tool(studio):
+    """The seeded app-building skill is read by every agent that builds
+    anything. A paragraph in it about a tool the agent does not have
+    sends it to type a name that is not there."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    text = (
+        registry.get("s1")
+        .ws.files.fs.read("/workspace/skills/building-apps/SKILL.md")
+        .decode()
+    )
+
+    assert "ws-git" not in text
+    assert 'action="published"' not in text
 
 
 def test_the_db_primer_says_the_store_is_shared():

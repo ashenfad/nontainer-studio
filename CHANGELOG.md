@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`ws-git` and the `sessions` tool are behind knobs, both off.**
+  `NONTAINER_STUDIO_WSGIT` registers the `ws-git` terminal verb and
+  `NONTAINER_STUDIO_SESSIONS` registers the `sessions` tool; unset,
+  neither reaches the agent and the primer names neither. The machinery
+  is untouched — the session still builds its `Sessions` helper, so the
+  retention sweep, the delegates rail and the drill-down routes go on
+  working, and the human's rewind, fork, publish and restore are
+  host-side workspace verbs that never needed the terminal one. The
+  primer is now assembled from four independent pieces (ws-git, the
+  unit-test verbs, delegation, retention), each under its own gate, so
+  a session is told about exactly what it was given. The unit-test
+  verbs are gated on the workspace's own command table rather than on
+  ws-git: `enable_apps` installs `ws-pytest` and `ws-vitest`, and they
+  are there to teach whether or not the versioning verb is. Starting
+  from a published app moved out of the app-building skill into a
+  `starting-from-published` skill of its own, seeded only when the
+  `sessions` tool is on.
+
 - **The studio names a session; the agent is not asked to.** The
   `recommend_title` tool is gone. After the first turn that was a real
   exchange, and every five messages after that, the studio runs a
