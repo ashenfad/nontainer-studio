@@ -17,7 +17,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   400 an unknown category earns — and `format.test.js`, over a new
   `format.js` that carries the value formatting and query building
   `app.jsx` used to do inline (copied to `app/format.js`, imported as
-  `./format.js`). Both are run through a session in the suite, so a
+  `./format.js`). That formatting is split by what a value IS:
+  `formatLabel` for an identifier, which renders a year as `2023` and
+  never as `2,023`, and `formatValue` for a measure, which groups the
+  integer part, keeps every fractional digit it was given, and rounds
+  only for a call site that passes `{ digits }` — bare
+  `toLocaleString()` caps at three fractional places, so it renders
+  `1.23456` as `1.235` and `0.00001` as `0`. Both are run through a session in the suite, so a
   template that stops passing stops the build rather than reaching an
   agent. The Python reference is spelled with a hyphen because a bare
   `ws-pytest` collects `test_*.py` anywhere outside `app/`, and a
