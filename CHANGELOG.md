@@ -8,7 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **The nontainer floor is 0.7.4.** `from host import call` is the
+- **The nontainer floor is 0.7.5.** With it come kvgit 0.3.9 and
+  monkeyfs 0.1.11, and on the dud rung a guest write into an attachment
+  or a read-only mount is refused and reported rather than raised.
+  `from host import call` is the
   spelling for reaching a handler from a test, and the template and the
   skill use it; `ws-pytest --help` states the rest of the contract, a
   directly imported handler gets `HttpError` the way a request gives
