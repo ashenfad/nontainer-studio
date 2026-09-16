@@ -92,7 +92,8 @@ Other knobs: `NONTAINER_STUDIO_PORT`, `NONTAINER_STUDIO_STORE`
 (defaults to `~/.nontainer-studio`), `NONTAINER_STUDIO_CSP` (override
 the published-app CSP; `none` disables), `NONTAINER_STUDIO_SKILLS`
 (directory of starter skills seeded into new sessions; defaults to the
-repo's `skills/`), `NONTAINER_STUDIO_APP_ASSETS` (directory of browser
+repo's `skills/`, and a skill about a feature a knob withholds is
+seeded only when that knob is on), `NONTAINER_STUDIO_APP_ASSETS` (directory of browser
 libraries served to agent-authored apps at `vendor/`; defaults to the
 repo's `nontainer_studio/appassets/` — see **Works offline** below),
 `NONTAINER_STUDIO_COMPRESS_TOKENS` (context-
