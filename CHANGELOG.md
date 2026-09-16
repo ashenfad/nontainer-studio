@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The nontainer floor is 0.7.4.** `from host import call` is the
+  spelling for reaching a handler from a test, and the template and the
+  skill use it; `ws-pytest --help` states the rest of the contract, a
+  directly imported handler gets `HttpError` the way a request gives
+  it, and `types`, `typing` and `dataclasses` import in the sandbox.
+
 - **nontainer resolves from PyPI.** The sibling-checkout override is
   gone from `pyproject.toml`, so a fresh `uv sync` installs the released
   library the floor names, the same one CI tests against. The browser

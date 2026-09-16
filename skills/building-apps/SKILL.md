@@ -332,7 +332,8 @@ section.
    the PATH, and it would reach the NETWORK instead of your app.
 3. `ws-pytest` when the failing piece is one Python function,
    `ws-vitest` when it is a frontend module — plain `assert` tests in
-   `tests/`, and a handler reached with `call('x', params={...})`. A
+   `tests/`, and a handler reached with `call('x', params={...})` from
+   `from host import call`. A
    failing assertion names the function; a blank page names nothing.
    **Tests** below has the rest.
 4. test_app for the page: errors carry file:line for runtime errors;
@@ -356,7 +357,8 @@ working pair for the reference app — copy them with the rest and adapt
 them as you cut the app down.
 
 `ws-pytest --help` is the authority on the Python side; the part worth
-knowing before you read it: `call('summary', params={...})` runs a
+knowing before you read it: `from host import call`, and
+`call('summary', params={...})` runs a
 handler the way a request does and returns a response with `.status`,
 `.json` (a property, not a method), `.text` and `.ok`, so a
 `raise HttpError(400, ...)` arrives as `.status == 400` rather than as
