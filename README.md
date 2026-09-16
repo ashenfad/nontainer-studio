@@ -429,6 +429,7 @@ drives a forked session to an answer — is `nontainer_studio/delegates.py`.
 
 ```sh
 uv sync --extra dev
+uv run playwright install chromium   # once, for the browser tests
 uv run pytest
 ```
 
@@ -440,7 +441,7 @@ No LLM key needed anywhere in the suite:
   the built frontend, agno's run loop, real tools — with only the model
   scripted (`NONTAINER_STUDIO_MODEL=dummy`; see `nontainer_studio/dummy.py`
   for the `!tool` / `!text` directive DSL). Needs the committed frontend
-  build and `playwright install chromium`; skips cleanly otherwise.
+  build and the Chromium install above; skips cleanly otherwise.
 
 The dummy model is also handy interactively: run the server with
 `NONTAINER_STUDIO_MODEL=dummy` and type directives to puppet the agent.

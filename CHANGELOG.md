@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **nontainer resolves from PyPI.** The sibling-checkout override is
+  gone from `pyproject.toml`, so a fresh `uv sync` installs the released
+  library the floor names, the same one CI tests against. The browser
+  tests need `uv run playwright install chromium` once; the README says
+  so.
+
 - **The app skill ships unit tests.** A **Tests** section says where
   tests live (`tests/`, never under `app/`), how to run them
   (`ws-pytest -v`, `ws-vitest --reporter=verbose`) and the one line of
@@ -210,6 +216,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   instead of waiting to be noticed on somebody's laptop.
 
 ### Fixed
+
+- **A publish in flight disables the publish buttons.** A version takes
+  a moment to land now that publishing also describes the app, and a
+  second click meanwhile was refused by the route and shown as an
+  error. The buttons wait instead.
 
 - **The README and the seeded skill named a verb that does not exist.**
   Both said the apps loop's `curl` builtin is missing under dud and the

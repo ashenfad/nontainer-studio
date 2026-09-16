@@ -9,163 +9,29 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    # 0.3.1: preload_grants and warm_view_workers — the two knobs
-    # `_python_config` now sets. Both ride on sandtrap 0.3's forkserver
-    # broker (workers no longer fork from THIS uvicorn process, which
-    # is what made a multi-threaded host a hang risk), and 0.3.1 is the
-    # floor that carries sandtrap >= 0.3.2, where the factory can
-    # finally reach preload_grants at all.
-    # 0.2.1 brought store-level session teardown (deleting a session's
-    # branch is nontainer's job, so kvgit is only transitive here);
-    # 0.2.0 the workspace root contract (files at /workspace across
-    # executors).
-    #
-    # 0.3.3 is the floor studio needs NEXT rather than now: it adds
-    # AppsConfig.static_assets — host files served with an app but
-    # absent from the workspace — which is how the vendored frontend
-    # stack (and an air-gapped deployment) gets built. It also carries
-    # two things studio gets for free: test_app page errors attributed
-    # to the agent's own file rather than the top of a vendored bundle,
-    # and a fork that keeps its workspace's mounts, which matters here
-    # because publish() IS a fork.
-    # 0.3.4 makes the frontend-library block replaceable
-    # (AppsConfig.frontend_notes). Studio vendors plotly and tailwind, so
-    # it must be able to say so INSTEAD of nontainer's default block —
-    # which names esm.sh and cdn.jsdelivr, and says "copy this exactly".
-    # Appending a correction under that would lose.
-    # 0.3.5 moved the served CSP onto AppsConfig, and test_app now SENDS
-    # it during verification. Studio overrides the policy
-    # (NONTAINER_STUDIO_CSP), so before this it verified under one policy
-    # and served under another.
-    # 0.3.6 fixes an assert that stopped retrying under that policy --
-    # which broke every app that settles after a fetch, i.e. the shape
-    # of the MUI reference app below.
-    # 0.4.0 materializes rich `ui` values in run_python itself rather
-    # than in the agno adapter, so an artifact is written on every rung
-    # and `ui["chart"]` reads back as an ArtifactPath. Studio reads the
-    # `[ui artifacts: ...]` note rather than the namespace, so the
-    # breaking half does not reach it -- but the VM rung needs the
-    # guest-side hook layered in (see _vm_config).
-    # 0.4.1 renders a LONE callout as a card row. Studio is where that
-    # surfaced: an agent wrote one caveat as a single tagged dict
-    # instead of a one-item list, and it rendered as raw JSON with no
-    # note explaining why. The floor moves so a studio install cannot
-    # reproduce it.
-    # 0.5.0 brings the agno session db (KvgitStoreDb) and fork_session --
-    # the conversation stored in the branch with the files.
-    #
-    # 0.5.1: the tags api the publish workflow is built on (naming a
-    # commit, opening the tagged state frozen, changed_since, the store
-    # scope, fork(at=)), and a sandtrap floor under which a frozen
-    # snapshot refuses a handler's file write loudly under process
-    # isolation.
-    #
-    # 0.6.0 is a HARD floor, not a preference: the api-v2 release
-    # renamed the whole surface studio calls with no compatibility
-    # layer, so 0.5.x and 0.6 cannot both be spoken. `Store` owns what
-    # outlives a session (open / delete / tags), `ws.files` / `ws.tags`
-    # / `ws.runtime` group the verbs that were flat, and versioning
-    # takes git's names — commit, log, checkout, uncommitted. The one
-    # behaviour change studio had to think about rather than rename:
-    # checkout APPENDS a commit whose content equals the target instead
-    # of moving the head backward, so an edit's rewind is now
-    # undo-able and nothing it stepped off is ever collected.
-    #
-    # 0.6.1 makes the frozen opens take execution settings:
-    # `store.tags.at(tag, python=...)` builds the snapshot with the
-    # embedder's live host objects instead of from the provider alone.
-    # That is the whole of how a published app reaches its `db`, so
-    # below this floor serving one is a NameError per request — and
-    # studio would have to reach a private method to avoid it.
-    #
-    # 0.6.2 takes two chores off studio. A store-scoped read anchors
-    # itself: `store.tags.at(tag)` mints the store's own `@store/anchor`
-    # when no session and no publication can lend a branch, so a
-    # published app is served with every session deleted without studio
-    # keeping a lender of its own — and `Store.delete` refuses a
-    # `@store/...` name, so no session id can take that anchor out.
-    # And `SessionRunner.run` is handed `forked_at`, the parent commit
-    # the child was forked from, so the provenance header a delegate
-    # opens with names the fork point instead of studio reading the
-    # child's log to guess which commit that was.
-    #
-    # 0.6.2 also carries `store.publish` and the publication registry,
-    # which an app version now IS. A tag named a commit of the whole
-    # session, so the capability URL froze the notes, the uploads and
-    # the conversation record behind it; a publication is a derived
-    # commit of `app/` and its filesystem rows, on a branch of its own,
-    # so what the URL hands out is the app. It also ends the anchoring
-    # question outright — a publication belongs to no session, so
-    # nothing has to lend it a branch — and `Publication.open(version,
-    # python=...)` is where the app's live `db` goes in.
-    #
-    # 0.6.3 sorts publish's errors by whose mistake they are: a reused
-    # version name, a `paths` that matches nothing, and a version
-    # `set_current`/`unpublish`/`open` cannot find are `ValueError`,
-    # so the publish route answers 400 without the studio re-raising
-    # by hand, while `WorkspaceError` stays the store's own state and
-    # keeps its 500. `publish(..., current=False)` records a version
-    # without taking the pointer, so a version whose manifest row
-    # fails goes back down with nothing to move back first, and a
-    # publish that died before its record is adopted on the retry
-    # rather than blocking the name. Its python tool description and
-    # apps notes also send shared handler code to `app/api/_<name>.py`
-    # — what the app-building skill has been contradicting them to say.
-    #
-    # 0.7.0 buys the delegation and terminal verbs studio now speaks
-    # for. `Sessions.sweep` is retention for a delegate's branch: an
-    # idle TTL the embedder schedules, which marks a swept job
-    # `expired`, drops its answer and refuses `result` with
-    # `BranchExpired` — the status the rail count and the delivery loop
-    # are written against here. `register_wsgit` returns whether the
-    # agent can type `ws-git`, so the primer asks the function that
-    # wired it instead of re-reading the runtime flags behind it.
-    # `enable_apps` is idempotent and hands back the runtime a fork
-    # already carries, which is what makes a delegate's workspace
-    # ordinary. `ws.files.remove` deletes one file through the lock and
-    # the view rule. Publications take the store's own tag namespace
-    # (`<name>/<version>`), which is what a `sessions ask(fork_from=)`
-    # can name. And `enable_apps` registers `ws-pytest` and `ws-vitest`
-    # beside `ws-curl`, so the tier below a request exists on every
-    # rung — which is what the README and the primer now say.
-    #
-    # 0.7.2 is what a published app's origin tag is spelled into. A
-    # store tag is a ref wherever ws-git reads one — `worktree add`,
-    # `checkout -- <paths>`, `diff`, `log`, `show` — so a tagged commit
-    # is mountable, takeable and diffable after the session that
-    # reached it is deleted. And `inherit="full"` is allowed with
-    # `fork_from`, so a delegate started at such a tag is the agent
-    # that was there, with the task as its next turn.
-    #
-    # 0.7.3 makes that last sentence true for this studio. A full
-    # inherit used to copy the conversation with its record still
-    # naming the session it came from, and the chat db binds a branch
-    # to one session id: the delegate had no memory and could not
-    # store its own turns. The fork now carries the conversation as
-    # the child's own.
+    # Floors on nontainer are hard: the studio speaks the current
+    # surface with no compatibility layer. What each release changed
+    # is in nontainer's changelog.
     "nontainer[agno,apps]>=0.7.3",
-    # session identity is a minted slug (sleepy-meerkat), never a
-    # typed name — the label the human reads is the title
+    # session ids are minted slugs; the label a human reads is the title
     "petname>=2.6",
     "uvicorn>=0.30",
-    # the agent's data stack — nontainer presets grant these
-    # opportunistically; the studio wants them out of the box
+    # the agent's data stack, granted out of the box
     "numpy",
     "pandas",
     "pyarrow",
     "matplotlib",
-    # NOTE: no kaleido — plotly's fig.write_image can't run inside the
-    # sandbox (kaleido validates the Chrome binary path and builds temp
-    # dirs through the VFS, then needs a real Chrome subprocess). The
-    # primer steers agents to matplotlib for static images.
+    # no kaleido: plotly's write_image needs a real Chrome subprocess,
+    # which the sandbox cannot run; the primer steers static images to
+    # matplotlib
     "plotly",
-    # provider SDKs: anthropic + openai cover the default detection
-    # order (openai also carries OpenRouter and OpenAI-compatible
-    # endpoints); google/ollama SDKs are opt-in installs
+    # provider SDKs for the default detection order (openai also covers
+    # OpenRouter and OpenAI-compatible endpoints); google and ollama are
+    # opt-in installs
     "anthropic",
     "openai",
-    # agno's compression watermark counts tokens; without these it
-    # falls back to a chars/4 estimate and warns on every new model id
+    # agno's compression watermark counts tokens with these; without
+    # them it estimates and warns on every new model id
     "tiktoken",
     "tokenizers",
 ]
@@ -176,24 +42,14 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "httpx2",  # starlette TestClient
+    # the browser tests; run `uv run playwright install chromium` once
+    "playwright",
 ]
-# Powers NONTAINER_STUDIO_EXECUTOR=dud / dud-vm (real-machine / microVM
-# execution via nontainer's DudExecutor). dud requires >=3.11; the
-# marker keeps the studio's 3.10 floor for everyone not opting in.
+# NONTAINER_STUDIO_EXECUTOR=dud / dud-vm. dud needs 3.11+; the marker
+# keeps the 3.10 floor for everyone not opting in. The floor is stated
+# here because the studio depends on dud directly, so nontainer's own
+# dud floor never reaches this extra.
 dud = [
-    # 0.3.0: an explicit `allow` per host object, which nontainer 0.3
-    # passes unconditionally (`dud.public_methods(obj)`). Older duds
-    # have neither the keyword nor the helper, so the pairing is a hard
-    # break rather than a degraded rung — and studio depends on dud
-    # DIRECTLY, so nontainer's own floor never reaches this extra.
-    # 0.2.1 brought the guest workspace mounted AT /workspace — the
-    # same absolute paths the local sandbox teaches.
-    # 0.4.0 moved rich-value flattening out of the guest and into a
-    # host-named `outputs_hook`, which nontainer 0.4 supplies. Raised
-    # here as well as there BECAUSE studio depends on dud directly:
-    # nontainer's own floor is on `nontainer[dud]`, which studio does
-    # not install, so nothing else would stop a resolver handing this
-    # extra a 0.3.x dud that the hook cannot reach.
     "dud>=0.4.0; python_version >= '3.11'",
 ]
 
@@ -202,20 +58,6 @@ nontainer-studio = "nontainer_studio.server:main"
 
 [project.urls]
 "Source" = "https://github.com/ashenfad/nontainer-studio"
-
-# nontainer IS on PyPI (that's what the dependency above resolves to,
-# and what CI tests against). The sibling link is a uv-only convenience
-# for CO-DEVELOPMENT: the two repos are developed as one, so a local
-# checkout sees core changes before they're released. pip ignores this
-# table.
-#
-# Standing pin, unlike the sandtrap/dud entries that lived here for the
-# /workspace root contract — those are retired: sandtrap and dud ship
-# what studio needs (0.3.2 and 0.3.0 respectively) and resolve from PyPI
-# like any other dependency. Both floors are stated through nontainer,
-# except dud's, which studio must carry itself (see the [dud] extra).
-[tool.uv.sources]
-nontainer = { path = "../nontainer", editable = true }
 
 [build-system]
 requires = ["hatchling"]
