@@ -127,6 +127,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The app skill has a definition of done.** An app is done when
+  `test_app` passed with data-bearing assertions, `ws-pytest` and
+  `ws-vitest` ran and passed with their count lines quoted in the
+  report, the copied reference tests are adapted or deleted, and the
+  project's `README.md` at the workspace root is filled in from a new
+  reference: what the app does, the data, the endpoints, how to run the
+  tests, and dated decisions with their reasons. The one escape is a
+  stated waiver naming the tier that had nothing to test and why. The
+  primer says the same in one sentence, so the rule is in front of the
+  agent every turn and not only in the skill.
+
 - **A published app says what it is.** Publishing generates a sentence
   or two about the session behind the app — what it knows, built or
   decided — and keeps it on the APP rather than on any one version, so

@@ -5768,3 +5768,36 @@ def test_no_ttl_no_timer(tmp_path, monkeypatch):
             assert child in registry._store.sessions()
     finally:
         registry.close()
+
+
+def test_the_skill_defines_done_and_ships_the_readme_reference():
+    """An app is done on evidence, not on a summary: the skill's Done
+    section names the three runs whose count lines the report quotes
+    and the README the reference set now carries, and the copy block
+    puts that README at the workspace root, beside app/ rather than in
+    the tree that publishes."""
+    root = Path(__file__).parent.parent / "skills" / "building-apps"
+    skill = (root / "SKILL.md").read_text()
+    done = skill[skill.index("## Done") : skill.index("## Verification")]
+    for word in ("test_app", "ws-pytest -v", "ws-vitest", "README.md", "waiver"):
+        assert word in done
+    assert "references/README.md       /workspace/README.md" in skill
+    readme = (root / "references" / "README.md").read_text()
+    for section in (
+        "## What it does",
+        "## Data",
+        "## Endpoints",
+        "## Tests",
+        "## Decisions",
+    ):
+        assert section in readme
+
+
+def test_the_primer_makes_the_unit_test_runs_part_of_done():
+    """The skill is read once; the primer is read every turn, so the
+    rule that an app is not done until both runners have run on it (or
+    the report says which tier had nothing to test) lives there too."""
+    primer = sessions_mod.UNIT_TEST_PRIMER
+    assert "not done until both have run" in primer
+    assert "count lines" in primer
+    assert "README.md" in primer
