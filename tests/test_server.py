@@ -4625,6 +4625,22 @@ def test_the_agent_is_told_what_it_actually_has(studio):
     assert "esm.sh" not in notes
 
 
+def test_the_handler_example_keeps_state_in_db(studio):
+    """The example handler is the code an agent copies first, so it
+    keeps state where a studio app keeps it: in `db`, which every
+    published version serves over, not in `cache`, which rewinds with
+    the workspace and is not published. The rules around the example
+    stay nontainer's."""
+    from nontainer.adapters.render import apps_notes
+
+    client, registry = studio
+    notes = apps_notes(registry.apps)
+    assert 'db.query("SELECT name FROM scores' in notes
+    assert "CREATE TABLE IF NOT EXISTS scores" in notes
+    assert 'cache.get("scores"' not in notes
+    assert "ONLY verb functions" in notes  # nontainer's rule text is intact
+
+
 def test_shipped_skills_reference_no_cdn():
     """The reference files are what the agent copies. One CDN url here
     is an app that renders for us and breaks air-gapped -- the exact

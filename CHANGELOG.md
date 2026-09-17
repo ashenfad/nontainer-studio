@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The nontainer floor is 0.7.6, and the handler example keeps state in
+  `db`.** The example handler in the notes is the code an agent copies
+  first, and nontainer's default kept state in `cache`, which in the
+  studio rewinds with the workspace and is not published, while the
+  run_python primer said to use `db`. nontainer 0.7.6 lets an embedder
+  replace the example, and the studio's shows the `db` API: a
+  `CREATE TABLE IF NOT EXISTS` that runs on every request, a `query` in
+  the GET, an `execute` in the POST. The same release states each rule
+  once across the tool descriptions and spells the app paths from the
+  workspace root.
+
 - **Apps are offline by rule, not only by habit.** The app policy's
   script hosts are empty: an app's scripts load from its own origin and
   nowhere else, under test_app and when published alike. Everything an
