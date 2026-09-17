@@ -246,7 +246,10 @@ as 'vendor/mui.min.js'. The building-apps skill lists the reference
 files to copy for a working app (filters -> fetch -> stats, chart,
 table, dialog) and how to cut them down; only the file named by
 data-app is compiled, so keep your components in that one .jsx and the
-plain-JavaScript helpers in a .js module beside it.
+plain-JavaScript helpers in a .js module beside it. What vendor/ holds
+— every file with its version, the import names, the icons, the theme
+tokens — is listed in that skill's references/vendor.md, since the
+directory itself cannot be listed.
 Also here: `import { DataGrid } from '@mui/x-data-grid'` (sorting,
 filtering and pagination without writing them), and a CURATED set of
 Material icons — `import { Delete, Search } from '@mui/icons-material'`.

@@ -150,6 +150,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The skill lists what `vendor/` holds.** An agent cannot `ls` or
+  `grep` the vendored libraries, since they are served with the app but
+  are not in its filesystem, and an agent asked what it missed named
+  exactly that: which libraries exist, under what import names, at what
+  versions. `references/vendor.md` is the listing it would have made —
+  every file with its size and version, the bare import names and the
+  file each resolves to, the icon names, the theme's custom properties
+  and what `house/theme` exports — generated from the served files by
+  `scripts/vendor_inventory.py` and checked against them by a test, so
+  updating a library without updating the listing fails the build. The
+  skill and the frontend notes point at it.
+
 - **`testdb`, and a `db`-backed handler in the skill.** A test of a
   handler that keeps state in `db` has nowhere safe to put rows: the
   live store is what every published version serves over, and the
