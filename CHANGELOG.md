@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Apps are offline by rule, not only by habit.** The app policy's
+  script hosts are empty: an app's scripts load from its own origin and
+  nowhere else, under test_app and when published alike. Everything an
+  agent is told to use is vendored, so the host list the agent used to
+  read beside "do not load any of it from a CDN" is gone, and a stray
+  CDN tag fails where the agent can see it instead of working in the
+  preview and failing on an air-gapped machine.
+- **The primer is a set of labeled paragraphs.** One paragraph per
+  concern (preview, skill first, verify, uploads, reply artifacts, turns
+  and publishing, tests, and the gated versioning and delegation
+  pieces) instead of one unbroken block, with the same content.
+
 - **The nontainer floor is 0.7.5.** With it come kvgit 0.3.9 and
   monkeyfs 0.1.11, and on the dud rung a guest write into an attachment
   or a read-only mount is refused and reported rather than raised.

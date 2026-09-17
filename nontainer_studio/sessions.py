@@ -151,17 +151,19 @@ def apps_config() -> AppsConfig:
     ``frontend_notes`` says they exist — the pair is one decision, since
     a library the agent isn't told about may as well not be here.
 
-    ``script_hosts`` is deliberately left at nontainer's default rather
-    than emptied. Studio is not itself air-gapped, and the public CDNs
-    remain useful where they resolve; what changed is that nothing the
-    agent is *told to use* requires them. An air-gapped deployment can
-    set ``script_hosts=()`` on top of this, and the notes then say
-    scripts may load only from the app itself.
+    ``script_hosts`` is empty: an app's scripts load from the app's own
+    origin and nowhere else, under test_app and when published alike.
+    Everything an agent is told to use is vendored, so a CDN tag would
+    only ever be a stray one, and a stray one that worked in the preview
+    and failed on an air-gapped machine is the failure this rule exists
+    to make impossible; the notes tell the agent scripts may load only
+    from the app itself.
     """
     return AppsConfig(
         static_assets={"vendor": app_assets_dir()},
         frontend_notes=FRONTEND_NOTES,
         csp=_csp(),
+        script_hosts=(),
     )
 
 
@@ -619,44 +621,47 @@ def _compact(events: list[dict]) -> list[dict]:
 
 
 STUDIO_PRIMER = (
-    "You work inside nontainer-studio; the human sees your workspace "
-    "live. Anything under /workspace/app serves in a PREVIEW PANE beside the "
-    "chat as you build it — they watch it take shape. Before you build "
-    "an app there, or rework one substantially, READ the app-building "
-    "skill listed under /workspace/skills: it carries the handler "
-    "contract, reference files built to be copied, and the failure "
-    "modes that otherwise cost you a dozen tool calls to rediscover. "
-    "After changing "
-    "the app, always verify with test_app before saying it works, and "
-    "assert on DATA-bearing elements (a chart rendered, a count "
-    "non-zero), not just static text — a page can look loaded while "
-    "every fetch failed. When endpoints misbehave, tail "
+    "You work inside nontainer-studio; the human sees your workspace live.\n"
+    "\n"
+    "PREVIEW. Anything under /workspace/app serves in a PREVIEW PANE beside "
+    "the chat as you build it — they watch it take shape.\n"
+    "\n"
+    "SKILL FIRST. Before you build an app there, or rework one "
+    "substantially, READ the app-building skill listed under "
+    "/workspace/skills: it carries the handler contract, reference files "
+    "built to be copied, and the failure modes that otherwise cost you a "
+    "dozen tool calls to rediscover.\n"
+    "\n"
+    "VERIFY. After changing the app, always verify with test_app before "
+    "saying it works, and assert on DATA-bearing elements (a chart "
+    "rendered, a count non-zero), not just static text — a page can look "
+    "loaded while every fetch failed. When endpoints misbehave, tail "
     "/workspace/app/logs/api.log: handler errors, prints, and dispatch "
-    "notes "
-    "land there. Files the human uploads arrive under "
-    "/workspace/uploads/. In "
-    "run_python, set `ui = {...}` (figure/DataFrame/image values) to "
-    "render results inline in your reply. For chat reports, match the "
-    "artifact to the story: when it's a few headline numbers, LEAD "
-    "with a card row (stat dicts, sublabel for the trend or context) "
-    "and use a callout for the one caveat or insight that shouldn't "
-    "be buried in prose; when the SHAPE of the data is the story, "
-    "prefer raw plotly figures in `ui` — they render interactively "
-    "right in the reply. Need a static image file instead? Use "
-    "matplotlib savefig; plotly's write_image cannot run here. Every "
-    "turn is a commit the human can rewind by editing an earlier "
-    "prompt — prefer small complete "
-    "steps over big-bang changes. They may also PUBLISH the app: a "
-    "frozen version of `app/` — that tree and nothing else in the "
-    "workspace — behind a share URL that keeps serving while you keep "
-    "working, over the SAME live `db` this session writes to. "
-    "Publishing again adds "
-    "a version and the URL moves to it, so build toward states worth "
-    "publishing."
+    "notes land there.\n"
+    "\n"
+    "UPLOADS. Files the human uploads arrive under /workspace/uploads/.\n"
+    "\n"
+    "REPLY ARTIFACTS. In run_python, set `ui = {...}` (figure/DataFrame/"
+    "image values) to render results inline in your reply. Match the "
+    "artifact to the story: when it's a few headline numbers, LEAD with a "
+    "card row (stat dicts, sublabel for the trend or context) and use a "
+    "callout for the one caveat or insight that shouldn't be buried in "
+    "prose; when the SHAPE of the data is the story, prefer raw plotly "
+    "figures in `ui` — they render interactively right in the reply. "
+    "Need a static image file instead? Use matplotlib savefig; plotly's "
+    "write_image cannot run here.\n"
+    "\n"
+    "TURNS AND PUBLISHING. Every turn is a commit the human can rewind by "
+    "editing an earlier prompt — prefer small complete steps over "
+    "big-bang changes. They may also PUBLISH the app: a frozen version of "
+    "`app/` — that tree and nothing else in the workspace — behind a "
+    "share URL that keeps serving while you keep working, over the SAME "
+    "live `db` this session writes to. Publishing again adds a version "
+    "and the URL moves to it, so build toward states worth publishing."
 )
 
 VERSIONING_PRIMER = (
-    " Your terminal has `ws-git`, this session's own git. `ws-git status` "
+    "\n\nVERSIONING. Your terminal has `ws-git`, this session's own git. `ws-git status` "
     "and `ws-git commit -m '...'` mark a NAMED point in your history — "
     "distinct from the commit every mutating tool call already makes, "
     "which is what the human's rewind moves between — and `ws-git help` "
@@ -664,7 +669,7 @@ VERSIONING_PRIMER = (
 )
 
 UNIT_TEST_PRIMER = (
-    " Below a request there are two more verbs: "
+    "\n\nTESTS. Below a request there are two more verbs: "
     "`ws-pytest` asks a question of one Python function, in the same "
     "sandbox your code runs in, and `ws-vitest` asks one of a frontend "
     "module, in a browser page that reaches nothing but your own files. "
@@ -678,7 +683,7 @@ UNIT_TEST_PRIMER = (
 )
 
 DELEGATION_PRIMER = (
-    " The `sessions` tool hands a task to a fork of this session: the "
+    "\n\nDELEGATION. The `sessions` tool hands a task to a fork of this session: the "
     "delegate works on a branch of its own, nothing it writes touches "
     "your files, and when it answers you read its branch with `ws-git "
     "diff <name>`, take all of it with `ws-git merge <name>`, or take "
@@ -700,7 +705,7 @@ DELEGATION_PRIMER = (
 )
 
 NO_VERSIONING_PRIMER = (
-    " The `sessions` tool hands a task to a fork of this session, and its "
+    "\n\nDELEGATION. The `sessions` tool hands a task to a fork of this session, and its "
     "ANSWER is all that comes back here: the delegate's files stay on its "
     "own branch, and this terminal has no verb that brings them over. Ask "
     "for findings, not for edits."
