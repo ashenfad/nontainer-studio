@@ -4567,7 +4567,8 @@ def test_the_default_studio_still_serves_the_library_csp(studio):
 
     csp = client.get(pub["url"]).headers["content-security-policy"]
     assert "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'" in csp
-    assert "https://esm.sh" in csp
+    # scripts load from the app's own origin and nowhere else
+    assert "https://" not in csp.split("script-src", 1)[1].split(";", 1)[0]
 
 
 # -- vendored browser libraries (the air-gap floor) ---------------------------
@@ -4619,6 +4620,9 @@ def test_the_agent_is_told_what_it_actually_has(studio):
     assert "vendor/tailwind.js" in notes
     assert "esm.sh/preact" not in notes
     assert "cdn.jsdelivr.net/npm/plotly" not in notes
+    # and the policy sentence agrees with the vendoring: no host list
+    assert "ONLY from this app itself" in notes
+    assert "esm.sh" not in notes
 
 
 def test_shipped_skills_reference_no_cdn():

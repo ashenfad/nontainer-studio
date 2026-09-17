@@ -126,7 +126,10 @@ The libraries an agent's app uses — **MUI** (with React and JSX),
 `nontainer_studio/appassets/` and served from the app's own origin at
 `vendor/`, so an app renders with no internet at all. That matters for a
 locally-hosted model on an air-gapped machine, where a CDN
-`<script src>` is a blank page.
+`<script src>` is a blank page. The served policy says the same: an
+app's scripts may load from its own origin and nowhere else, under
+test_app and when published, so a stray CDN tag fails where the agent
+can see it rather than working in the preview and failing offline.
 
 JSX is compiled in the browser (sucrase, 201 KB) rather than by a build
 step the agent would have to run — it writes `app.jsx`, and stack traces
