@@ -94,12 +94,32 @@ function App() {
   const [selected, setSelected] = useState(null);
 
   useEffect(() => {
-    // Keep the URL honest without touching what else is in it.
+    // Keep the URL honest without touching what else is in it. Inside
+    // the studio's preview the page has an opaque origin (the frame
+    // grants no allow-same-origin) and the History API refuses the
+    // write with a SecurityError; there the URL is the studio's, so
+    // nothing is lost by skipping it. Opened in its own tab, or from
+    // its published link, the write lands.
     const next = searchWithFilters(window.location.search, filters);
     if (next !== window.location.search) {
-      window.history.replaceState(null, "", window.location.pathname + next);
+      try {
+        window.history.replaceState(null, "", window.location.pathname + next);
+      } catch {
+        // opaque origin: the address bar is not this page's to write
+      }
     }
   }, [filters]);
+
+  useEffect(() => {
+    // Back and forward change the URL without telling React; read the
+    // filters back so the page shows the state the address names. For
+    // replaceState'd filters this fires rarely, but a view pushed with
+    // pushState (a tab, an opened row) is undone by the back button
+    // only because of this listener.
+    const onPop = () => setFilters(filtersFromSearch(window.location.search, FILTER_KEYS));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   useEffect(() => {
     // RELATIVE url, always. The app is served under a path prefix, so a

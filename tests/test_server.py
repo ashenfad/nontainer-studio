@@ -4794,6 +4794,15 @@ def test_the_reference_app_actually_runs(studio):
             # The filter is in the URL now, without a history entry, so
             # a reload or a shared link opens at this state.
             {"assert": "new URLSearchParams(location.search).get('category') === 'a'"},
+            # Back and forward restore the state the address names: a
+            # popstate with the filter gone puts every row back.
+            {
+                "eval": "history.pushState(null, '', location.pathname);"
+                "dispatchEvent(new PopStateEvent('popstate')); 'popped'"
+            },
+            {"assert": "document.querySelectorAll('#rows tbody tr').length === 2"},
+            {"select": ["#f-category", "a"]},
+            {"assert": "document.querySelectorAll('#rows tbody tr').length === 1"},
             # ...and the dialog still binds the row it was opened from.
             {"click": "#open-1"},
             {"assert": "document.querySelector('.MuiDialog-root') !== null"},

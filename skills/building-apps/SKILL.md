@@ -281,8 +281,15 @@ wrong: merge into the current params rather than rebuilding them, since
 the page is loaded with params that are not yours (the studio's own
 `v`), and use `replaceState` for filters but `pushState` for a view
 change, so a tweak is not a history entry while a tab switch is one
-the back button undoes. `format.js` has the two pure halves,
-`filtersFromSearch` and `searchWithFilters`, and `app.jsx` wires them.
+the back button undoes — which it does only if a `popstate` listener
+reads the state back from the URL, since the browser moves the address
+and nothing else. Two more facts: inside the studio's preview the page
+has an opaque origin and the History API refuses the write, so guard it
+with try/catch and let it be a no-op there (the URL is the studio's;
+the write lands when the app is opened in its own tab or from its
+published link). `format.js` has the two pure halves,
+`filtersFromSearch` and `searchWithFilters`, and `app.jsx` wires them,
+listener included.
 
 Let JSX render your data — `{row.category}` — rather than assembling
 markup as a string. React escapes values, so a category called
