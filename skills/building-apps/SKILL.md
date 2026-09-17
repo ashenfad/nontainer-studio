@@ -26,6 +26,17 @@ JSON out, `app.{html,jsx}` is the frontend that calls it — filters, stat
 cards, a plotly chart, a table, and a details dialog, in MUI — and
 `format.js` is the plain-JavaScript half `app.jsx` imports.
 
+`vendor/` is served with your app but is not in your filesystem, so you
+cannot `ls` or `grep` it. `references/vendor.md` is the listing you would
+have made — every file with its version, the bare import names and what
+each resolves to, the icon names, the theme's tokens — generated from
+the served files and checked against them, so `cat` it when the question
+is "what exists here?":
+
+```sh
+cat /workspace/skills/building-apps/references/vendor.md
+```
+
 Copy rather than retype; it is four calls instead of a few hundred
 lines:
 
@@ -123,10 +134,11 @@ per-file path does NOT resolve here, and it fails with *"Failed to
 resolve module specifier"*, whose advice to use a relative path is
 wrong and will send you rewriting a correct import.
 
-These 66 names exist. Nothing else does — the full package is 4.3 MB
-for ~2,100 icons, so it is curated down to what apps actually use. A
-name outside this list fails with *"does not provide an export named
-…"*, so check here rather than guessing:
+These 66 names exist (`references/vendor.md` lists them too, beside
+everything else `vendor/` holds). Nothing else does — the full package
+is 4.3 MB for ~2,100 icons, so it is curated down to what apps actually
+use. A name outside this list fails with *"does not provide an export
+named …"*, so check here rather than guessing:
 
 ```
 Add ArrowBack ArrowDownward ArrowForward ArrowUpward BarChart

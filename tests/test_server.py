@@ -5839,3 +5839,39 @@ def test_the_primer_makes_the_unit_test_runs_part_of_done():
     assert "not done until both have run on it and passed" in primer
     assert "count lines" in primer
     assert "README.md" in primer
+
+
+def _vendor_inventory():
+    import importlib.util
+
+    path = Path(__file__).parent.parent / "scripts" / "vendor_inventory.py"
+    spec = importlib.util.spec_from_file_location("vendor_inventory", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_vendor_inventory_matches_the_served_assets():
+    """An agent cannot list vendor/, so the skill carries the listing it
+    would have made. A listing that drifts from the assets is worse than
+    none — it would send the agent at a version or a name that is not
+    there, with the skill's own authority behind it — so the committed
+    file is what the generator produces from the assets today."""
+    inventory = _vendor_inventory()
+    committed = inventory.OUT.read_text()
+    assert committed == inventory.render(), (
+        "references/vendor.md is stale: run scripts/vendor_inventory.py"
+    )
+    # the listing names what the loader resolves and what the icon
+    # bundle exports, so the two other pins agree with it
+    for name in ("`@mui/material`", "`house/theme`", "`react-dom/client`"):
+        assert name in committed
+    assert "## Icons (66 names)" in committed
+    assert "--app-primary" in committed
+
+
+def test_the_skill_points_at_the_vendor_inventory():
+    root = Path(__file__).parent.parent
+    skill = (root / "skills" / "building-apps" / "SKILL.md").read_text()
+    assert "references/vendor.md" in skill
+    assert "references/vendor.md" in sessions_mod.FRONTEND_NOTES
