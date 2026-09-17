@@ -4639,6 +4639,10 @@ def test_the_handler_example_keeps_state_in_db(studio):
     assert "CREATE TABLE IF NOT EXISTS scores" in notes
     assert 'cache.get("scores"' not in notes
     assert "ONLY verb functions" in notes  # nontainer's rule text is intact
+    # the one input it takes is validated and clamped, since this is the
+    # code that gets copied
+    assert 'HttpError(400, "limit must be an integer")' in notes
+    assert "max(1, min(limit, 100))" in notes
 
 
 def test_shipped_skills_reference_no_cdn():
