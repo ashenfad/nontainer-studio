@@ -7,7 +7,13 @@
 // The import is relative from tests/ to app/ — they are siblings under
 // one root, so '../app/format.js'. describe, it and expect are globals
 // here; there is nothing to import for them.
-import { filterQuery, formatLabel, formatValue } from "../app/format.js";
+import {
+  filterQuery,
+  filtersFromSearch,
+  formatLabel,
+  formatValue,
+  searchWithFilters,
+} from "../app/format.js";
 
 describe("formatLabel", () => {
   // The bug this closes: a year through a number formatter renders as
@@ -83,5 +89,36 @@ describe("filterQuery", () => {
 
   it("escapes what the user picked", () => {
     expect(filterQuery({ region: "north west" })).toBe("region=north+west");
+  });
+});
+
+describe("filters in the URL", () => {
+  it("reads the filters the page was opened with", () => {
+    expect(filtersFromSearch("?category=a&region=east", ["category", "region"])).toEqual({
+      category: "a",
+      region: "east",
+    });
+  });
+
+  it("reads a missing filter as unset", () => {
+    expect(filtersFromSearch("?v=3", ["category", "region"])).toEqual({
+      category: "",
+      region: "",
+    });
+  });
+
+  it("writes the filters back over the current query", () => {
+    expect(searchWithFilters("?category=a", { category: "b", region: "east" })).toBe(
+      "?category=b&region=east",
+    );
+  });
+
+  it("keeps a param that is not a filter", () => {
+    // the studio loads the page with its own cache-busting `v`
+    expect(searchWithFilters("?v=7", { category: "a", region: "" })).toBe("?v=7&category=a");
+  });
+
+  it("removes a cleared filter and returns nothing when nothing remains", () => {
+    expect(searchWithFilters("?category=a", { category: "", region: "" })).toBe("");
   });
 });

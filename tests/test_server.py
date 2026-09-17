@@ -4791,6 +4791,9 @@ def test_the_reference_app_actually_runs(studio):
             {"select": ["#f-category", "a"]},
             {"assert": "document.querySelectorAll('#rows tbody tr').length === 1"},
             {"assert": "document.querySelector('#total').textContent === '1'"},
+            # The filter is in the URL now, without a history entry, so
+            # a reload or a shared link opens at this state.
+            {"assert": "new URLSearchParams(location.search).get('category') === 'a'"},
             # ...and the dialog still binds the row it was opened from.
             {"click": "#open-1"},
             {"assert": "document.querySelector('.MuiDialog-root') !== null"},
@@ -5305,7 +5308,7 @@ def test_the_reference_tests_pass_against_the_reference_app(scripted):
     vitest_out = _terminal(client, "s1", "ws-vitest --reporter=verbose")
     if "unavailable" in vitest_out or "playwright install" in vitest_out:
         pytest.skip(vitest_out)
-    assert "14 passed" in vitest_out, vitest_out
+    assert "19 passed" in vitest_out, vitest_out
     assert "tests/format.test.js" in vitest_out, vitest_out
 
 
