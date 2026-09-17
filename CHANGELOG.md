@@ -150,6 +150,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`testdb`, and a `db`-backed handler in the skill.** A test of a
+  handler that keeps state in `db` has nowhere safe to put rows: the
+  live store is what every published version serves over, and the
+  sandbox refuses `sqlite3` because a connection's own SQL reaches the
+  host filesystem beneath the workspace. `testdb` is a second store
+  with the same three methods plus `reset()`, empty and in memory, held
+  host-side and handed to `call(..., db=testdb)`. The skill gains a
+  second reference pair, `api-scores.py` (a table created on every
+  request, a validated and clamped param, a POST that inserts) and
+  `test-scores.py` against `testdb`, copied for apps whose users create
+  or change things, and the verification test runs them with the rest.
+
 - **The reference app keeps its filters in the URL.** State that
   changes what the page shows is read from the query string on load and
   written back on change, merged into the params the page was loaded

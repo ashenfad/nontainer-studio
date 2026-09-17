@@ -46,6 +46,17 @@ cp /workspace/skills/building-apps/references/format.test.js  /workspace/tests/f
 cp /workspace/skills/building-apps/references/README.md       /workspace/README.md
 ```
 
+When the app's users CREATE or CHANGE things — a list they add to, a
+form that saves — there is a second handler pair to copy: state that
+users mutate lives in `db`, not in a file, and `api-scores.py` shows the
+shape (a table created on every request, a validated param, a POST that
+inserts) with `test-scores.py` testing it against `testdb`:
+
+```sh
+cp /workspace/skills/building-apps/references/api-scores.py  /workspace/app/api/scores.py
+cp /workspace/skills/building-apps/references/test-scores.py /workspace/tests/test_scores.py
+```
+
 Then **cut it down to your data** — rename the columns, delete the
 pieces you don't need. Starting from the set and cutting is consistently
 faster than building up from nothing, and it is where the non-obvious
@@ -374,10 +385,20 @@ it. Python is `tests/test_<name>.py`, JavaScript is
 --reporter=verbose`.
 
 `references/test-summary.py` and `references/format.test.js` are the
-working pair for the reference app. Copy them with the rest, then make
+working pair for the reference app, and `references/test-scores.py` is
+the test for the `db`-backed handler. Copy them with the rest, then make
 them pass against YOUR app before you reach for `test_app`, and delete
 the ones that test something you removed. A copied test that was never
 run is worse than none: it sits in `tests/` looking like coverage.
+
+**A handler that keeps state in `db` is tested against `testdb`.** It is
+a second store with the same three methods, empty and in memory, from
+`from host import testdb`: call `testdb.reset()` first, then hand it to
+`call('scores', ..., db=testdb)`. The live `db` is what every published
+version serves over, so a test must never seed rows into it, and the
+sandbox refuses `sqlite3` itself (a connection's own SQL reaches the
+host filesystem beneath the workspace), so an in-memory database of
+your own is not a way out. `testdb` is the store that needs neither.
 
 `ws-pytest --help` is the authority on the Python side; the part worth
 knowing before you read it: `from host import call`, and

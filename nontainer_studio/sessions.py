@@ -892,7 +892,11 @@ DB_PRIMER = (
     "`db.execute(sql, params=())` for writes (INSERT / UPDATE / "
     "`CREATE TABLE IF NOT EXISTS`), `db.executemany(sql, rows)` for "
     "bulk inserts (one commit), `db.query(sql, params=()) -> list "
-    "of row tuples` for reads. Thread-safe; just call it."
+    "of row tuples` for reads. Thread-safe; just call it. `testdb` is "
+    "a second store with the same API, empty and in memory, for tests: "
+    "`testdb.reset()` first, then `call('x', db=testdb)`, so a test "
+    "never seeds rows into the live store and never needs `sqlite3`, "
+    "which the sandbox refuses."
 )
 
 
@@ -902,7 +906,8 @@ class Db:
     the store owns its own locking."""
 
     def __init__(self, path: str | Path) -> None:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        if str(path) != ":memory:":
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._path = str(path)
         self._c = sqlite3.connect(self._path, check_same_thread=False)
         self._lock = threading.Lock()
@@ -925,6 +930,24 @@ class Db:
         """A read (SELECT); returns a list of row tuples."""
         with self._lock:
             return self._c.execute(sql, params).fetchall()
+
+    def reset(self) -> None:
+        """Drop every table, so the store reads as new. What a test
+        calls first on ``testdb``, the in-memory store handed to
+        ``call(..., db=testdb)``, so no test seeds rows into the live
+        store every published version serves over and none inherits
+        the last test's rows."""
+        with self._lock:
+            names = [
+                row[0]
+                for row in self._c.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            ]
+            for name in names:
+                self._c.execute(f'DROP TABLE IF EXISTS "{name}"')
+            self._c.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -2144,7 +2167,15 @@ class Registry:
             isolation = "none"
         return PythonConfig(
             modules=modules,
-            host_objects={"db": db},
+            # A second store beside the live one, empty and in memory,
+            # for tests: what `call(..., db=testdb)` takes, so a test
+            # never seeds rows into the store every published version
+            # serves over and never reaches for sqlite3 itself, which
+            # the sandbox refuses because a connection's own SQL
+            # (ATTACH, .backup) reaches the host filesystem beneath the
+            # workspace. It lives on this side; the sandbox sees the
+            # same three methods plus reset().
+            host_objects={"db": db, "testdb": Db(":memory:")},
             isolation=isolation,
             # Import the granted stack ONCE into sandtrap's forkserver
             # broker; every worker then inherits it copy-on-write. With
