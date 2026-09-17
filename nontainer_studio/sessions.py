@@ -208,7 +208,11 @@ Handlers export verb functions; example __WS__/app/api/scores.py:
     db.execute("CREATE TABLE IF NOT EXISTS scores (id INTEGER PRIMARY KEY, name TEXT)")
 
     def get(req):
-        limit = int(req.params.get("limit", 10))
+        try:                           # a param is text from anyone:
+            limit = int(req.params.get("limit", 10))
+        except ValueError:             # malformed is the caller's error
+            raise HttpError(400, "limit must be an integer")
+        limit = max(1, min(limit, 100))  # -1 means unlimited to SQLite
         rows = db.query("SELECT name FROM scores ORDER BY id DESC LIMIT ?", (limit,))
         return {"scores": [name for (name,) in rows]}
 
