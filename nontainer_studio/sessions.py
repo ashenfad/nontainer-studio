@@ -162,6 +162,7 @@ def apps_config() -> AppsConfig:
     return AppsConfig(
         static_assets={"vendor": app_assets_dir()},
         frontend_notes=FRONTEND_NOTES,
+        handler_example=HANDLER_EXAMPLE,
         csp=_csp(),
         script_hosts=(),
     )
@@ -198,6 +199,29 @@ def app_assets_dir() -> Path:
     override = os.getenv("NONTAINER_STUDIO_APP_ASSETS")
     return Path(override) if override else Path(__file__).parent / "appassets"
 
+
+HANDLER_EXAMPLE = """\
+Handlers export verb functions; example __WS__/app/api/scores.py:
+
+    # Runs on every request, so the table exists before either verb
+    # reads it; IF NOT EXISTS is what makes that cheap and repeatable.
+    db.execute("CREATE TABLE IF NOT EXISTS scores (id INTEGER PRIMARY KEY, name TEXT)")
+
+    def get(req):
+        limit = int(req.params.get("limit", 10))
+        rows = db.query("SELECT name FROM scores ORDER BY id DESC LIMIT ?", (limit,))
+        return {"scores": [name for (name,) in rows]}
+
+    def post(req):
+        name = req.require("name")     # 400 if missing from JSON body
+        db.execute("INSERT INTO scores (name) VALUES (?)", (name,))
+        return {"ok": True}
+"""
+"""The handler an agent copies, keeping state where a studio app keeps
+it: in ``db``, the live store every published version serves over,
+rather than in ``cache``, which rewinds with the workspace and is not
+published. The example is the most emphatic instruction in the notes,
+so it has to agree with the rule the run_python primer states."""
 
 FRONTEND_NOTES = """\
 Components: MUI (Material UI) with React and JSX. Put your JSX in
