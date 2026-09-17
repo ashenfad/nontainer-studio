@@ -214,10 +214,11 @@ imports, so write ordinary React:
     import { Button, Dialog, Table } from '@mui/material';
 
 Import BARE names, exactly as in any React project — do NOT rewrite them
-as 'vendor/mui.min.js'. Copy references/app.{html,jsx} + api-handler.py
-for a working app (filters -> fetch -> stats, chart, table, dialog) and
-cut it down; only the file named by data-app is compiled, so keep your
-components in that one .jsx.
+as 'vendor/mui.min.js'. The building-apps skill lists the reference
+files to copy for a working app (filters -> fetch -> stats, chart,
+table, dialog) and how to cut them down; only the file named by
+data-app is compiled, so keep your components in that one .jsx and the
+plain-JavaScript helpers in a .js module beside it.
 Also here: `import { DataGrid } from '@mui/x-data-grid'` (sorting,
 filtering and pagination without writing them), and a CURATED set of
 Material icons — `import { Delete, Search } from '@mui/icons-material'`.
