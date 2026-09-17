@@ -2017,6 +2017,8 @@ class Registry:
                     # that is one no agent is told about.
                     if not ws.files.fs.isdir(f"{ws.root}/skills"):
                         self._seed_skills(ws, wsgit=self._wsgit(ws))
+                    else:
+                        self._top_up_skills(ws, wsgit=self._wsgit(ws))
                     session = self._assemble(name, ws, db, model)
                     loaded = self._load_events(session.log_path)
                     session.events.extend(loaded)
@@ -2089,6 +2091,66 @@ class Registry:
             Registry._resolve_skill_conditionals(ws)
         except Exception:
             pass  # a skill that won't resolve is still better than none
+
+    @staticmethod
+    def _skill_seeds(*, wsgit: bool) -> list[Path]:
+        """The skill directories this session would be seeded from: each
+        child of NONTAINER_STUDIO_SKILLS holding a SKILL.md, minus the
+        gated ones this session cannot follow."""
+        root = Path(
+            os.getenv("NONTAINER_STUDIO_SKILLS")
+            or Path(__file__).resolve().parent.parent / "skills"
+        ).expanduser()
+        if not root.is_dir():
+            return []
+        seeds = []
+        for child in sorted(root.iterdir()):
+            if not (child.is_dir() and (child / "SKILL.md").is_file()):
+                continue
+            gate = _GATED_SKILLS.get(child.name)
+            if gate is not None and not gate(wsgit):
+                continue
+            seeds.append(child)
+        return seeds
+
+    @staticmethod
+    def _top_up_skills(ws: Workspace, *, wsgit: bool) -> None:
+        """Add to an existing session's skill tree the seed files it
+        lacks, and touch nothing it has.
+
+        A skill tree is seeded once and then is the session's own
+        versioned state, so a reseed would clobber what an agent edited.
+        But the notes and the skill text a session receives are the
+        current ones, and they name files the current seed carries: a
+        session created before a reference existed would be told to
+        cat a file that is not there. The additive pass closes that
+        gap: a seed file with no counterpart in the tree is written, an
+        existing file is left as it is, whoever wrote it. A seed file
+        the agent deleted comes back on the next open, which the studio
+        cannot tell apart from staleness. Best-effort, like seeding.
+        """
+        added = False
+        for seed in Registry._skill_seeds(wsgit=wsgit):
+            for path in sorted(p for p in seed.rglob("*") if p.is_file()):
+                dest = (
+                    f"{ws.root}/skills/{seed.name}/{path.relative_to(seed).as_posix()}"
+                )
+                try:
+                    if ws.files.fs.exists(dest):
+                        continue
+                    ws.files.fs.makedirs(dest.rsplit("/", 1)[0], exist_ok=True)
+                    ws.files.fs.write(dest, path.read_bytes())
+                    added = True
+                except Exception:
+                    continue
+        if not added:
+            return
+        try:
+            Registry._resolve_skill_conditionals(ws)
+        except Exception:
+            pass
+        if ws.caps.versioned and ws.uncommitted:
+            ws.commit(info={"tool": "skill", "skill": "top-up"})
 
     # Conditional blocks in seeded SKILL.md files: a `commands` block is
     # kept where the executor runs injected terminal builtins, a

@@ -5875,3 +5875,29 @@ def test_the_skill_points_at_the_vendor_inventory():
     skill = (root / "skills" / "building-apps" / "SKILL.md").read_text()
     assert "references/vendor.md" in skill
     assert "references/vendor.md" in sessions_mod.FRONTEND_NOTES
+
+
+def test_an_existing_session_is_topped_up_with_the_seed_files_it_lacks(studio):
+    """The notes a session receives are the current ones and name files
+    the current seed carries, so a session created before a reference
+    existed must not be told to cat a file that is not there. The
+    additive pass writes what is missing and touches nothing the
+    session has, whoever wrote it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    fs = session.ws.files.fs
+    fs.remove("/workspace/skills/building-apps/references/vendor.md")
+    fs.write("/workspace/skills/building-apps/SKILL.md", b"agent-edited")
+    fs.write("/workspace/skills/building-apps/references/mine.md", b"agent-added")
+    session.ws.commit()
+    registry.close()
+    registry._sessions.clear()
+
+    reopened = registry.open("s1").ws.files.fs
+    assert reopened.exists("/workspace/skills/building-apps/references/vendor.md")
+    assert reopened.read("/workspace/skills/building-apps/SKILL.md") == b"agent-edited"
+    assert (
+        reopened.read("/workspace/skills/building-apps/references/mine.md")
+        == b"agent-added"
+    )
