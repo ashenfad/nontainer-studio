@@ -5325,12 +5325,14 @@ def test_the_reference_tests_pass_against_the_reference_app(scripted):
         ("api-handler.py", "/workspace/app/api/summary.py"),
         ("test-summary.py", "/workspace/tests/test_summary.py"),
         ("format.test.js", "/workspace/tests/format.test.js"),
+        ("api-scores.py", "/workspace/app/api/scores.py"),
+        ("test-scores.py", "/workspace/tests/test_scores.py"),
     ):
         ws.files.fs.write(dest, (refs / src).read_bytes())
     ws.commit()
 
     pytest_out = _terminal(client, "s1", "ws-pytest -v")
-    assert "3 passed" in pytest_out, pytest_out
+    assert "7 passed" in pytest_out, pytest_out
     assert "failed" not in pytest_out, pytest_out
     # A bare run walks the whole tree but app/, so the seeded skill's own
     # copy is in scope. It is spelled with a hyphen precisely so nothing
