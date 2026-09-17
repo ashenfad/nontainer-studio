@@ -127,6 +127,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The reference app keeps its filters in the URL.** State that
+  changes what the page shows is read from the query string on load and
+  written back on change, merged into the params the page was loaded
+  with (the studio's own cache-busting `v` survives) and with
+  `replaceState`, so a reload keeps the user's place, a link carries a
+  view, and a test can open the page at a state. `format.js` gains
+  `filtersFromSearch` and `searchWithFilters`, the vitest reference
+  covers the round trip and the kept foreign param, and the skill's
+  Frontend section states the rule with the two details that matter:
+  merge rather than rebuild, and push only for a view change.
+
 - **The app skill has a definition of done.** An app is done when
   `test_app` passed with data-bearing assertions, `ws-pytest` and
   `ws-vitest` ran and passed with their count lines quoted in the

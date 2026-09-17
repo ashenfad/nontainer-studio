@@ -272,6 +272,18 @@ rounded only where a call site asks. `format.js` is that split —
 `formatLabel` and `formatValue(x, { digits })` — and both render null as
 a dash.
 
+**State in the URL.** Anything that changes what the page shows — a
+filter, a tab, a selected row — lives in the query string: read on
+load, written back on change. A reload then keeps the user's place, a
+link carries a view to someone else, and a test can open the page at a
+state instead of clicking its way there. Two rules keep it from going
+wrong: merge into the current params rather than rebuilding them, since
+the page is loaded with params that are not yours (the studio's own
+`v`), and use `replaceState` for filters but `pushState` for a view
+change, so a tweak is not a history entry while a tab switch is one
+the back button undoes. `format.js` has the two pure halves,
+`filtersFromSearch` and `searchWithFilters`, and `app.jsx` wires them.
+
 Let JSX render your data — `{row.category}` — rather than assembling
 markup as a string. React escapes values, so a category called
 `North "A"` renders as itself; the same value interpolated into

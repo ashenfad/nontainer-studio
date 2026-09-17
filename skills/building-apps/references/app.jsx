@@ -29,7 +29,21 @@ import theme from "house/theme";
 // but a .js module does, and formatting and query-building belong in
 // one: they are pure functions, which makes them the cheap thing to
 // test (tests/format.test.js, run by ws-vitest).
-import { filterQuery, formatLabel, formatValue } from "./format.js";
+import {
+  filterQuery,
+  filtersFromSearch,
+  formatLabel,
+  formatValue,
+  searchWithFilters,
+} from "./format.js";
+
+// The filters this page has. They live in the URL as well as in state:
+// the page opens at whatever the query string says, and writes the
+// filters back as they change — replaceState, not pushState, so each
+// tweak does not become a history entry. A view change (a tab, an
+// opened details dialog) would be pushState, since that is a step the
+// back button should undo.
+const FILTER_KEYS = ["category", "region"];
 
 // Plotly draws on white paper unless told otherwise, so a chart on a
 // dark page is a glaring white rectangle — the most visible way an app
@@ -74,8 +88,18 @@ function Stat({ id, label, value }) {
 function App() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
-  const [filters, setFilters] = useState({ category: "", region: "" });
+  const [filters, setFilters] = useState(() =>
+    filtersFromSearch(window.location.search, FILTER_KEYS),
+  );
   const [selected, setSelected] = useState(null);
+
+  useEffect(() => {
+    // Keep the URL honest without touching what else is in it.
+    const next = searchWithFilters(window.location.search, filters);
+    if (next !== window.location.search) {
+      window.history.replaceState(null, "", window.location.pathname + next);
+    }
+  }, [filters]);
 
   useEffect(() => {
     // RELATIVE url, always. The app is served under a path prefix, so a
@@ -130,7 +154,10 @@ function App() {
             {data.options[key].map((v) => <option key={v} value={v}>{v}</option>)}
           </TextField>
         ))}
-        <Button id="reset" onClick={() => setFilters({ category: "", region: "" })}>
+        <Button
+          id="reset"
+          onClick={() => setFilters(Object.fromEntries(FILTER_KEYS.map((k) => [k, ""])))}
+        >
           Reset
         </Button>
       </Stack>

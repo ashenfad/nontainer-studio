@@ -72,3 +72,34 @@ export function filterQuery(filters) {
   }
   return params.toString();
 }
+
+// The filters a page was opened with, read off its query string.
+//
+// State that changes what the page shows lives in the URL: a reload
+// keeps the user's place, a link carries a view to someone else, and a
+// test can open the page straight at a state instead of clicking to
+// it. `keys` names the filters this page has, so a param it does not
+// know (the studio's own cache-busting `v`, for one) is left alone
+// and a missing one reads as unset.
+export function filtersFromSearch(search, keys) {
+  const params = new URLSearchParams(search);
+  const filters = {};
+  for (const key of keys) filters[key] = params.get(key) || "";
+  return filters;
+}
+
+// The query string to put back after the filters change: the current
+// one with these filters written over it, a cleared filter removed,
+// and every param that is not a filter kept as it was. Merging rather
+// than rebuilding is what keeps a foreign param alive across a change.
+// Returns "" when nothing remains, so the caller can write the bare
+// pathname.
+export function searchWithFilters(search, filters) {
+  const params = new URLSearchParams(search);
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) params.set(key, value);
+    else params.delete(key);
+  }
+  const text = params.toString();
+  return text ? `?${text}` : "";
+}
