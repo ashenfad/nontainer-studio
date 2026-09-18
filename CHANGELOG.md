@@ -16,7 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   button, the transcript marker and the count of changed files each
   read one app row per session and had no answer to "which one". A
   second app is a fork's, which is what the refusal for someone else's
-  token already said.
+  token already said. With the lineage fixed by name, the name is the
+  app's for as long as the app is published: a deleted session's name
+  is neither minted nor accepted for a new session while an app row
+  still names it, since that session would extend the dead one's app —
+  publishing over a URL somebody holds, on that app's database.
+  Unpublishing hands the name back.
 
 - **The nontainer floor is 0.7.6, and the handler example keeps state in
   `db`.** The example handler in the notes is the code an agent copies

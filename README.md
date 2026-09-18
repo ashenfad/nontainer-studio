@@ -206,7 +206,9 @@ An **app** is a nontainer **publication**: one URL, one `db`, and a
 growing list of versions. The URL serves whichever version is *current*,
 so publishing moves it forward and `make current` moves it back — the
 link you handed someone never changes. One app per session: the entry
-names the session it came from, so forking is how a second app starts.
+names the session it came from, so forking is how a second app starts,
+and the name stays with the app — a deleted session's name is not
+handed to a new session while an app it published is still served.
 
 A version is a derived commit holding the files under `/workspace/app`
 and the filesystem rows that describe them, on a branch of its own that
