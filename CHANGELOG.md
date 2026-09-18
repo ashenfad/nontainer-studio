@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Unsaved app work is measured from the newest version, and one
+  file's two sides have a route.** A session's apps row counted from
+  the version the URL serves, so a session rolled back to v1 and then
+  left alone read as having unsaved edits it did not have. The count
+  now measures from the newest version — the last save — and the
+  pointer being behind stays what the version list says it is. Each
+  changed path comes with `status` (`added` / `modified` / `removed`)
+  and `size`, so a listing can be rendered without reading a file, and
+  `GET /api/sessions/{name}/apps/{token}/changes/file?path=&since=`
+  answers one path as a named version holds it and as the session
+  holds it now. The old side is a fresh read-only open of that
+  version, passing no execution settings, so a diff never boots a
+  backend; bodies over 64 KB a side, or that are not text, come back
+  empty with their sizes.
+
 - **The publish button is the dirty indicator, and publishing is one
   click.** It reads `publish` with nothing published yet,
   `publish · 3 files` when the live `/workspace/app` differs from the

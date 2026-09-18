@@ -1081,9 +1081,36 @@ def build_app(registry: Registry) -> Starlette:
     @with_session
     async def session_apps(request: Any, session: Any) -> JSONResponse:
         """This session's apps, each with how far its files have moved
-        since the version the URL serves."""
+        since the app's newest version."""
         rows = await anyio.to_thread.run_sync(registry.session_apps, session)
         return JSONResponse({"apps": rows})
+
+    @with_session
+    async def app_file_change(request: Any, session: Any) -> JSONResponse:
+        """One app file's two sides: `?path=` as the version named by
+        `?since=` holds it (default: the app's newest) and as the
+        session holds it now.
+
+        A read, so a delegate may ask it: a human looking at what a
+        delegate built needs to see the edit, and a diff commits
+        nothing. 404 for an app this session did not publish, for a
+        path outside its `app/` tree and for one neither side holds;
+        400 for a version the app does not hold."""
+        try:
+            change = await anyio.to_thread.run_sync(
+                partial(
+                    registry.app_file_change,
+                    session,
+                    request.path_params["token"],
+                    request.query_params.get("path", ""),
+                    since=request.query_params.get("since") or None,
+                )
+            )
+        except KeyError as e:
+            return JSONResponse({"error": str(e.args[0])}, status_code=404)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse(change)
 
     async def list_apps(request: Any) -> JSONResponse:
         return JSONResponse(
@@ -1302,6 +1329,11 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions/{name}/file", file_raw, methods=["GET"]),
             Route("/api/sessions/{name}/publish", publish, methods=["POST"]),
             Route("/api/sessions/{name}/apps", session_apps, methods=["GET"]),
+            Route(
+                "/api/sessions/{name}/apps/{token}/changes/file",
+                app_file_change,
+                methods=["GET"],
+            ),
             Route("/api/sessions/{name}/restore", restore, methods=["POST"]),
             Route("/api/sessions/{name}/fork", fork, methods=["POST"]),
             Route("/api/sessions/{name}/delegates", session_delegates, methods=["GET"]),
