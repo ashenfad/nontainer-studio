@@ -1595,11 +1595,13 @@ def test_changes_file_refuses_what_it_cannot_answer_for(studio):
     assert _change(client, "s1", "nosuchtoken", path).status_code == 404
 
 
-def test_changes_file_shows_sizes_where_it_cannot_show_bytes(studio):
+def test_changes_file_shows_sizes_where_it_cannot_show_bytes(studio, monkeypatch):
     """Two kinds of file a diff pane cannot render: one that is not
     text, and one too big to be read on screen. Both come back with
     their size and no bodies, so the caller offers the file instead of
-    a diff."""
+    a diff — and the big one is never read at all, since the cap is
+    decided on its size and a read of it would cost the server the
+    whole blob for an answer that leaves it out."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
@@ -1620,8 +1622,19 @@ def test_changes_file_shows_sizes_where_it_cannot_show_bytes(studio):
     assert binary["old"] is None and binary["new"] is None
     assert binary["size"] == len(parquet) + 5
 
+    # guarded at the class every workspace filesystem is built on, so
+    # the published side is covered as well as the live one
+    from monkeyfs.virtual import VirtualFS
+
+    unguarded = VirtualFS.read
+
+    def read(self, path):
+        assert path != "/workspace/app/big.txt", "a side past the cap was read"
+        return unguarded(self, path)
+
+    monkeypatch.setattr(VirtualFS, "read", read)
     over_cap = _change(client, "s1", token, "/workspace/app/big.txt").json()
-    assert over_cap["binary"] is True
+    assert over_cap["binary"] is True and over_cap["status"] == "modified"
     assert over_cap["old"] is None and over_cap["new"] is None
     assert over_cap["size"] == len(big.encode()) + len("one more line\n")
 
