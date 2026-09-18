@@ -445,15 +445,18 @@ def test_publish_a_version_and_toggle_between_live_and_published(page, server):
     frame = page.frame_locator("iframe[title='app preview']")
     expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
 
-    # the control mints the version name and leaves it editable
-    page.get_by_role("button", name="publish", exact=True).click()
-    expect(page.locator("input[aria-label='version name']")).to_have_value("v1")
-    page.get_by_role("button", name="publish", exact=True).click()
+    # one click publishes, and the server picks the name
+    page.locator(".pub-main").click()
 
-    # the transcript gets a landmark, and the pane switches to the app
+    # the transcript gets a landmark and the button says what happened,
+    # but the pane stays where the human left it
     expect(page.locator(".publish")).to_contain_text("published", timeout=15000)
     expect(page.locator(".publish")).to_contain_text("v1")
-    expect(page.locator(".seg.on")).to_have_text("published", timeout=10000)
+    expect(page.locator(".pub-main")).to_have_text("published v1", timeout=10000)
+    expect(page.locator(".seg.on")).to_have_text("live")
+
+    # the app's own URL is a click away, and serves the frozen version
+    page.get_by_role("button", name="published", exact=True).click()
     expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
 
     # the session keeps moving; the published app doesn't
@@ -466,9 +469,8 @@ def test_publish_a_version_and_toggle_between_live_and_published(page, server):
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "Changed it.", timeout=20000
     )
-    expect(page.locator(".badge")).to_contain_text(
-        "1 app file changed since v1", timeout=15000
-    )
+    # the edit is unpublished, and the button counts it
+    expect(page.locator(".pub-main")).to_have_text("publish · 1 file", timeout=15000)
     expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
 
     page.get_by_role("button", name="live", exact=True).click()
@@ -477,9 +479,9 @@ def test_publish_a_version_and_toggle_between_live_and_published(page, server):
     # publish v2, then roll the URL back to v1 from the Published panel:
     # the URL is stable, so only the version in the iframe's key makes
     # the pane show the rollback
-    page.get_by_role("button", name="publish", exact=True).click()
-    page.get_by_role("button", name="publish", exact=True).click()
-    expect(page.locator(".seg.on")).to_have_text("published", timeout=10000)
+    page.locator(".pub-main").click()
+    expect(page.locator(".pub-main")).to_have_text("published v2", timeout=15000)
+    page.get_by_role("button", name="published", exact=True).click()
     expect(frame.locator("#marker")).to_have_text("version two", timeout=20000)
 
     page.get_by_role("button", name="published…").click()
@@ -506,6 +508,29 @@ def test_publish_a_version_and_toggle_between_live_and_published(page, server):
     expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
 
 
+def test_publish_as_names_the_version(page, server):
+    """The considered path: the caret opens an empty field, and what is
+    typed there is the version's name instead of the server's vN."""
+    page.goto(f"{server}/?session=e2e-publish-as")
+    _send(
+        page,
+        '!tool file_write {"path": "/workspace/app/index.html", "content": '
+        '"<html><body><h1 id=marker>named</h1></body></html>"}\n'
+        "!text App is up.",
+    )
+    frame = page.frame_locator("iframe[title='app preview']")
+    expect(frame.locator("#marker")).to_have_text("named", timeout=20000)
+
+    page.get_by_role("button", name="publish as…").click()
+    field = page.locator("input[aria-label='version name']")
+    expect(field).to_have_value("")
+    field.fill("demo")
+    field.press("Enter")
+
+    expect(page.locator(".publish")).to_contain_text("demo", timeout=15000)
+    expect(page.locator(".pub-main")).to_have_text("published demo", timeout=10000)
+
+
 def test_a_published_jsx_app_loads_in_the_sandboxed_frame(page, server):
     """The failure the CORS wrapper exists for, end to end. The frame is
     an opaque origin, so the jsx loader's own fetch for app.jsx is
@@ -528,10 +553,10 @@ def test_a_published_jsx_app_loads_in_the_sandboxed_frame(page, server):
         "compiled in the browser", timeout=25000
     )
 
-    page.get_by_role("button", name="publish", exact=True).click()
-    page.get_by_role("button", name="publish", exact=True).click()
-    expect(page.locator(".seg.on")).to_have_text("published", timeout=15000)
+    page.locator(".pub-main").click()
+    expect(page.locator(".pub-main")).to_have_text("published v1", timeout=15000)
     expect(page.locator(".pub-error")).to_have_count(0)
+    page.get_by_role("button", name="published", exact=True).click()
 
     # and now the published mount: the loader's fetch for app.jsx is
     # cross-origin from the opaque frame, so nothing renders without the
@@ -561,12 +586,10 @@ def test_a_publish_marker_says_when_its_app_is_gone(page, server):
     # v1, then v2 — two markers, so the version-removed state has a
     # marker of its own to land on
     markers = page.locator(".publish")
-    page.get_by_role("button", name="publish", exact=True).click()
-    page.get_by_role("button", name="publish", exact=True).click()
+    page.locator(".pub-main").click()
     expect(markers).to_have_count(1, timeout=15000)
-    page.get_by_role("button", name="live", exact=True).click()
-    page.get_by_role("button", name="publish", exact=True).click()
-    page.get_by_role("button", name="publish", exact=True).click()
+    expect(page.locator(".pub-main")).to_have_text("published v1", timeout=10000)
+    page.locator(".pub-main").click()
     expect(markers).to_have_count(2, timeout=15000)
     expect(markers.first).to_contain_text("v1")
     expect(markers.last).to_contain_text("v2")
@@ -627,8 +650,7 @@ def test_the_rail_lists_apps_whose_session_is_gone(page, server):
     )
     frame = page.frame_locator("iframe[title='app preview']")
     expect(frame.locator("#marker")).to_have_text("served from the rail", timeout=20000)
-    page.get_by_role("button", name="publish", exact=True).click()
-    page.get_by_role("button", name="publish", exact=True).click()
+    page.locator(".pub-main").click()
     expect(page.locator(".publish")).to_contain_text("published", timeout=15000)
 
     row = page.locator(".app-row", has_text="Rail app")

@@ -19,9 +19,8 @@
     let composing = $state(false) // the publish form is open
     let draft = $state('')
     let error = $state(null)
-    // A publish holds the session for as long as the version takes to
-    // land, and the route refuses a second one meanwhile. The buttons
-    // say so by waiting instead of offering a click that only fails.
+    // a publish in flight: it holds the session until the version
+    // lands, and the route refuses a second one meanwhile
     let publishing = $state(false)
     let panel = $state(false)
 
@@ -30,16 +29,38 @@
     const app = $derived(rt.apps[0] ?? null)
     const changed = $derived(app?.changed_since ?? null)
 
-    // Mirrors the server's default (v1, v2, ... skipping taken names)
-    // so the form can show the name before it exists. The server still
-    // decides: leave the field as it came and it is sent verbatim, and
-    // a name it won't take comes back as an error, not a surprise.
-    function nextVersion(a) {
-        const taken = new Set((a?.versions ?? []).map((v) => v.name))
-        let n = taken.size + 1
-        while (taken.has(`v${n}`)) n++
-        return `v${n}`
-    }
+    // The version the count is measured against. The row names it as
+    // `since` where the server sends one; a row without it was counted
+    // against the version the URL serves, so that is the honest
+    // fallback — a label naming any other version would describe a
+    // count nobody took.
+    const newest = $derived(changed?.since ?? app?.current ?? null)
+
+    // The button is the dirty indicator: it names what a click would do
+    // and, once the live tree matches the newest version, what already
+    // happened. Publishing an unchanged tree is still allowed — it just
+    // has nothing to announce, so the label is dimmed rather than gone.
+    const clean = $derived(!!app && !changed?.count)
+    const label = $derived(
+        !app
+            ? 'publish'
+            : changed?.count
+              ? `publish · ${changed.count} file${changed.count === 1 ? '' : 's'}`
+              : `published ${newest ?? app.current}`,
+    )
+    const pubTitle = $derived(
+        rt.busy
+            ? 'waits for the turn'
+            : changed?.count
+              ? `changed since ${newest}:\n${changed.paths.join('\n')}`
+              : app
+                ? `add a version to ${app.title} — the URL moves to it, the old versions stay`
+                : 'freeze this app behind a URL of its own that keeps serving while you keep working',
+    )
+    // The route refuses a publish while a turn runs (the version would
+    // race the commit), so the controls wait rather than offer a click
+    // whose only outcome is a refusal.
+    const held = $derived(rt.busy || publishing)
 
     // a session switch is a different app entirely: forget the form,
     // the error, and any published view of the old session
@@ -63,20 +84,24 @@
         if (!app && mode === 'published') mode = 'live'
     })
 
+    // The field starts empty: blank means "let the server name it", the
+    // same as the plain click, so a prefilled vN would only be a copy of
+    // the server's rule waiting to drift out of step with it.
     function startPublish() {
-        draft = nextVersion(app)
+        draft = ''
         error = null
         composing = true
     }
 
-    async function publish() {
-        const name = draft.trim()
+    // Publishing does NOT move the pane to `published`: swapping what
+    // the human is looking at mid-conversation loses their place. The
+    // transcript marker and the button's new label are the feedback.
+    async function publish(name) {
         composing = false
         error = null
         publishing = true
         try {
             await rt.publish(name ? { name } : {})
-            mode = 'published'
         } catch (e) {
             error = e.message
         } finally {
@@ -127,15 +152,6 @@
                 onclick={() => (mode = 'published')}>published</button
             >
         </div>
-        {#if changed?.count}
-            <span
-                class="badge"
-                title={`changed since ${app.current}:\n${changed.paths.join('\n')}`}
-            >
-                {changed.count} app file{changed.count === 1 ? '' : 's'} changed since
-                {app.current}
-            </span>
-        {/if}
         <span class="grow"></span>
         <button class="small" onclick={() => manual++}>reload</button>
         <a
@@ -152,30 +168,44 @@
                  session, and a button whose only outcome is a refusal
                  reads as a broken one -->
         {:else if composing}
+            <!-- svelte-ignore a11y_autofocus -->
             <input
                 class="vname"
                 aria-label="version name"
+                placeholder="name"
+                autofocus
                 bind:value={draft}
                 onkeydown={(e) => {
-                    if (e.key === 'Enter') publish()
+                    if (e.key === 'Enter') publish(draft.trim())
                     else if (e.key === 'Escape') composing = false
                 }}
             />
-            <button class="small accent" onclick={publish} disabled={publishing}
-                >publish</button
+            <button
+                class="small accent"
+                onclick={() => publish(draft.trim())}
+                disabled={held}
+                title={rt.busy ? 'waits for the turn' : null}>publish</button
             >
             <button class="small" onclick={() => (composing = false)}>cancel</button>
         {:else}
-            <button
-                class="small accent"
-                onclick={startPublish}
-                disabled={publishing}
-                title={app
-                    ? `add a version to ${app.title} — the URL moves to it, the old versions stay`
-                    : 'freeze this app behind a URL of its own that keeps serving while you keep working'}
-            >
-                publish
-            </button>
+            <div class="split">
+                <button
+                    class="small accent pub-main"
+                    class:clean
+                    onclick={() => publish('')}
+                    disabled={held}
+                    title={pubTitle}
+                >
+                    {label}
+                </button>
+                <button
+                    class="small accent caret"
+                    aria-label="publish as…"
+                    title={rt.busy ? 'waits for the turn' : 'name the version yourself'}
+                    onclick={startPublish}
+                    disabled={held}>▾</button
+                >
+            </div>
         {/if}
     </div>
     {#if error}
@@ -259,14 +289,6 @@
         opacity: 0.4;
         cursor: default;
     }
-    .badge {
-        color: var(--warning);
-        border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
-        border-radius: 999px;
-        font-size: 0.66rem;
-        padding: 0.05rem 0.5rem;
-        cursor: help;
-    }
     .grow {
         flex: 1;
     }
@@ -280,16 +302,44 @@
         cursor: pointer;
         text-decoration: none;
     }
-    .small:hover {
+    .small:hover:not(:disabled) {
         color: var(--text);
         background: var(--surface-hover);
+    }
+    .small:disabled {
+        opacity: 0.4;
+        cursor: default;
     }
     .small.accent {
         border-color: var(--accent);
         color: var(--accent);
     }
-    .small.accent:hover {
+    .small.accent:hover:not(:disabled) {
         background: color-mix(in srgb, var(--accent) 15%, transparent);
+    }
+    /* the label and its caret are one control: adjoining edges lose
+       their rounding and the divider between them is a single border */
+    .split {
+        display: flex;
+    }
+    .split .small {
+        border-radius: 0;
+    }
+    .split .small:first-child {
+        border-top-left-radius: 6px;
+        border-bottom-left-radius: 6px;
+    }
+    .split .caret {
+        border-left: none;
+        border-top-right-radius: 6px;
+        border-bottom-right-radius: 6px;
+        padding: 0.2rem 0.3rem;
+        line-height: 1;
+    }
+    /* nothing to save: still clickable (a named version of an unchanged
+       tree is allowed), just not asking to be clicked */
+    .pub-main.clean {
+        opacity: 0.55;
     }
     .vname {
         width: 6.5rem;

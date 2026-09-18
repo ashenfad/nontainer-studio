@@ -500,10 +500,9 @@ export class SessionRuntime {
         await Promise.all([this.loadApps(), refreshApps()])
     }
 
-    /** publish a version. `name` names it (blank = the server's vN),
-     * `app` picks the lineage ('new' starts one; absent extends the
-     * session's most recent). The marker arrives on the event feed, so
-     * nothing here touches the transcript. */
+    /** publish a version. `name` names it (blank = the server's vN).
+     * The marker arrives on the event feed, so nothing here touches the
+     * transcript. */
     async publish(body = {}) {
         const made = await api(`/api/sessions/${this.name}/publish`, body)
         await this.syncApps()
