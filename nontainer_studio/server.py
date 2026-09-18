@@ -1011,20 +1011,29 @@ def build_app(registry: Registry) -> Starlette:
 
     @human_driven
     async def publish(request: Any, session: Any) -> JSONResponse:
-        """Publish a new version. `name` names it (default: v1, v2, ...
-        within the app); `app` picks the lineage — a token extends that
-        app, "new" starts one, absent means the session's most recently
-        published app or a new one."""
+        """Publish a new version of the session's app, starting it if
+        this is the first. `name` names the version (default: v1, v2,
+        ... within the app).
+
+        There is no picking which app: a session has one, and a second
+        app is a fork's. A body still carrying an `app` key is refused
+        rather than quietly publishing somewhere the caller did not
+        mean."""
         try:
             body = await request.json()
         except Exception:
             body = {}
         version = body.get("name")
-        app = body.get("app")
         if version is not None and not isinstance(version, str):
             return JSONResponse({"error": "name must be a string"}, status_code=400)
-        if app is not None and not isinstance(app, str):
-            return JSONResponse({"error": "app must be a token"}, status_code=400)
+        if "app" in body:
+            return JSONResponse(
+                {
+                    "error": "a session publishes one app; fork the session to "
+                    "start another"
+                },
+                status_code=400,
+            )
         # ONE reservation across the version and the marker. Publishing
         # under its own lock and emitting after it would let a chat
         # request slip between them: its `user` event would sit above a
@@ -1037,14 +1046,8 @@ def build_app(registry: Registry) -> Starlette:
             )
         try:
             published = await anyio.to_thread.run_sync(
-                partial(registry._publish_locked, session, version=version, app=app)
+                partial(registry._publish_locked, session, version=version)
             )
-        except PermissionError as e:
-            session.turn_lock.release()
-            return JSONResponse({"error": str(e)}, status_code=403)
-        except KeyError as e:
-            session.turn_lock.release()
-            return JSONResponse({"error": str(e.args[0])}, status_code=404)
         except ValueError as e:
             session.turn_lock.release()
             return JSONResponse({"error": str(e)}, status_code=400)
