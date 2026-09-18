@@ -7,8 +7,8 @@
     // args fall back to the generic view.
     import { fileUrl } from './api.js'
     import { highlightCode } from './markdown.js'
-    import { lineDiff } from './diff.js'
     import { viewFile } from './viewer.svelte.js'
+    import Diff from './Diff.svelte'
 
     let { tool, session } = $props()
 
@@ -69,12 +69,6 @@
         return tool.name
     })
 
-    const diff = $derived(
-        kind === 'edit'
-            ? lineDiff(args.old_string ?? '', args.new_string ?? '')
-            : [],
-    )
-
     const verdict = $derived.by(() => {
         if (kind !== 'test' || typeof tool.result !== 'string') return null
         if (tool.result.startsWith('test_app: PASS')) return 'pass'
@@ -107,14 +101,7 @@
                 >{@html highlightCode(args.content ?? '', langFor(args.path))}</code
             ></pre>
     {:else if kind === 'edit'}
-        <pre class="block diff">{#each diff as line, i (i)}<span
-                    class="diff-{line.type}"
-                    >{line.type === 'removed'
-                        ? '− '
-                        : line.type === 'added'
-                          ? '+ '
-                          : '  '}{line.text}
-</span>{/each}</pre>
+        <Diff old={args.old_string ?? ''} new={args.new_string ?? ''} />
     {:else if kind === 'view'}
         <button class="img-btn" title={args.path} onclick={() => viewFile(args.path)}>
             <img class="step-img" src={fileUrl(session, args.path)} alt={args.path} />
@@ -190,26 +177,6 @@
     }
     .result.fail {
         color: var(--error);
-    }
-    .diff {
-        padding: 0.4rem 0.4rem;
-    }
-    .diff span {
-        display: block;
-        /* highlight bars span the scrolled width, not just the viewport */
-        width: max-content;
-        min-width: 100%;
-    }
-    .diff-removed {
-        background: color-mix(in srgb, var(--error) 14%, transparent);
-        color: color-mix(in srgb, var(--error) 70%, var(--text));
-    }
-    .diff-added {
-        background: color-mix(in srgb, var(--success) 12%, transparent);
-        color: color-mix(in srgb, var(--success) 65%, var(--text));
-    }
-    .diff-context {
-        color: var(--text-muted);
     }
     .step-images {
         display: flex;

@@ -23,13 +23,15 @@ you can rewind, fork, or publish.
   capability URL that keeps serving while your session keeps moving.
   Publishing again adds `v2` under the same URL, and the pointer moves
   back as easily as forward. A session has one app; a second app is a
-  fork's. A version is `/workspace/app` and nothing else — the notes,
-  the uploads and the conversation stay behind — and an app keeps
-  serving over the session's live `db`, so a session can be deleted
-  without taking its app down. Below the request tier the agent has
-  `ws-pytest` and `ws-vitest` — one function or one frontend module
-  under test, so a failing assertion names the broken piece where a
-  blank page doesn't.
+  fork's. What is not yet in a version is never a guess: the button
+  counts the app files that differ from the newest version, and the
+  `changes` tab lists them and diffs any one of them against it. A
+  version is `/workspace/app` and nothing else — the notes, the uploads
+  and the conversation stay behind — and an app keeps serving over the
+  session's live `db`, so a session can be deleted without taking its
+  app down. Below the request tier the agent has `ws-pytest` and
+  `ws-vitest` — one function or one frontend module under test, so a
+  failing assertion names the broken piece where a blank page doesn't.
 - **Rich replies.** The agent can drop plots, tables, images, and HTML
   into its answers via `ui = {...}` — rendered inline, themed by the
   shell.
@@ -209,6 +211,11 @@ link you handed someone never changes. One app per session: the entry
 names the session it came from, so forking is how a second app starts,
 and the name stays with the app — a deleted session's name is not
 handed to a new session while an app it published is still served.
+
+Unsaved work is measured against the **newest** version rather than the
+current one: rolling the link back to `v1` and then leaving the session
+alone means nothing is unpublished, and the link being behind is a
+separate fact the version list and the `changes` tab both name.
 
 A version is a derived commit holding the files under `/workspace/app`
 and the filesystem rows that describe them, on a branch of its own that

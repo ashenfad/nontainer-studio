@@ -531,6 +531,71 @@ def test_publish_as_names_the_version(page, server):
     expect(page.locator(".pub-main")).to_have_text("published demo", timeout=10000)
 
 
+def test_the_changes_tab_lists_and_diffs_what_is_unpublished(page, server):
+    """The third side tab answers "which files": the tab label carries
+    the count the publish button carries, each row names a file and
+    what happened to it, an opened row is the edit itself, and
+    publishing from the tab empties the list."""
+    page.goto(f"{server}/?session=e2e-changes")
+    _send(
+        page,
+        '!tool file_write {"path": "/workspace/app/index.html", "content": '
+        '"<html><body><h1 id=marker>version one</h1></body></html>"}\n'
+        "!text App is up.",
+    )
+    frame = page.frame_locator("iframe[title='app preview']")
+    expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
+
+    # nothing published: the tab says what a first publish would do,
+    # counted off the file list rather than a diff
+    changes_tab = page.locator(".tab", has_text="changes")
+    changes_tab.click()
+    expect(page.locator(".changes .head")).to_contain_text(
+        "nothing published yet", timeout=15000
+    )
+    expect(page.locator(".changes .head")).to_contain_text("1 file behind a URL")
+
+    page.locator(".tab", has_text="preview").click()
+    page.locator(".pub-main").click()
+    expect(page.locator(".pub-main")).to_have_text("published v1", timeout=15000)
+
+    # one file rewritten, one new: two unpublished changes
+    _send(
+        page,
+        '!tool file_write {"path": "/workspace/app/index.html", "content": '
+        '"<html><body><h1 id=marker>version two</h1></body></html>"}\n'
+        '!tool file_write {"path": "/workspace/app/extra.js", "content": '
+        '"console.log(1)\\n"}\n'
+        "!text Changed it.",
+    )
+    expect(changes_tab).to_have_text("changes · 2", timeout=20000)
+    changes_tab.click()
+
+    rows = page.locator(".row-head")
+    expect(rows).to_have_count(2)
+    expect(page.locator(".row-head", has_text="index.html")).to_contain_text("changed")
+    expect(page.locator(".row-head", has_text="extra.js")).to_contain_text("added")
+
+    # expanding fetches the two sides and renders the same diff the
+    # transcript shows for an edit
+    page.locator(".row-head", has_text="index.html").click()
+    expect(page.locator(".diff-added").first).to_contain_text(
+        "version two", timeout=15000
+    )
+    expect(page.locator(".diff-removed").first).to_contain_text("version one")
+
+    # publishing from the tab is the plain one-click publish: the list
+    # empties and the count leaves the label
+    page.locator(".changes .head").get_by_role("button", name="publish").click()
+    expect(changes_tab).to_have_text("changes", timeout=15000)
+    expect(page.locator(".changes .hint")).to_contain_text("nothing unpublished")
+
+    # a file the agent takes away is a row too, not a silence
+    _send(page, '!tool terminal {"command": "rm /workspace/app/extra.js"}\n!text Gone.')
+    expect(changes_tab).to_have_text("changes · 1", timeout=20000)
+    expect(page.locator(".row-head", has_text="extra.js")).to_contain_text("removed")
+
+
 def test_a_published_jsx_app_loads_in_the_sandboxed_frame(page, server):
     """The failure the CORS wrapper exists for, end to end. The frame is
     an opaque origin, so the jsx loader's own fetch for app.jsx is
