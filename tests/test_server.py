@@ -1402,7 +1402,14 @@ def test_changed_since_answers_content_and_writes_apart(studio):
         assert [a["token"] for a in apps] == [pub["token"]]
         return apps[0]["changed_since"]
 
-    assert status() == {"count": 0, "paths": [], "up_to_date": True}
+    clean = {
+        "since": "v1",
+        "count": 0,
+        "paths": [],
+        "files": [],
+        "up_to_date": True,
+    }
+    assert status() == clean
 
     session.ws.files.write("/workspace/notes.md", "not an app file")
     fresh = status()
@@ -1417,7 +1424,256 @@ def test_changed_since_answers_content_and_writes_apart(studio):
 
     # publishing again closes both gaps
     _publish(client, "s1")
-    assert status() == {"count": 0, "paths": [], "up_to_date": True}
+    assert status() == {**clean, "since": "v2"}
+
+
+def _change(client, session: str, token: str, path: str, **params):
+    return client.get(
+        f"/api/sessions/{session}/apps/{token}/changes/file",
+        params={"path": path, **params},
+    )
+
+
+def test_changed_since_measures_from_the_newest_version(studio):
+    """Unsaved work is distance from the LAST SAVE, and the last save
+    is the newest version — never whichever one the URL happens to
+    serve. A session rolled back to v1 and left alone reads clean; the
+    link being behind is the version list's news, not the count's."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_app(session.ws)
+    pub = _publish(client, "s1")
+    for text in ("<h1>two</h1>", "<h1>three</h1>"):
+        session.ws.files.write("/workspace/app/index.html", text)
+        _publish(client, "s1")
+
+    def status() -> dict:
+        return client.get("/api/sessions/s1/apps").json()["apps"][0]["changed_since"]
+
+    client.post(f"/api/apps/{pub['token']}/current", json={"version": "v1"})
+    rolled_back = status()
+    assert rolled_back["since"] == "v3"
+    assert (rolled_back["count"], rolled_back["paths"]) == (0, [])
+    assert rolled_back["up_to_date"] is True
+
+    session.ws.files.write("/workspace/app/index.html", "<h1>unsaved</h1>")
+    edited = status()
+    assert edited["since"] == "v3"
+    assert edited["files"] == [
+        {
+            "path": "/workspace/app/index.html",
+            "status": "modified",
+            "size": len("<h1>unsaved</h1>"),
+        }
+    ]
+
+
+def test_the_changes_row_says_what_each_path_is(studio):
+    """A path in the count is a file a human is about to look at, so
+    the row carries what happened to it and how big it is: the live
+    size for a file that is there, the published one for a file the
+    session deleted."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_app(session.ws)
+    session.ws.files.write("/workspace/app/gone.txt", "bye")
+    _publish(client, "s1")
+
+    session.ws.files.write("/workspace/app/index.html", "<h1>edited</h1>")
+    session.ws.files.write("/workspace/app/new.css", "body{}")
+    session.ws.files.fs.remove("/workspace/app/gone.txt")
+    session.ws.commit()
+
+    row = client.get("/api/sessions/s1/apps").json()["apps"][0]["changed_since"]
+    assert row["files"] == [
+        {"path": "/workspace/app/gone.txt", "status": "removed", "size": 3},
+        {
+            "path": "/workspace/app/index.html",
+            "status": "modified",
+            "size": len("<h1>edited</h1>"),
+        },
+        {"path": "/workspace/app/new.css", "status": "added", "size": 6},
+    ]
+    # the paths list is the same paths in the same order, because the
+    # count and the rows are one answer
+    assert row["paths"] == [f["path"] for f in row["files"]]
+
+
+def test_changes_file_answers_both_sides_of_one_path(studio):
+    """The old side comes out of the published version, the new side
+    out of the live workspace, and the status is recomputed from the
+    two of them."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_app(session.ws)
+    session.ws.files.write("/workspace/app/gone.txt", "bye")
+    pub = _publish(client, "s1")
+    token = pub["token"]
+
+    session.ws.files.write("/workspace/app/index.html", "<h1>edited</h1>")
+    session.ws.files.write("/workspace/app/new.css", "body{}")
+    session.ws.files.fs.remove("/workspace/app/gone.txt")
+    session.ws.commit()
+
+    modified = _change(client, "s1", token, "/workspace/app/index.html").json()
+    assert modified == {
+        "path": "/workspace/app/index.html",
+        "since": "v1",
+        "status": "modified",
+        "old": "<html><body><h1>counter</h1></body></html>",
+        "new": "<h1>edited</h1>",
+        "size": len("<h1>edited</h1>"),
+        "binary": False,
+    }
+    added = _change(client, "s1", token, "/workspace/app/new.css").json()
+    assert (added["status"], added["old"], added["new"]) == ("added", None, "body{}")
+    removed = _change(client, "s1", token, "/workspace/app/gone.txt").json()
+    assert (removed["status"], removed["old"], removed["new"]) == (
+        "removed",
+        "bye",
+        None,
+    )
+    assert removed["size"] == 3
+
+    # the status is the two sides as they are NOW: put the bytes back
+    # and the row that was expanded as modified answers unchanged
+    session.ws.files.write(
+        "/workspace/app/index.html", "<html><body><h1>counter</h1></body></html>"
+    )
+    session.ws.commit()
+    assert (
+        _change(client, "s1", token, "/workspace/app/index.html").json()["status"]
+        == "unchanged"
+    )
+
+
+def test_changes_file_reads_the_version_it_is_asked_for(studio):
+    """`since` is a parameter, so "what changed since v1" and "v3
+    against v2" are the same read as "what have I not published"."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_app(session.ws)
+    pub = _publish(client, "s1")
+    token = pub["token"]
+    for text in ("<h1>two</h1>", "<h1>three</h1>"):
+        session.ws.files.write("/workspace/app/index.html", text)
+        _publish(client, "s1")
+
+    path = "/workspace/app/index.html"
+    newest = _change(client, "s1", token, path).json()
+    assert newest["since"] == "v3" and newest["status"] == "unchanged"
+    assert newest["old"] == newest["new"] == "<h1>three</h1>"
+
+    since_v1 = _change(client, "s1", token, path, since="v1").json()
+    assert since_v1["since"] == "v1" and since_v1["status"] == "modified"
+    assert since_v1["old"] == "<html><body><h1>counter</h1></body></html>"
+    assert since_v1["new"] == "<h1>three</h1>"
+
+
+def test_changes_file_refuses_what_it_cannot_answer_for(studio):
+    """A version the app does not hold is the caller's mistake (400).
+    A file outside the published tree, and an app this session did not
+    publish, are both "no such thing here" (404) — the endpoint reads
+    one session's own app and nobody else's."""
+    client, registry = studio
+    for name in ("s1", "s2"):
+        client.post("/api/sessions", json={"name": name})
+        _seed_app(registry.get(name).ws)
+    mine = _publish(client, "s1")["token"]
+    theirs = _publish(client, "s2")["token"]
+
+    path = "/workspace/app/index.html"
+    assert _change(client, "s1", mine, path, since="v9").status_code == 400
+    assert _change(client, "s1", mine, "/workspace/notes.md").status_code == 404
+    assert _change(client, "s1", mine, "/workspace/app/../notes.md").status_code == 404
+    assert _change(client, "s1", mine, "/workspace/app/never.txt").status_code == 404
+    assert _change(client, "s1", theirs, path).status_code == 404
+    assert _change(client, "s1", "nosuchtoken", path).status_code == 404
+
+
+def test_changes_file_shows_sizes_where_it_cannot_show_bytes(studio):
+    """Two kinds of file a diff pane cannot render: one that is not
+    text, and one too big to be read on screen. Both come back with
+    their size and no bodies, so the caller offers the file instead of
+    a diff."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_app(session.ws)
+    parquet = b"PAR1\x00\x00\x00\x01" + bytes(range(256)) * 4
+    session.ws.files.fs.write("/workspace/app/rows.parquet", parquet)
+    big = ("x" * 79 + "\n") * 1000
+    assert len(big.encode()) > sessions_mod.CHANGE_BODY_MAX
+    session.ws.files.write("/workspace/app/big.txt", big)
+    token = _publish(client, "s1")["token"]
+
+    session.ws.files.fs.write("/workspace/app/rows.parquet", parquet + b"\x00more")
+    session.ws.files.write("/workspace/app/big.txt", big + "one more line\n")
+    session.ws.commit()
+
+    binary = _change(client, "s1", token, "/workspace/app/rows.parquet").json()
+    assert binary["binary"] is True and binary["status"] == "modified"
+    assert binary["old"] is None and binary["new"] is None
+    assert binary["size"] == len(parquet) + 5
+
+    over_cap = _change(client, "s1", token, "/workspace/app/big.txt").json()
+    assert over_cap["binary"] is True
+    assert over_cap["old"] is None and over_cap["new"] is None
+    assert over_cap["size"] == len(big.encode()) + len("one more line\n")
+
+
+def test_reading_an_old_side_boots_no_executor(tmp_path, monkeypatch):
+    """A diff is a branch read. Opening the published version to get
+    the old bytes passes no execution settings, so the studio's
+    selected backend is never asked for one — on a rung where an
+    executor is a machine, expanding a row would otherwise boot a VM
+    per file."""
+    from nontainer.executor import LocalExecutor
+
+    built: list[str] = []
+
+    def factory():
+        built.append("executor")
+        return LocalExecutor()
+
+    monkeypatch.setattr(sessions_mod, "_executor_factory", lambda: factory)
+    registry = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    try:
+        session = registry.create()
+        _seed_app(session.ws)
+        token = registry.publish(session.name)["token"]
+        session.ws.files.write("/workspace/app/index.html", "<h1>edited</h1>")
+        built.clear()
+
+        change = registry.app_file_change(session, token, "/workspace/app/index.html")
+
+        assert change["old"] == "<html><body><h1>counter</h1></body></html>"
+        assert change["new"] == "<h1>edited</h1>"
+        assert built == []
+    finally:
+        registry.close()
+
+
+def test_a_delegate_may_read_a_change_and_still_not_publish(studio):
+    """The changes view is a read, and a delegate's readonly view keeps
+    it: a human looking at what the delegate built needs to see the
+    edit. Publishing is the verb that stays the parent's."""
+    client, registry = studio
+    registry.open("boss")
+    child = registry.open_delegate("boss", "boss.scout")
+    _seed_app(child.ws)
+    token = registry.publish(child.name)["token"]
+    child.ws.files.write("/workspace/app/index.html", "<h1>the delegate's</h1>")
+    child.ws.commit()
+
+    change = _change(client, child.name, token, "/workspace/app/index.html")
+    assert change.status_code == 200
+    assert change.json()["new"] == "<h1>the delegate's</h1>"
+    assert client.post(f"/api/sessions/{child.name}/publish").status_code == 409
 
 
 def test_apps_registry_lists_every_app(studio):

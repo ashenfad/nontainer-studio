@@ -25,9 +25,11 @@ Ownership model, on display:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
+import posixpath
 import re
 import secrets
 import shutil
@@ -602,6 +604,48 @@ class ReservedSessionError(SessionIdError):
     name stays taken for as long as the app is published; unpublishing
     hands it back.
     """
+
+
+CHANGE_BODY_MAX = 64 * 1024
+"""Bytes per side the two-sides read will carry as text.
+
+A diff is read by a human in a pane, and past this much of it nobody
+does; what a bigger file costs is the whole blob over the wire and a
+renderer walking it line by line. Over the cap — or not text at all —
+both sides come back empty with their sizes, and the caller shows the
+file rather than the edit.
+"""
+
+
+def _fs_size(fs: Any, path: str) -> int | None:
+    """A file's byte size off the filesystem's own metadata, or None
+    where nothing is there to measure.
+
+    Metadata rather than a read: a listing is recomputed on every
+    version tick, and reading every changed blob to count its bytes
+    would make it cost the tree. None rather than an error because the
+    live tree moves under a listing — a path found at the committed
+    head can be gone from the staged one by the time it is measured,
+    and a missing size is not worth failing the row.
+    """
+    try:
+        return fs.getsize(path)
+    except Exception:
+        return None
+
+
+def _as_text(data: bytes | None) -> str | None:
+    """One side of a diff as text, or None where it must not be shown
+    as one: over :data:`CHANGE_BODY_MAX`, holding a NUL, or not valid
+    UTF-8. Strict decoding on purpose — a lossy one would render a
+    parquet file as mojibake a human might try to read.
+    """
+    if data is None or len(data) > CHANGE_BODY_MAX or b"\x00" in data:
+        return None
+    try:
+        return data.decode()
+    except UnicodeDecodeError:
+        return None
 
 
 DEFAULT_TITLE = "New session"
@@ -4085,20 +4129,39 @@ class Registry:
 
     def session_apps(self, session: Session) -> list[dict]:
         """This session's apps, each carrying what its live workspace
-        holds that the served version doesn't."""
+        holds that the app's newest version doesn't."""
         rows = [r for r in self.list_apps() if r["session"] == session.name]
         for row in rows:
             row["changed_since"] = self._changed_since(session, row)
         return rows
 
     @staticmethod
-    def _changed_since(session: Session, row: dict) -> dict:
-        """The distance between a session's app files and the version
-        its URL serves — two answers, because they are two questions.
+    def _newest_version(row: dict) -> dict | None:
+        """The app's most recently published version, or None for an app
+        that holds none. An app row lists its versions in publish
+        order, so it is the last of them."""
+        versions = row.get("versions") or []
+        return versions[-1] if versions else None
 
-        ``count`` / ``paths`` are the CONTENT question: files under
-        ``<root>/app`` whose bytes differ from the published state. A file
+    def _changed_since(self, session: Session, row: dict) -> dict:
+        """The distance between a session's app files and the NEWEST
+        version of its app — two answers, because they are two
+        questions.
+
+        The newest version rather than the one the URL serves, because
+        this is the unsaved-work question: a session whose URL was
+        rolled back to an older version and then left alone has nothing
+        unsaved, and the pointer being behind is a separate fact that
+        the version list shows on its own.
+
+        ``since`` names that version (None where the app has none yet).
+        ``count`` / ``paths`` / ``files`` are the CONTENT question:
+        files under ``<root>/app`` whose bytes differ from it. A file
         re-saved with the bytes it already had is not in them.
+        ``files`` carries the same paths in the same order with a
+        ``status`` (``added`` / ``modified`` / ``removed``) and a
+        ``size`` each, so a reader can render the list without asking
+        for any file.
 
         ``up_to_date`` is the WRITE question: kvgit stamps every write
         with when it happened, so the tree moves on any write at all,
@@ -4108,12 +4171,21 @@ class Registry:
         what a session reads as once it has been rewound back onto a
         published state: putting the content back is itself a write.
         """
-        current = next(
-            (v for v in row["versions"] if v["name"] == row["current"]), None
-        )
-        if current is None or not current.get("commit"):
-            return {"count": 0, "paths": [], "up_to_date": True}
-        diff = session.ws.changed_since(current["commit"])
+        newest = self._newest_version(row)
+        if newest is None or not newest.get("commit"):
+            return {
+                "since": None,
+                "count": 0,
+                "paths": [],
+                "files": [],
+                "up_to_date": True,
+            }
+        # The diff ends at the COMMITTED head while the live preview
+        # serves the staged tree, so for the length of one tool call a
+        # write can be on screen and not yet counted here. The commit
+        # that closes every tool call closes the gap too; there is
+        # nothing to chase.
+        diff = session.ws.changed_since(newest["commit"])
         prefix = f"{session.ws.root}/app/"
         paths = sorted(
             p
@@ -4121,9 +4193,178 @@ class Registry:
             if p.startswith(prefix)
         )
         return {
+            "since": newest["name"],
             "count": len(paths),
             "paths": paths,
-            "up_to_date": _head_tree(session.ws) == current.get("tree"),
+            "files": self._change_rows(
+                session, row["token"], newest["name"], paths, diff
+            ),
+            "up_to_date": _head_tree(session.ws) == newest.get("tree"),
+        }
+
+    def _change_rows(
+        self,
+        session: Session,
+        token: str,
+        version: str,
+        paths: list[str],
+        diff: Any,
+    ) -> list[dict]:
+        """``{path, status, size}`` per changed path, in path order.
+
+        ``size`` is measured on the side that HAS the file: the live
+        tree, or the published version for a path the session deleted.
+        The published tree is opened only when there is a deletion to
+        measure, because this list is recomputed on every version tick
+        and an app that merely grew must cost no open at all.
+        """
+        removed = [p for p in paths if p in diff.removed]
+        old_sizes = self._version_sizes(token, version, removed)
+        rows = []
+        with session.ws.lock:
+            live = session.ws.files.fs
+            for path in paths:
+                if path in diff.removed:
+                    rows.append(
+                        {
+                            "path": path,
+                            "status": "removed",
+                            "size": old_sizes.get(path),
+                        }
+                    )
+                    continue
+                rows.append(
+                    {
+                        "path": path,
+                        "status": "added" if path in diff.added else "modified",
+                        "size": _fs_size(live, path),
+                    }
+                )
+        return rows
+
+    @contextlib.contextmanager
+    def _version_tree(self, token: str, version: str) -> Any:
+        """A frozen workspace over one published version of one app,
+        closed when the block ends.
+
+        No execution settings are passed: this reads files and runs
+        nothing, so it takes nontainer's default executor rather than
+        booting the selected backend — on a rung where an executor is a
+        machine, a diff must never start one. Nothing is cached either:
+        the open is per read, so a ``set_current`` or an ``unpublish``
+        landing mid-read closes nothing out from under the app's own
+        served snapshot.
+
+        Yields None where the manifest or the store no longer names
+        the app at all; a version the store cannot open raises, since
+        the manifest promising one the store lost is a fault and not
+        an answer.
+        """
+        entry = self._manifest()["apps"].get(token)
+        publication = (
+            self._store.publication(_pub_name(entry, token))
+            if entry is not None
+            else None
+        )
+        tree = publication.open(version) if publication is not None else None
+        try:
+            yield tree
+        finally:
+            if tree is not None:
+                tree.close()
+
+    def _version_sizes(
+        self, token: str, version: str, paths: list[str]
+    ) -> dict[str, int | None]:
+        """Byte sizes of some paths as one published version holds them.
+
+        Empty for an empty ask, so a listing with no deletions in it
+        pays no open — and empty for a version that will not open,
+        because a missing size is a row that says less, where a raise
+        here would be a session with no app list at all.
+        """
+        if not paths:
+            return {}
+        try:
+            with self._version_tree(token, version) as tree:
+                if tree is None:
+                    return {}
+                return {path: _fs_size(tree.files.fs, path) for path in paths}
+        except Exception:
+            log.warning("changes: %s of app %s would not open", version, token)
+            return {}
+
+    def app_file_change(
+        self, session: Session, token: str, path: str, since: str | None = None
+    ) -> dict:
+        """One app file's two sides: as a published version holds it,
+        and as the session holds it now.
+
+        ``since`` names the version to compare against and defaults to
+        the newest, which is the same baseline the session's app row
+        counts from — so the everyday "what have I not published" and a
+        deliberate "what changed between two versions" are one read.
+
+        ``status`` is recomputed here from the two sides rather than
+        taken from the caller: a row expanded some seconds after the
+        list it came from was drawn must say what the file IS, not what
+        it was. Bodies are text or nothing at all (see
+        :data:`CHANGE_BODY_MAX`), and ``size`` is the side that has the
+        file, so a caller with no bodies still has something to show.
+
+        KeyError names what could not be found — an app this session
+        did not publish, a path outside its ``app/`` tree, a file
+        neither side holds. ValueError is a version the app does not
+        hold.
+        """
+        entry = self._manifest()["apps"].get(token)
+        if entry is None or entry.get("session") != session.name:
+            raise KeyError(f"{session.name} has published no app {token!r}")
+        versions = entry.get("versions") or {}
+        if not versions:
+            raise KeyError(f"app {token!r} has no versions")
+        if since is None:
+            since = max(versions, key=lambda name: versions[name].get("created", 0))
+        elif since not in versions:
+            raise ValueError(f"this app has no version {since!r}")
+        # Normalized before the check, so no spelling of `..` reaches
+        # past the app tree: what is published is `app/` and what this
+        # answers for is `app/`.
+        path = posixpath.normpath(path)
+        prefix = f"{session.ws.root}/app/"
+        if not path.startswith(prefix):
+            raise KeyError(f"{path!r} is not an app file")
+        with self._version_tree(token, since) as tree:
+            if tree is None:
+                raise KeyError(f"the store no longer holds app {token!r}")
+            old = tree.files.fs.read(path) if tree.files.fs.isfile(path) else None
+        with session.ws.lock:
+            live = session.ws.files.fs
+            new = live.read(path) if live.isfile(path) else None
+        if old is None and new is None:
+            raise KeyError(f"neither {since} nor the session holds {path!r}")
+        if new is None:
+            status, size = "removed", len(old)
+        elif old is None:
+            status, size = "added", len(new)
+        else:
+            status = "unchanged" if old == new else "modified"
+            size = len(new)
+        old_text, new_text = _as_text(old), _as_text(new)
+        # Either side unreadable makes BOTH sides empty: half a diff
+        # renders as the whole file having been written or deleted,
+        # which is a worse answer than none.
+        binary = (old is not None and old_text is None) or (
+            new is not None and new_text is None
+        )
+        return {
+            "path": path,
+            "since": since,
+            "status": status,
+            "old": None if binary else old_text,
+            "new": None if binary else new_text,
+            "size": size,
+            "binary": binary,
         }
 
     # -- moving and removing publications ----------------------------------
