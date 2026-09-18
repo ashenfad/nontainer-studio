@@ -28,6 +28,7 @@
     import DelegateBar from './lib/DelegateBar.svelte'
     import Preview from './lib/Preview.svelte'
     import FilesTab from './lib/FilesTab.svelte'
+    import ChangesTab from './lib/ChangesTab.svelte'
 
     // null until the bootstrap picks one: session names are minted
     // slugs now, so there is no well-known name to default to
@@ -154,6 +155,10 @@
     const title = $derived(rail.sessions.find((s) => s.name === active)?.title ?? '')
     // the row the parent sees, when this session is somebody's delegate
     const delegate = $derived(info?.name === active ? info.delegate : null)
+    // How many app files differ from the newest published version. It
+    // rides the tab label so the unpublished state is visible from
+    // whichever tab is open, not only from the preview bar's button.
+    const unpublished = $derived(rt?.apps[0]?.changed_since?.count ?? 0)
     // A delegate has no rail row of its own, so the rail highlights the
     // ancestor it was drilled down from — the row that is still there.
     const railActive = $derived(delegate ? (trail[0]?.name ?? active) : active)
@@ -364,11 +369,14 @@
                                 />
                             {:else}
                                 <div class="tabs">
-                                    {#each ['preview', 'files'] as t (t)}
+                                    {#each ['preview', 'files', 'changes'] as t (t)}
                                         <button
                                             class="tab"
                                             class:active={tab === t}
-                                            onclick={() => (tab = t)}>{t}</button
+                                            onclick={() => (tab = t)}
+                                            >{t === 'changes' && unpublished
+                                                ? `changes · ${unpublished}`
+                                                : t}</button
                                         >
                                     {/each}
                                 </div>
@@ -378,8 +386,10 @@
                                         onSwitch={switchTo}
                                         readonly={!!delegate}
                                     />
-                                {:else}
+                                {:else if tab === 'files'}
                                     <FilesTab {rt} />
+                                {:else}
+                                    <ChangesTab {rt} readonly={!!delegate} />
                                 {/if}
                             {/if}
                         </div>

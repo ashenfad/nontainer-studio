@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A `changes` tab says which files are unpublished, and what the
+  edit was.** The publish button carries a count; the count needed
+  somewhere to lead. The third side tab lists the app files that
+  differ from the newest version — `added` / `changed` / `removed`,
+  the path and the size — and opening a row fetches that one file's
+  two sides and renders them as the line diff the transcript already
+  uses for an edit (one `Diff.svelte` now, so an edit and an
+  unpublished change never look like two different things). The tab
+  label carries the count as well, so the state reads from whichever
+  tab is open, and the rows and the open diffs follow the agent as it
+  writes. The baseline is the newest version, the same one the count
+  measures from; when the URL is behind, the tab says so and offers
+  the served version as the side to diff against. A `publish` button
+  in the tab header saves what the list shows; a delegate keeps the
+  tab and loses the button, because a diff commits nothing and a
+  publish does.
+
 - **Unsaved app work is measured from the newest version, and one
   file's two sides have a route.** A session's apps row counted from
   the version the URL serves, so a session rolled back to v1 and then
