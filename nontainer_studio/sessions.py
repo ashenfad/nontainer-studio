@@ -618,20 +618,41 @@ file rather than the edit.
 
 
 def _fs_size(fs: Any, path: str) -> int | None:
-    """A file's byte size off the filesystem's own metadata, or None
-    where nothing is there to measure.
+    """A file's byte size off the metadata row the filesystem keeps
+    beside its blob, or None where nothing is there to measure.
 
-    Metadata rather than a read: a listing is recomputed on every
-    version tick, and reading every changed blob to count its bytes
-    would make it cost the tree. None rather than an error because the
-    live tree moves under a listing — a path found at the committed
-    head can be gone from the staged one by the time it is measured,
-    and a missing size is not worth failing the row.
+    ``stat`` rather than ``getsize``: the filesystem answers ``getsize``
+    by reading the whole blob, while ``stat`` reads the row written
+    with it. A listing is recomputed on every version tick, and a
+    changed asset of some gigabytes must cost it a row lookup and not
+    the asset. None rather than an error because the live tree moves
+    under a listing — a path found at the committed head can be gone
+    from the staged one by the time it is measured, and a missing size
+    is not worth failing the row.
     """
     try:
-        return fs.getsize(path)
+        return fs.stat(path).size
     except Exception:
         return None
+
+
+def _side(fs: Any, path: str) -> tuple[bool, int | None, bytes | None]:
+    """One side of a diff: whether the file is there, its size, and its
+    bytes — the bytes only when the size is known and within
+    :data:`CHANGE_BODY_MAX`.
+
+    The cap is checked on metadata before any read. A changed asset of
+    some gigabytes would otherwise be read whole, on both sides, to
+    produce a response that omits both bodies; the answer for it is
+    its size, and the size is free. A file whose size cannot be read is
+    treated as too big to read blind.
+    """
+    if not fs.isfile(path):
+        return False, None, None
+    size = _fs_size(fs, path)
+    if size is None or size > CHANGE_BODY_MAX:
+        return True, size, None
+    return True, size, fs.read(path)
 
 
 def _as_text(data: bytes | None) -> str | None:
@@ -4337,26 +4358,29 @@ class Registry:
         with self._version_tree(token, since) as tree:
             if tree is None:
                 raise KeyError(f"the store no longer holds app {token!r}")
-            old = tree.files.fs.read(path) if tree.files.fs.isfile(path) else None
+            had, old_size, old = _side(tree.files.fs, path)
         with session.ws.lock:
-            live = session.ws.files.fs
-            new = live.read(path) if live.isfile(path) else None
-        if old is None and new is None:
+            has, new_size, new = _side(session.ws.files.fs, path)
+        if not had and not has:
             raise KeyError(f"neither {since} nor the session holds {path!r}")
-        if new is None:
-            status, size = "removed", len(old)
-        elif old is None:
-            status, size = "added", len(new)
-        else:
+        if not has:
+            status, size = "removed", old_size
+        elif not had:
+            status, size = "added", new_size
+        elif old is not None and new is not None:
             status = "unchanged" if old == new else "modified"
-            size = len(new)
+            size = new_size
+        else:
+            # Past the cap a side is not read, so the bytes are not
+            # compared. A row is offered because the content differs,
+            # and equal sizes are no evidence that the bytes match, so
+            # an unread pair reads as modified rather than unchanged.
+            status, size = "modified", new_size
         old_text, new_text = _as_text(old), _as_text(new)
         # Either side unreadable makes BOTH sides empty: half a diff
         # renders as the whole file having been written or deleted,
         # which is a worse answer than none.
-        binary = (old is not None and old_text is None) or (
-            new is not None and new_text is None
-        )
+        binary = (had and old_text is None) or (has and new_text is None)
         return {
             "path": path,
             "since": since,
