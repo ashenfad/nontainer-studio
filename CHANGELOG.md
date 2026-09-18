@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The publish button is the dirty indicator, and publishing is one
+  click.** It reads `publish` with nothing published yet,
+  `publish · 3 files` when the live `/workspace/app` differs from the
+  newest version — the paths in its tooltip, where the warning badge
+  used to keep them — and a dimmed `published v2` once they match. So
+  the state that mattered (there are edits since the last save) is on
+  the control that acts on it instead of beside it. The click sends no
+  name and the server picks `vN`, which is what the prefilled field
+  offered anyway; naming a version yourself moved behind the `▾` caret,
+  which opens the same field empty. Publishing no longer flips the pane
+  to `published`: swapping what you are looking at mid-conversation
+  loses your place, and the transcript marker and the new label already
+  say it happened. Both buttons wait out a running turn, which the
+  publish route refuses.
+
 - **A session publishes one app.** The publish route's `app` parameter
   — a token to extend, `"new"` to start another — is gone, and a body
   still carrying it is refused with a 400 saying so rather than
