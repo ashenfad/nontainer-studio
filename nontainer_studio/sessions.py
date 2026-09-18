@@ -3611,6 +3611,17 @@ class Registry:
     # `app/` are not in what a capability URL hands out, and deleting
     # the session leaves every version of the app exactly as it was.
     #
+    # A SESSION HAS ONE APP. Publishing is always a new version of it,
+    # and the only way to a second app is to fork the session: the app
+    # entry names the session it came from, and everything downstream
+    # reads that one row — the publish marker, the count of app files
+    # changed since a version, and branching from a version back into
+    # the conversation that made it. A session holding two apps would make
+    # each of those ask "which one", with no answer the human ever
+    # gave. Installs from when the lineage could be chosen may still
+    # hold several apps for one session; the newest by publish is the
+    # one it goes on extending, and the rest keep serving.
+    #
     # nontainer's registry is generic — a name, its versions, and which
     # one is current. The token, the route and the db are the studio's,
     # and live in the app entry here, keyed by token: the publication
@@ -3667,51 +3678,32 @@ class Registry:
 
     @staticmethod
     def _last_published(entry: dict) -> float:
-        """When this app last got a version — how "the session's most
-        recent app" is decided, since an app's own birthday says only
-        when the lineage started."""
+        """When this app last got a version — how apps are ordered,
+        since an app's own birthday says only when the lineage
+        started."""
         versions = entry.get("versions") or {}
         return max(
             (v.get("created", 0) for v in versions.values()),
             default=entry.get("created", 0),
         )
 
-    def _target_app(self, name: str, app: str | None, apps: dict) -> tuple[str, dict]:
-        """Which lineage this publish extends: a named token, a fresh
-        one for ``"new"``, or — with nothing asked — the session's most
-        recently published app, or a fresh one if it has none. The
-        second element is the existing entry, or ``{}`` for a new app."""
-        if app == "new":
-            return mint_token(), {}
-        if app:
-            entry = apps.get(app)
-            if entry is None:
-                raise KeyError(f"no app {app!r}")
-            origin = entry.get("session")
-            if origin != name:
-                # An app belongs to the session that created it, and
-                # nothing downstream survives that not being true: the
-                # entry keeps naming the original session, so the
-                # changed-since badge would compare against a branch
-                # that never wrote the version, and branch-from-version
-                # would fork a conversation the version did not come
-                # from. A permanent refusal, not a busy one — retrying
-                # can never make this token the caller's.
-                raise PermissionError(
-                    f"app {app!r} belongs to session {origin!r}: publish it "
-                    "from there, or fork that session and start an app of "
-                    "its own"
-                )
-            return app, entry
+    def _session_app(self, name: str, apps: dict) -> tuple[str, dict]:
+        """This session's app: the token it publishes under and that
+        app's entry, or a fresh token and ``{}`` where it has none yet.
+
+        An app belongs to the session named in its row and to no other,
+        so a fork — a different name from the first commit on — starts
+        an app of its own at its first publish, and never lands a
+        version in the app its parent keeps extending. Where an install
+        holds several apps for one session the newest by publish is the
+        one extended; nothing new creates that case."""
         mine = [e for e in apps.values() if e.get("session") == name]
         if mine:
             newest = max(mine, key=self._last_published)
             return newest["token"], newest
         return mint_token(), {}
 
-    def publish(
-        self, name: str, *, version: str | None = None, app: str | None = None
-    ) -> dict:
+    def publish(self, name: str, *, version: str | None = None) -> dict:
         """Publish the session's current state as a new version of an app.
 
         The version is a nontainer publication version — the `app/`
@@ -3721,10 +3713,9 @@ class Registry:
         a new version the everyday verb and rolling back a pointer move
         (:meth:`set_current`).
 
-        ``app`` picks the lineage — a token extends that app, ``"new"``
-        starts one, and ``None`` means the session's most recently
-        published app or a new one. ``version`` names it; the default is
-        ``v1``, ``v2``, ... within the app.
+        The session has one app, so this extends it, or starts it on
+        the first publish; a second app is a fork's. ``version`` names
+        the version; the default is ``v1``, ``v2``, ... within the app.
 
         A session holding nothing under ``<root>/app`` is refused: a
         version is that tree, and an empty one is a URL that could only
@@ -3740,13 +3731,11 @@ class Registry:
         if not session.turn_lock.acquire(blocking=False):
             raise RuntimeError("can't publish while a turn is running")
         try:
-            return self._publish_locked(session, version=version, app=app)
+            return self._publish_locked(session, version=version)
         finally:
             session.turn_lock.release()
 
-    def _publish_locked(
-        self, session: Session, *, version: str | None = None, app: str | None = None
-    ) -> dict:
+    def _publish_locked(self, session: Session, *, version: str | None = None) -> dict:
         """:meth:`publish` with the session already reserved.
 
         The reservation has to outlive the call for the caller that
@@ -3763,7 +3752,7 @@ class Registry:
         description = self._describe(session)
         with self._lock:
             manifest = self._manifest()
-            token, entry = self._target_app(name, app, manifest["apps"])
+            token, entry = self._session_app(name, manifest["apps"])
             version = self._version_name(version, entry)
             title = self.title_of(name, manifest)
             pub = _pub_name(entry, token)

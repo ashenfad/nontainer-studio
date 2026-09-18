@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A session publishes one app.** The publish route's `app` parameter
+  — a token to extend, `"new"` to start another — is gone, and a body
+  still carrying it is refused with a 400 saying so rather than
+  publishing somewhere the caller did not mean. Nothing sent it: no UI
+  offered the choice, the agent cannot publish at all, and the publish
+  button, the transcript marker and the count of changed files each
+  read one app row per session and had no answer to "which one". A
+  second app is a fork's, which is what the refusal for someone else's
+  token already said.
+
 - **The nontainer floor is 0.7.6, and the handler example keeps state in
   `db`.** The example handler in the notes is the code an agent copies
   first, and nontainer's default kept state in `cache`, which in the

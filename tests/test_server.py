@@ -1083,10 +1083,10 @@ def test_deleting_the_origin_session_leaves_the_app_served(studio, tmp_path):
     assert client.get("/api/apps").json()["apps"][0]["session"] == "s1"
 
 
-def test_app_selection_and_version_names(studio):
-    """Publishing again extends the session's most recent app; `app:
-    "new"` starts another; a name may be given, and must be a name a
-    tag can carry and one this app doesn't already hold.
+def test_one_app_per_session_and_version_names(studio):
+    """Every publish is a new version of the session's one app; a name
+    may be given, and must be a name a tag can carry and one this app
+    doesn't already hold.
 
     The name rules are the store's — it raises the kind of error a
     caller's mistake gets, so the refusal reaches the client as a 400
@@ -1102,24 +1102,15 @@ def test_app_selection_and_version_names(studio):
     named = _publish(client, "s1", name="release-1")
     assert named["token"] == first["token"] and named["version"] == "release-1"
 
-    other = _publish(client, "s1", app="new")
-    assert other["token"] != first["token"] and other["version"] == "v1"
-    # "most recent" is the app last published to, not the oldest lineage
-    assert _publish(client, "s1")["token"] == other["token"]
-    # ...and naming one keeps working. The default name counts the
-    # app's versions rather than its vN's, so a named version pushes
-    # the next number along rather than being overwritten by it.
-    assert _publish(client, "s1", app=first["token"])["version"] == "v4"
+    # The default name counts the app's versions rather than its vN's,
+    # so a named version pushes the next number along rather than being
+    # overwritten by it.
+    assert _publish(client, "s1")["version"] == "v4"
+    assert len(client.get("/api/apps").json()["apps"]) == 1
 
     for bad in ("", "a/b", "a%b", "release-1"):
-        r = client.post(
-            "/api/sessions/s1/publish", json={"name": bad, "app": first["token"]}
-        )
+        r = client.post("/api/sessions/s1/publish", json={"name": bad})
         assert r.status_code == 400, bad
-    assert (
-        client.post("/api/sessions/s1/publish", json={"app": "not-a-token"}).status_code
-        == 404
-    )
 
 
 def test_a_version_whose_record_fails_is_taken_back_down(studio, tmp_path):
@@ -1333,27 +1324,34 @@ def test_the_marker_lands_under_the_same_reservation_as_the_tag(scripted):
     )
 
 
-def test_publishing_into_another_sessions_app_is_refused(studio):
-    """An app belongs to the session that created it. Extending someone
-    else's would tag a version from this branch while the entry keeps
-    naming theirs — a version nothing downstream could reason about."""
+def test_choosing_which_app_to_publish_into_is_refused(studio):
+    """A session publishes one app and nothing picks a lineage, so a
+    body still carrying `app` is refused rather than published
+    somewhere the caller did not mean. A fork gets an app of its own:
+    the entry names the session that created it, and a version landed
+    from another branch would leave the marker, the dirty count and
+    branch-from-version all reading a session the files never came
+    from."""
     client, registry = studio
-    for name in ("s1", "s2"):
-        client.post("/api/sessions", json={"name": name})
-        _seed_app(registry.get(name).ws)
-    theirs = _publish(client, "s1")
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+    mine = _publish(client, "s1")
 
-    r = client.post("/api/sessions/s2/publish", json={"app": theirs["token"]})
-    assert r.status_code == 403
-    assert "belongs to session 's1'" in r.json()["error"]
+    for asked in ("new", mine["token"], "not-a-token"):
+        r = client.post("/api/sessions/s1/publish", json={"app": asked})
+        assert r.status_code == 400, asked
+        assert "one app" in r.json()["error"]
     # ...and nothing was tagged or recorded on the way to refusing
-    app = next(
-        a
-        for a in client.get("/api/apps").json()["apps"]
-        if a["token"] == theirs["token"]
-    )
-    assert [v["name"] for v in app["versions"]] == ["v1"]
-    assert app["session"] == "s1"
+    apps = client.get("/api/apps").json()["apps"]
+    assert [(a["token"], [v["name"] for v in a["versions"]]) for a in apps] == [
+        (mine["token"], ["v1"])
+    ]
+
+    fork = client.post("/api/sessions/s1/fork", json={}).json()["name"]
+    theirs = _publish(client, fork)
+    assert theirs["token"] != mine["token"] and theirs["version"] == "v1"
+    owners = {a["token"]: a["session"] for a in client.get("/api/apps").json()["apps"]}
+    assert owners == {mine["token"]: "s1", theirs["token"]: fork}
 
 
 def test_changed_since_answers_content_and_writes_apart(studio):

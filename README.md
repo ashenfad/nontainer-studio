@@ -22,13 +22,14 @@ you can rewind, fork, or publish.
   `publish` freezes that tree as a **version** of an **app**: a
   capability URL that keeps serving while your session keeps moving.
   Publishing again adds `v2` under the same URL, and the pointer moves
-  back as easily as forward. A version is `/workspace/app` and nothing
-  else — the notes, the uploads and the conversation stay behind — and
-  an app keeps serving over the session's live `db`, so a session can
-  be deleted without taking its apps down. Below the request tier the
-  agent has `ws-pytest` and `ws-vitest` — one function or one frontend
-  module under test, so a failing assertion names the broken piece
-  where a blank page doesn't.
+  back as easily as forward. A session has one app; a second app is a
+  fork's. A version is `/workspace/app` and nothing else — the notes,
+  the uploads and the conversation stay behind — and an app keeps
+  serving over the session's live `db`, so a session can be deleted
+  without taking its app down. Below the request tier the agent has
+  `ws-pytest` and `ws-vitest` — one function or one frontend module
+  under test, so a failing assertion names the broken piece where a
+  blank page doesn't.
 - **Rich replies.** The agent can drop plots, tables, images, and HTML
   into its answers via `ui = {...}` — rendered inline, themed by the
   shell.
@@ -204,7 +205,8 @@ Three kinds of state, on purpose:
 An **app** is a nontainer **publication**: one URL, one `db`, and a
 growing list of versions. The URL serves whichever version is *current*,
 so publishing moves it forward and `make current` moves it back — the
-link you handed someone never changes.
+link you handed someone never changes. One app per session: the entry
+names the session it came from, so forking is how a second app starts.
 
 A version is a derived commit holding the files under `/workspace/app`
 and the filesystem rows that describe them, on a branch of its own that
