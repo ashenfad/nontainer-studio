@@ -33,7 +33,12 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from . import delegates
-from .sessions import Registry, SweptSessionError, repair_aborted_run
+from .sessions import (
+    Registry,
+    ReservedSessionError,
+    SweptSessionError,
+    repair_aborted_run,
+)
 
 log = logging.getLogger(__name__)
 
@@ -605,10 +610,11 @@ def build_app(registry: Registry) -> Starlette:
                 session = await anyio.to_thread.run_sync(registry.open, name)
             else:
                 session = await anyio.to_thread.run_sync(registry.create)
-        except SweptSessionError as e:
+        except (SweptSessionError, ReservedSessionError) as e:
             # 409 rather than 400: the name was well formed and was a
-            # session — its state has since been collected, which is a
-            # conflict with the store's state and not a typo.
+            # session. Its state has since been collected, or an app it
+            # published still holds the name — a conflict with the
+            # store's state either way, and not a typo.
             return JSONResponse({"error": str(e)}, status_code=409)
         except SessionIdError as e:
             return JSONResponse({"error": str(e)}, status_code=400)

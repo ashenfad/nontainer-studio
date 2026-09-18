@@ -1324,6 +1324,37 @@ def test_the_marker_lands_under_the_same_reservation_as_the_tag(scripted):
     )
 
 
+def test_a_deleted_sessions_name_stays_with_its_app(studio, monkeypatch):
+    """An app row names the session that published it, and a session
+    opened under that name after the deletion would extend the dead
+    session's app — over a URL somebody holds, on that app's database.
+    So the name is the app's while the app is published: not minted,
+    not accepted, and handed back by unpublishing."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+    mine = _publish(client, "s1")
+    assert client.delete("/api/sessions/s1").status_code == 200
+
+    r = client.post("/api/sessions", json={"name": "s1"})
+    assert r.status_code == 409 and "unpublish" in r.json()["error"]
+    assert "s1" not in registry.known()
+
+    # the mint draws the reserved name first and passes it over
+    draws = iter(["s1", "fresh-otter"])
+    monkeypatch.setattr(sessions_mod.petname, "Generate", lambda *a, **k: next(draws))
+    assert client.post("/api/sessions", json={}).json()["name"] == "fresh-otter"
+
+    # the app itself is untouched by any of this
+    apps = client.get("/api/apps").json()["apps"]
+    assert [(a["token"], a["session"]) for a in apps] == [(mine["token"], "s1")]
+
+    assert client.delete(f"/api/apps/{mine['token']}").status_code == 200
+    r = client.post("/api/sessions", json={"name": "s1"})
+    assert r.status_code == 200 and r.json()["name"] == "s1"
+    assert client.get("/api/apps").json()["apps"] == []
+
+
 def test_choosing_which_app_to_publish_into_is_refused(studio):
     """A session publishes one app and nothing picks a lineage, so a
     body still carrying `app` is refused rather than published

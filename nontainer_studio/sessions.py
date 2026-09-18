@@ -591,6 +591,19 @@ class SweptSessionError(SessionIdError):
     """
 
 
+class ReservedSessionError(SessionIdError):
+    """A name a published app still names as its origin session.
+
+    The session was deleted and its app row was kept on purpose: an app
+    outlives the session that built it. The row names that session, and
+    every later publish, the transcript marker and branching from a
+    version read that name. A fresh session opened under it would
+    publish over the dead session's URL and serve its database, so the
+    name stays taken for as long as the app is published; unpublishing
+    hands it back.
+    """
+
+
 DEFAULT_TITLE = "New session"
 
 TITLE_MAX = 60  # the rail is ~200px; anything longer is ellipsis anyway
@@ -1931,12 +1944,23 @@ class Registry:
         holds _lock). petname's vocabulary makes collisions rare, and
         `known()` makes them impossible — retry, then widen to three
         words rather than ever return a taken name."""
-        known = self.known()
+        known = self.known() | self._names_apps_keep(self._manifest())
         for attempt in range(50):
             name = petname.Generate(3 if attempt > 25 else 2, "-")
             if name not in known:
                 return validate_session_id(name)
         raise RuntimeError("could not mint a free session name")
+
+    @staticmethod
+    def _names_apps_keep(manifest: dict) -> set[str]:
+        """The session names published apps still name as their origin.
+
+        A deleted session's app row keeps its name, and the name is not
+        free while it does: a new session under it would extend that
+        app. Read off the manifest's app rows rather than kept as a
+        list of its own, so unpublishing releases a name by removing
+        the one row that held it."""
+        return {e["session"] for e in manifest["apps"].values() if e.get("session")}
 
     def get(self, name: str) -> Session | None:
         return self._sessions.get(name)
@@ -1979,6 +2003,21 @@ class Registry:
                     f"{name} was a delegate of "
                     f"{manifest['delegates'][name]['parent']} and its branch "
                     "has been swept — there is nothing left to open"
+                )
+            if (
+                not minting
+                and name not in manifest["sessions"]
+                and name in self._names_apps_keep(manifest)
+            ):
+                # A deleted session whose app is still published. Its
+                # app row names this session, so a session created
+                # under the name would publish over that app's URL and
+                # serve its database. The name is the app's until the
+                # app is unpublished.
+                raise ReservedSessionError(
+                    f"{name} was deleted, and an app it published is still "
+                    "served under its name — unpublish the app to use the "
+                    "name again"
                 )
             model = manifest["models"].get(name) or self._default_model
             # A name that is already a session opens the file its row
@@ -3621,6 +3660,13 @@ class Registry:
     # gave. Installs from when the lineage could be chosen may still
     # hold several apps for one session; the newest by publish is the
     # one it goes on extending, and the rest keep serving.
+    #
+    # The row's name is the session's for as long as the app lives.
+    # Deleting the session keeps the row, and a name the row still
+    # holds is neither minted nor accepted for a new session: one
+    # would extend the dead session's app, publishing over a URL
+    # somebody holds and serving that app's database. Unpublishing
+    # drops the row and hands the name back.
     #
     # nontainer's registry is generic — a name, its versions, and which
     # one is current. The token, the route and the db are the studio's,
