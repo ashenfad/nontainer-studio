@@ -348,6 +348,46 @@ def _delegate_ttl_hours() -> float:
     return max(0.0, hours)
 
 
+def _delegate_depth() -> int:
+    """``NONTAINER_STUDIO_DELEGATE_DEPTH``, how deep delegation may
+    nest.
+
+    A delegate is a full agent on the same model, with delegate
+    workers of its own, so nesting multiplies rather than adds: with
+    nothing bounding it, one ask can grow a tree nobody asked for on
+    the asker's budget. The cap counts hops from the session a human
+    started, and it is checked when a delegate asks for one of its
+    own: ``2`` lets that session delegate and lets its delegates
+    delegate, and refuses the generation after them. ``0`` turns the
+    cap off. Unparseable or negative values fall back to the default
+    rather than raising, matching how the other settings handle a bad
+    value.
+    """
+    try:
+        return max(0, int(os.getenv("NONTAINER_STUDIO_DELEGATE_DEPTH", "2")))
+    except ValueError:
+        return 2
+
+
+def _delegate_tool_calls() -> int:
+    """``NONTAINER_STUDIO_DELEGATE_TOOL_CALLS``, how many tool calls a
+    delegate may spend in one turn.
+
+    A turn is one agno run and one agno run is a tool loop with no
+    bound of its own; a delegate's loop has no human watching it and
+    no stop button over it, so a delegate that has found a rhythm it
+    cannot break out of spends the session's budget on it. Default 60,
+    which is generous for a real task and short of a loop. ``0``
+    turns the cap off. Unparseable or negative values fall back to the
+    default rather than raising, matching how the other settings
+    handle a bad value.
+    """
+    try:
+        return max(0, int(os.getenv("NONTAINER_STUDIO_DELEGATE_TOOL_CALLS", "60")))
+    except ValueError:
+        return 60
+
+
 def _hours(hours: float) -> str:
     """``24 hours`` / ``1 hour`` — the TTL as prose says it."""
     return f"{hours:g} hour{'' if hours == 1 else 's'}"
@@ -360,8 +400,16 @@ def _flag(name: str) -> bool:
 
 
 def wsgit_enabled() -> bool:
-    """``NONTAINER_STUDIO_WSGIT``: whether the agent's terminal carries
-    the ``ws-git`` verb.
+    """Whether the agent's terminal carries the ``ws-git`` verb:
+    ``NONTAINER_STUDIO_WSGIT`` asks for it, and
+    ``NONTAINER_STUDIO_SESSIONS`` asks for it too.
+
+    Delegation without the verb is the degraded half of itself — a
+    delegate's files stay on its own branch and its answer is all that
+    ever comes back — so a studio told to hand an agent the `sessions`
+    tool is told to hand it what brings a delegate's work over.
+    Versioning without delegation is a state worth having, so the verb
+    alone still means exactly the verb.
 
     Off, ``register_wsgit`` is never called, so the verb is absent from
     the terminal and the primer teaches no spelling for it. The
@@ -370,13 +418,17 @@ def wsgit_enabled() -> bool:
     host-side verbs over that history — so this decides what the AGENT
     can type, nothing about what the studio can do.
     """
-    return _flag("NONTAINER_STUDIO_WSGIT")
+    return _flag("NONTAINER_STUDIO_WSGIT") or _flag("NONTAINER_STUDIO_SESSIONS")
 
 
 def sessions_tool_enabled() -> bool:
     """``NONTAINER_STUDIO_SESSIONS``: whether the agent is given the
     ``sessions`` tool, its handle on delegation and on what the human
     has published.
+
+    On, it also turns the ``ws-git`` verb on, because a delegate's work
+    comes back through that verb and nothing else does
+    (:func:`wsgit_enabled`).
 
     Off, the tool is not registered and the primer says nothing about
     delegating or about published apps. The session's ``Sessions``
@@ -861,6 +913,25 @@ def _delegation_primer(delegates: bool, wsgit: bool) -> str:
     return DELEGATION_PRIMER if wsgit else NO_VERSIONING_PRIMER
 
 
+DEPTH_CAP_PRIMER = (
+    " Delegation stops with you: this session is already as deep as forks "
+    "may nest here, so `sessions ask` is refused — work you would have "
+    "handed on is work to do yourself and report."
+)
+
+
+def _depth_primer(at_cap: bool) -> str:
+    """The nesting cap, told only to the session it binds.
+
+    A cap is a refusal the agent meets mid-turn, and one that binds
+    nobody is a sentence every other session pays for in prompt and in
+    puzzlement. So the session at the bottom is told it cannot pass
+    the work on, and every session above it reads nothing about a
+    limit it will not hit.
+    """
+    return DEPTH_CAP_PRIMER if at_cap else ""
+
+
 def _retention_primer(hours: float) -> str:
     """What a delegating agent can only be told by whoever schedules
     the sweep.
@@ -921,6 +992,24 @@ def _sessions_description() -> str:
 
 
 SESSIONS_TOOL_DESCRIPTION = _sessions_description()
+
+
+def _depth_refusal(cap: int) -> str:
+    """What a session at the nesting cap reads instead of a fork.
+
+    Written for the model that asked: a refusal is only useful with
+    the way forward in it, and the way forward for a delegate that
+    cannot delegate is the task itself. The other actions are named
+    because this one refusal must not read as the whole tool going
+    away.
+    """
+    return (
+        f"sessions ask refused: delegation nests {cap} level(s) deep here and "
+        "this session is already that deep, so there is no fork to hand this "
+        "to. Do the task yourself, or answer with what you have found — your "
+        "reply is the whole of what reaches the session that asked. "
+        "list, result, keep, cancel and published still work."
+    )
 
 
 def _render_published(rows: list[dict]) -> str:
@@ -1229,6 +1318,8 @@ class Registry:
         apps: AppsConfig | None = None,
         delegate_turns: int = DELEGATE_TURNS,
         delegate_ttl: float | None = None,
+        delegate_depth: int | None = None,
+        delegate_tool_calls: int | None = None,
     ) -> None:
         self._model_factory = model_factory  # (spec) -> agno Model
         self._default_model = default_model
@@ -1243,11 +1334,35 @@ class Registry:
         self.delegate_ttl_hours = (
             _delegate_ttl_hours() if delegate_ttl is None else max(0.0, delegate_ttl)
         )
+        # How deep delegation may nest, counted in hops from the
+        # session a human started; 0 is off. A studio setting because
+        # what it bounds is the studio's own doing: nontainer forks a
+        # branch, and the agent, the workers and the model behind each
+        # one are what this process puts on it.
+        self.delegate_depth = (
+            _delegate_depth() if delegate_depth is None else max(0, int(delegate_depth))
+        )
+        # Tool calls one delegate turn may spend; 0 is off. Only a
+        # delegate's agent carries it: a human's turn has somebody
+        # watching it and a stop button over it, and a delegate's turn
+        # has neither.
+        self.delegate_tool_calls = (
+            _delegate_tool_calls()
+            if delegate_tool_calls is None
+            else max(0, int(delegate_tool_calls))
+        )
         # Delegates the sweep flagged kept in nontainer's job table to
         # spare a subtree, which is not a keep anybody asked for (see
         # `_pin`). In memory only, because the flag it stands for is:
         # both die with this process.
         self._pinned: set[str] = set()
+        # Delegate turns in flight, by child name: the loop each is
+        # running on and the task that is the turn. A delegate's turn
+        # runs on a loop of its own, on a worker thread of its
+        # parent's helper, and nothing else can reach in — so the
+        # handles are kept here, where shutdown can ask a turn to stop
+        # instead of waiting out every turn the delegate has left.
+        self._delegate_runs: dict[str, tuple[Any, Any]] = {}
         # The store is the object that owns what outlives a session:
         # opening one, deleting one, and the tag scope that belongs to
         # none of them. Studio's own bookkeeping (the app dbs, the
@@ -1424,6 +1539,41 @@ class Registry:
             found.extend(children)
             frontier.extend(children)
         return found
+
+    def depth_of(self, name: str, manifest: dict | None = None) -> int:
+        """How many delegations deep ``name`` sits: ``0`` for a session
+        a human started, ``1`` for a delegate of one, ``2`` for a
+        delegate of that.
+
+        Walked over the delegates record, which is the only thing that
+        says who forked whom — a dotted name is a naming convention,
+        and `analyst.notes` a human typed is nobody's delegate. A
+        parent already on the walk ends it, so a record that somehow
+        names a cycle answers rather than spinning.
+
+        Pass ``manifest`` to answer for a batch without re-reading it.
+        """
+        record = (manifest or self._manifest())["delegates"]
+        depth = 0
+        seen = {name}
+        entry = record.get(name)
+        while entry is not None and entry["parent"] not in seen:
+            depth += 1
+            seen.add(entry["parent"])
+            entry = record.get(entry["parent"])
+        return depth
+
+    def at_depth_cap(self, name: str, manifest: dict | None = None) -> bool:
+        """Whether ``name`` has reached the nesting cap and may not
+        delegate.
+
+        Asked of the record rather than of the session, so it answers
+        for a delegate whose branch this process has never opened, and
+        asked afresh on each ask rather than frozen when the agent was
+        built: the record is what a restart keeps.
+        """
+        cap = self.delegate_depth
+        return cap > 0 and self.depth_of(name, manifest) >= cap
 
     # -- titles: display only, never identity ------------------------------
 
@@ -2443,7 +2593,7 @@ class Registry:
             e.setdefault("seq", i)
         return _compact(events)[-MAX_EVENTS:]
 
-    def _sessions_tool(self, delegates: Any) -> Callable:
+    def _sessions_tool(self, owner: str, delegates: Any) -> Callable:
         """The agent's handle on delegation, and on what the human has
         published.
 
@@ -2457,7 +2607,9 @@ class Registry:
 
         The closure captures the session's own helper — the job table
         the studio reads answers out of — and ``self``, both stable
-        across the model-switch rebuild.
+        across the model-switch rebuild. ``owner`` is the session the
+        tool belongs to, spelled apart from the tool's own ``name``
+        argument, which is the child a caller is addressing.
         """
 
         # The signature is nontainer's, argument for argument, so one
@@ -2478,6 +2630,14 @@ class Registry:
             """Delegate to a fork of this session, and read it back."""
             if action == "published":
                 return _render_published(self.list_apps())
+            if action == "ask" and self.at_depth_cap(owner):
+                # Before nontainer sees it: the fork is the expensive
+                # half, and a refusal the agent can read and act on
+                # beats a branch with an agent on it that nobody
+                # wanted. Only `ask` — reading, keeping and cancelling
+                # what this session already has cost nothing and are
+                # how it finishes with them.
+                return _depth_refusal(self.delegate_depth)
             return run_action(
                 delegates,
                 action,
@@ -2608,11 +2768,32 @@ class Registry:
         # with the knob off nothing hands the agent a name for it.
         delegation = delegates is not None and sessions_tool_enabled()
 
+        # A turn is one agno run and one agno run is a tool loop with
+        # no bound of its own. A human's session needs none — somebody
+        # is watching it and the stop button reaches it — but a
+        # delegate's turn has neither, so the calls it may spend are
+        # capped. Whether this session is a delegate is the record the
+        # studio wrote when it opened one, which is written before the
+        # open that builds this agent.
+        tool_calls = self.delegate_tool_calls if self.is_delegate(name) else 0
+
         return Agent(
             model=self._model_factory(model),
-            tools=[toolkit] + ([self._sessions_tool(delegates)] if delegation else []),
+            tools=[toolkit]
+            + ([self._sessions_tool(name, delegates)] if delegation else []),
             compress_tool_results=compression is not None,
             compression_manager=compression,
+            # Tool calls this run may spend, and None where there is
+            # no cap. Past the limit agno answers each further call
+            # with a tool result saying the limit is reached and not
+            # to retry, and the run carries on from there — so this
+            # bounds what a delegate DOES, and a model that keeps
+            # calling tools past the refusal is still in its own loop
+            # until it writes prose or the provider stops it. The turn
+            # budget is the other end of that: a turn that ends
+            # without prose spends one, and running out of turns
+            # resolves the answer as `capped`.
+            tool_call_limit=tool_calls or None,
             # runs per ATTEMPT, which is what makes it the right seam for
             # keeping files and memory rewinding together (see the hook)
             pre_hooks=[self._retry_rewind_hook(ws)],
@@ -2628,6 +2809,7 @@ class Registry:
                 + _versioning_primer(wsgit)
                 + _unit_test_primer(ws)
                 + _delegation_primer(delegation, wsgit)
+                + _depth_primer(delegation and self.at_depth_cap(name))
                 + (_retention_primer(self.delegate_ttl_hours) if delegation else "")
             ),
             # Durable chat, keyed by the session name and stored in that
@@ -3031,6 +3213,43 @@ class Registry:
         rows.sort(key=lambda r: (-r["touched"], r["name"]))
         return rows
 
+    def orphaned_delegates(self, session: Session) -> list[str]:
+        """Delegates of ``session`` that no job table remembers and no
+        turn has mentioned yet, sorted — the ones a restart parted
+        from their answers.
+
+        A job table lives in this process and a branch lives in the
+        store, so a restart keeps the record of who forked whom and
+        the branch, and takes with it every answer nobody had
+        collected. Nothing else would ever say so: the session's live
+        helper lists no job, so `sessions list` reads "no delegated
+        jobs yet" over a branch that is sitting in the store and a
+        drill-down that still lists it.
+
+        A swept delegate is none of these — its branch is gone, so
+        there is nothing to point the session at. Neither is one the
+        transcript already shows, and reading delivery off the
+        transcript is what makes the note arrive once: a restart that
+        replays the transcript finds it delivered, and a rewind that
+        unsays it makes the next turn carry it again.
+        """
+        if session.delegates is None:
+            return []
+        try:
+            live = {job.name for job in session.delegates.list()}
+        except Exception:  # noqa: BLE001 - a closed helper remembers nothing
+            live = set()
+        shown = session.delivered_delegates()
+        record = self._manifest()["delegates"]
+        return sorted(
+            child
+            for child, entry in record.items()
+            if entry["parent"] == session.name
+            and child not in live
+            and child not in shown
+            and self._store.exists(child)
+        )
+
     def delegate_of(self, name: str) -> dict | None:
         """The row ``name``'s parent sees for it, with the parent named
         — ``None`` for a session nobody forked.
@@ -3085,6 +3304,43 @@ class Registry:
             }
             self._save_manifest(manifest)
         return next(row for row in self.delegate_rows(parent) if row["name"] == child)
+
+    def hold_delegate_run(self, name: str, loop: Any, task: Any) -> None:
+        """Take the handles on a delegate turn that has just started.
+
+        One per child, because a branch runs one job at a time: the
+        helper refuses a second run on a child the first is still
+        driving.
+        """
+        with self._lock:
+            self._delegate_runs[name] = (loop, task)
+
+    def drop_delegate_run(self, name: str) -> None:
+        """Give up the handles on a delegate turn that has ended,
+        cancelled or not."""
+        with self._lock:
+            self._delegate_runs.pop(name, None)
+
+    def stop_delegate_runs(self) -> list[str]:
+        """Ask every delegate turn in flight to stop; returns the
+        children asked, sorted.
+
+        Asking, not waiting: the cancel is posted to each turn's own
+        loop and this returns at once. What waits is whoever joins the
+        helpers afterwards, and by then the turns are unwinding rather
+        than starting their next one. A turn that ends on its own
+        between the read and the post is not an error — the loop is
+        closed, the post raises, and the turn it would have stopped is
+        already over.
+        """
+        with self._lock:
+            runs = sorted(self._delegate_runs.items())
+        for name, (loop, task) in runs:
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError as e:  # one loop already gone, not the rest
+                log.info("delegates: %s's turn could not be stopped (%s)", name, e)
+        return [name for name, _ in runs]
 
     def release(self, name: str) -> None:
         """Close a session's live handles and leave everything on disk.
@@ -4726,6 +4982,11 @@ class Registry:
         return seq + 1
 
     def close(self) -> None:
+        # First, before anything joins anything: closing a session
+        # joins its delegate workers, and a delegate mid-turn would
+        # hold that join for the rest of its turns. Stopping the turns
+        # is what turns Ctrl-C into a wait of seconds.
+        self.stop_delegate_runs()
         # Sessions go OUTSIDE the lock. Closing one joins its delegate
         # workers, and a delegate still running is inside `open_delegate`
         # on a thread of its own, waiting for this same lock — holding it

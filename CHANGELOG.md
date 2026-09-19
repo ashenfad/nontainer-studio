@@ -8,6 +8,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Shutdown no longer waits out a delegate mid-turn.** Closing a
+  session joins its delegate workers, and a delegate's turn could not
+  be interrupted — `sessions cancel` discards an answer without
+  stopping the loop — so Ctrl-C with a delegate working waited out as
+  many turns as that delegate had left. A delegate's turn now runs on
+  a loop the registry can reach from another thread, and closing asks
+  every turn in flight to stop before it joins anything. A stopped
+  turn takes the path a stopped human turn takes: the transcript says
+  the studio shut down mid-run, the run is repaired so the child's
+  memory keeps the work it really did, and the job resolves as
+  `failed` with that same sentence as its answer rather than as prose
+  that merely stops.
+
+- **A delegate from before a restart is named on the parent's next
+  turn.** The job table is per process and the branch is in the store,
+  so a restart parts them: the manifest still records the child and
+  `ws-git branch` still lists it, while every answer nobody had
+  collected is gone. The parent had no way to learn that — its live
+  helper lists no job, so `sessions list` read "no delegated jobs yet"
+  over a branch the drill-down was still showing. One note per such
+  delegate now arrives in the slot an answer would have, in the
+  transcript and in what the model is sent: the task is outstanding,
+  the branch is still there (`ws-git diff` / `merge` / `checkout`
+  reach it), and asking again is `sessions ask`, since `resume`
+  continues a job and the job is what went. Delivery is derived from
+  the transcript like an answer's, so a rewind past the note
+  re-delivers it and a restart that still shows it does not.
+
+- **The `sessions` knob turns `ws-git` on with it.** Delegation
+  without the verb is the degraded half of itself: the delegate's
+  files stay on its own branch, the terminal has nothing that brings
+  them over, and the primer tells the agent to ask for findings rather
+  than edits. A studio configured to hand out delegation was still
+  able to withhold the one thing that makes a delegate's work
+  arrive. `NONTAINER_STUDIO_SESSIONS=1` now means the verb too;
+  `NONTAINER_STUDIO_WSGIT` alone still means versioning without
+  delegation. The degraded path stays for the session whose executor
+  cannot carry the verb at all — the primer and a delegate's brief
+  read what the session recorded, not what the knob asked for.
+
+- **A delegate's turn spends at most sixty tool calls.** One turn is
+  one agno run and one agno run is a tool loop with no bound of its
+  own. A human's session needs none — somebody is watching it and the
+  stop button reaches it — but a delegate's turn has neither, so a
+  delegate that finds a rhythm it cannot break out of spends the
+  session's budget on it and `sessions cancel` cannot interrupt.
+  `NONTAINER_STUDIO_DELEGATE_TOOL_CALLS`
+  (`Registry(delegate_tool_calls=...)`) caps the calls of a DELEGATE's
+  turn, 60 by default; past it each further call comes back refused
+  with a tool result saying the limit is reached, and the run goes on
+  to its reply, so what it bounds is what a delegate does rather than
+  how long it talks. Human sessions carry no limit, and `0` turns the
+  cap off.
+
+- **Delegation stops nesting after two hops.** Every session builds a
+  delegation helper with four workers, and every delegate is a full
+  agent on the parent's model with a helper of its own — so a delegate
+  that delegates multiplies rather than adds, and nothing bounded it.
+  `NONTAINER_STUDIO_DELEGATE_DEPTH` (`Registry(delegate_depth=...)`)
+  counts hops from the session a human started, 2 by default: that
+  session may delegate, its delegates may delegate, and the generation
+  after them reads a refusal on `sessions ask` that names the way
+  forward — do the task, answer with what you found. The refusal is
+  the studio's and lands before the fork, so nothing is created to
+  say it; `list`, `result`, `keep`, `cancel` and `published` are
+  untouched. Depth is walked over the record of who forked whom, never
+  off the dotted name, and the primer sentence about the cap goes only
+  to the session it binds. `0` turns the cap off.
+
 - **The version strip sits under the published app, and one pane
   serves both places it is shown.** The version list used to open as a
   modal over the preview, which covered the app it acts on: pointing

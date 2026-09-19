@@ -8,6 +8,7 @@ real against its own branch.
 
 import asyncio
 import json
+import threading
 import time
 
 import pytest
@@ -362,7 +363,7 @@ def _edit(registry, session, seq, message):
 
     async def go():
         await session.emit({"type": "truncate", "to": seq})
-        await server._run_turn(session, message)
+        await server._run_turn(session, message, registry)
 
     asyncio.run(go())
     return [e for e in session.events if e.get("seq", -1) >= since]
@@ -498,7 +499,7 @@ def test_the_tool_is_nontainers_shape_under_nontainers_name(registry):
     import inspect
 
     boss = registry.open("boss")
-    tool = registry._sessions_tool(boss.delegates)
+    tool = registry._sessions_tool(boss.name, boss.delegates)
 
     assert tool.__name__ == "sessions"
     assert list(inspect.signature(tool).parameters) == [
@@ -512,7 +513,7 @@ def test_the_tool_is_nontainers_shape_under_nontainers_name(registry):
         "wait",
     ]
     assert tool.__doc__ is sessions_mod.SESSIONS_TOOL_DESCRIPTION
-    assert registry._sessions_tool(boss.delegates).__doc__ is tool.__doc__
+    assert registry._sessions_tool(boss.name, boss.delegates).__doc__ is tool.__doc__
     assert '  action="published"' in tool.__doc__
 
     # and the agent is handed it once: nontainer's is not registered
@@ -1192,3 +1193,385 @@ def test_the_primer_says_the_number_and_the_verb(registry, tmp_path):
         assert "is swept" not in off.open("boss").agent.instructions
     finally:
         off.close()
+
+
+# -- the nesting cap: a delegate is a full agent ----------------------------
+
+
+def _tool(session):
+    """The `sessions` tool as the agent holds it."""
+    return next(
+        t for t in session.agent.tools if getattr(t, "__name__", "") == "sessions"
+    )
+
+
+def _nest(registry, *names):
+    """A chain of delegates, each forked by the one before it."""
+    session = registry.open(names[0])
+    for parent, child in zip(names, names[1:]):
+        session = registry.open_delegate(parent, child)
+    return session
+
+
+def test_the_depth_setting_is_hops_and_a_bad_one_falls_back(monkeypatch, tmp_path):
+    """Read where the other settings are read, in the unit the rule is
+    stated in. A value that is not a number keeps the default rather
+    than taking the studio down at startup."""
+    assert sessions_mod._delegate_depth() == 2
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_DEPTH", "deep")
+    assert sessions_mod._delegate_depth() == 2
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_DEPTH", "-1")
+    assert sessions_mod._delegate_depth() == 0
+
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_DEPTH", "1")
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+    )
+    try:
+        # one hop: the session a human started delegates, and its
+        # delegate does the work itself
+        child = _nest(registry, "boss", "boss.scout")
+        assert registry.delegate_depth == 1
+        assert registry.at_depth_cap("boss") is False
+        assert "refused" in _tool(child)(action="ask", task="have a look")
+    finally:
+        registry.close()
+
+
+def test_depth_is_counted_off_the_record_and_not_off_the_name(registry):
+    """A dot is a naming convention and a human may type one, so the
+    hops are walked over who forked whom."""
+    _nest(registry, "boss", "boss.scout", "boss.scout.finch")
+    registry.open("boss.notes")  # a human's own session, named under boss
+
+    assert registry.depth_of("boss") == 0
+    assert registry.depth_of("boss.scout") == 1
+    assert registry.depth_of("boss.scout.finch") == 2
+    assert registry.depth_of("boss.notes") == 0
+    assert registry.depth_of("nobody") == 0
+
+
+def test_a_grandchild_is_refused_a_delegate_and_told_what_to_do(registry):
+    """Two hops is as deep as forks nest by default: the session a
+    human started delegates, its delegate delegates, and the one after
+    that does the work itself."""
+    grandchild = _nest(registry, "boss", "boss.scout", "boss.scout.finch")
+
+    refused = _tool(grandchild)(action="ask", task="have a look at this")
+
+    assert "refused" in refused
+    # the way forward, not just the wall
+    assert "Do the task yourself" in refused
+    assert "answer with what you have found" in refused
+    # and nothing was forked to say it
+    assert registry.delegates_of("boss.scout.finch") == []
+    # the rest of the tool is untouched
+    assert "no delegated jobs yet" in _tool(grandchild)(action="list")
+
+
+def test_the_asks_above_the_cap_go_through(registry):
+    """A missing task is nontainer's refusal, not the studio's: reading
+    it back is how a test knows the ask reached the dispatch rather
+    than stopping at the gate."""
+    _nest(registry, "boss", "boss.scout")
+
+    for name in ("boss", "boss.scout"):
+        assert registry.at_depth_cap(name) is False
+        assert "needs a task" in _tool(registry.open(name))(action="ask")
+
+
+def test_zero_is_no_cap_at_all(tmp_path):
+    """`0` turns the cap off: delegation nests as far as the agents
+    take it."""
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+        delegate_depth=0,
+    )
+    try:
+        deep = _nest(registry, "boss", "boss.a", "boss.a.b", "boss.a.b.c")
+        assert registry.depth_of(deep.name) == 3
+        assert registry.at_depth_cap(deep.name) is False
+        assert "needs a task" in _tool(deep)(action="ask")
+    finally:
+        registry.close()
+
+
+def test_only_the_session_at_the_cap_is_told_about_it(registry):
+    """A cap nobody above it will hit is a sentence every session pays
+    for in prompt, so it is told to the one it binds."""
+    grandchild = _nest(registry, "boss", "boss.scout", "boss.scout.finch")
+
+    assert sessions_mod.DEPTH_CAP_PRIMER in grandchild.agent.instructions
+    for name in ("boss", "boss.scout"):
+        assert sessions_mod.DEPTH_CAP_PRIMER not in (
+            registry.open(name).agent.instructions
+        )
+
+
+# -- the tool-call cap: a delegate's loop has nobody watching it ------------
+
+
+def test_the_tool_call_setting_is_calls_and_a_bad_one_falls_back(monkeypatch):
+    """Read where the other settings are read. A value that is not a
+    number keeps the default rather than taking the studio down at
+    startup."""
+    assert sessions_mod._delegate_tool_calls() == 60
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TOOL_CALLS", "12")
+    assert sessions_mod._delegate_tool_calls() == 12
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TOOL_CALLS", "lots")
+    assert sessions_mod._delegate_tool_calls() == 60
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TOOL_CALLS", "-1")
+    assert sessions_mod._delegate_tool_calls() == 0
+
+
+def test_only_a_delegates_agent_carries_the_cap(registry):
+    """The human's session is watched and can be stopped; a delegate's
+    turn is neither, which is the whole of why one has the cap and the
+    other does not."""
+    parent = registry.open("boss")
+    child = registry.open_delegate("boss", "boss.scout")
+
+    assert parent.agent.tool_call_limit is None
+    assert child.agent.tool_call_limit == registry.delegate_tool_calls == 60
+
+
+def test_no_cap_no_limit(tmp_path):
+    """`0` is the cap off: a delegate's loop is bounded by its turns
+    and nothing else."""
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+        delegate_tool_calls=0,
+    )
+    try:
+        registry.open("boss")
+        child = registry.open_delegate("boss", "boss.scout")
+        assert child.agent.tool_call_limit is None
+    finally:
+        registry.close()
+
+
+def test_a_delegate_past_the_cap_stops_calling_and_still_answers(tmp_path):
+    """What the cap buys, end to end: the calls past it do not run, and
+    the turn still resolves into an answer rather than hanging."""
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+        delegate_tool_calls=2,
+    )
+    try:
+        parent = registry.open("boss")
+        answer = _delegate(
+            registry,
+            parent,
+            "\n".join(
+                '!tool file_write {"path": "/workspace/n%d.md", "content": "%d"}'
+                % (i, i)
+                for i in range(3)
+            )
+            + "\n!text Wrote what I could.",
+        )
+
+        assert answer.status == "answered"
+        assert answer.text == "Wrote what I could."
+        child = registry.open(answer.branch)
+        assert child.ws.files.fs.exists("/workspace/n0.md")
+        assert child.ws.files.fs.exists("/workspace/n1.md")
+        assert not child.ws.files.fs.exists("/workspace/n2.md")
+    finally:
+        registry.close()
+
+
+# -- delegates a restart parted from their answers --------------------------
+
+
+def _reborn(tmp_path):
+    """A registry over a store some earlier process was using."""
+    return sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+    )
+
+
+def _asked_before_a_restart(tmp_path):
+    """A parent with a delegate in the store and no job table left."""
+    registry = _reborn(tmp_path)
+    try:
+        parent = registry.open("boss")
+        _turn(parent, ASK_ASYNC, registry)
+        _await_delegates(parent)
+    finally:
+        registry.close()
+
+
+def test_a_delegate_from_before_a_restart_is_named_on_the_next_turn(tmp_path):
+    """The job table is per process and the branch is in the store, so
+    a restart parts them: the answer is gone and the branch is not.
+    Nothing else would say so — the live helper lists no job, so
+    `sessions list` reads as though the delegate was never asked
+    for."""
+    _asked_before_a_restart(tmp_path)
+
+    registry = _reborn(tmp_path)
+    try:
+        parent = registry.open("boss")
+        assert parent.delegates.list() == []
+        assert "boss.scout" in registry._store.sessions()
+
+        events = _turn(parent, "where are we?", registry)
+
+        note = next(e for e in events if e["type"] == "delegate")
+        assert note["name"] == "boss.scout"
+        assert note["status"] == "unanswered"
+        assert "before the studio restarted" in note["text"]
+        # what is left of it, and how to ask again
+        assert "ws-git diff boss.scout" in note["text"]
+        assert "ws-git merge boss.scout" in note["text"]
+        assert "sessions ask" in note["text"]
+        assert "resume" in note["text"]
+
+        # the model was sent it too, ahead of the human's message (the
+        # dummy echoes what it was asked)
+        reply = "".join(e["delta"] for e in events if e["type"] == "text")
+        assert reply.startswith("dummy: [delegate `boss.scout`")
+
+        # once: the turn after it carries nothing
+        assert not any(
+            e["type"] == "delegate" for e in _turn(parent, "!text ok", registry)
+        )
+    finally:
+        registry.close()
+
+    # and not again after another restart: the transcript still shows
+    # the note, and delivery is a fact of the transcript
+    again = _reborn(tmp_path)
+    try:
+        assert not any(
+            e["type"] == "delegate"
+            for e in _turn(again.open("boss"), "!text still ok", again)
+        )
+    finally:
+        again.close()
+
+
+def test_a_rewind_past_the_note_delivers_it_again(tmp_path):
+    """An edit unsays the turn the note landed in, so the replacement
+    turn has to carry it or the rewound conversation never hears of
+    that delegate."""
+    _asked_before_a_restart(tmp_path)
+
+    registry = _reborn(tmp_path)
+    try:
+        parent = registry.open("boss")
+        delivered = _turn(parent, "where are we?", registry)
+        assert [e["name"] for e in delivered if e["type"] == "delegate"] == [
+            "boss.scout"
+        ]
+
+        seq = next(e["seq"] for e in delivered if e["type"] == "user")
+        again = _edit(registry, parent, seq, "actually, where are we?")
+
+        assert [e["name"] for e in again if e["type"] == "delegate"] == ["boss.scout"]
+        # once, though: the turn after it is not a third delivery
+        assert not any(
+            e["type"] == "delegate" for e in _turn(parent, "!text ok", registry)
+        )
+    finally:
+        registry.close()
+
+
+def test_a_swept_delegate_is_not_named(tmp_path):
+    """The note points at a branch. One the sweep has taken has no
+    branch and no record, so there is nothing to point at."""
+    _asked_before_a_restart(tmp_path)
+
+    registry = _tiny_ttl(tmp_path)  # sweeps at open, with no table left
+    try:
+        parent = registry.open("boss")
+        assert "boss.scout" not in registry._store.sessions()
+        assert registry.orphaned_delegates(parent) == []
+        assert not any(
+            e["type"] == "delegate" for e in _turn(parent, "!text ok", registry)
+        )
+    finally:
+        registry.close()
+
+
+def test_a_delegate_with_a_live_job_is_not_named(registry):
+    """The note is for the ones no table remembers. A delegate this
+    process asked for is in its parent's table, and its answer is
+    delivered the ordinary way."""
+    parent = registry.open("boss")
+    _turn(parent, ASK_ASYNC, registry)
+    _await_delegates(parent)
+
+    assert registry.orphaned_delegates(parent) == []
+    delivered = _turn(parent, "what did the scout say?", registry)
+    note = next(e for e in delivered if e["type"] == "delegate")
+    assert note["status"] == "answered"
+
+
+# -- shutdown does not wait out a delegate ----------------------------------
+
+
+class BlockingModel(DummyModel):
+    """A model whose turn never ends on its own.
+
+    The wait is on the turn's own loop, so only a cancel arriving
+    there ends it — which is exactly the thing under test, and a wait
+    on a worker thread would outlive the loop it was started from.
+    """
+
+    def __init__(self, entered):
+        super().__init__()
+        self._entered = entered
+
+    async def ainvoke_stream(self, messages, **kwargs):
+        self._entered.set()
+        await asyncio.Event().wait()
+        yield ModelResponse(role="assistant", content="unreachable")
+
+
+def test_closing_the_registry_does_not_wait_out_a_delegates_turn(tmp_path):
+    """Closing a session joins its delegate workers, so a delegate
+    mid-turn used to hold Ctrl-C for as many turns as it had left.
+    The turns are asked to stop first."""
+    entered = threading.Event()
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a, **k: BlockingModel(entered),
+        store=tmp_path,
+        default_model="dummy",
+    )
+    parent = registry.open("boss")
+    closed = False
+    try:
+        parent.delegates.ask("a task it will never finish", name="scout")
+        assert entered.wait(20), "the delegate's turn never started"
+
+        began = time.monotonic()
+        registry.close()
+        closed = True
+        assert time.monotonic() - began < 10
+    finally:
+        if not closed:
+            registry.close()
+
+    # the child's own transcript records the cut
+    log = (tmp_path / "events" / "boss.scout.jsonl").read_text()
+    cut = [json.loads(line) for line in log.splitlines()]
+    assert [e for e in cut if e["type"] == "error"] == [
+        {"type": "error", "message": server.STOPPED_AT_SHUTDOWN, "seq": 1}
+    ]
+    assert cut[-1]["type"] == "done"  # the turn was closed out, not abandoned
+
+    # and the job it belonged to resolved, in words
+    answer = parent.delegates.result("boss.scout")
+    assert answer.status == "failed"
+    assert answer.text == server.STOPPED_AT_SHUTDOWN

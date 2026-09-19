@@ -103,13 +103,20 @@ repo's `nontainer_studio/appassets/` — see **Works offline** below),
 compression watermark), `NONTAINER_STUDIO_DELEGATE_TTL` (hours a
 delegate's branch is kept after anyone last dealt with it; 24 by
 default, `0` turns the sweep off — see **Delegation** below),
+`NONTAINER_STUDIO_DELEGATE_DEPTH` (how deep delegation may nest,
+counted in hops from the session a human started; 2 by default, `0`
+turns the cap off — see **Delegation** below),
+`NONTAINER_STUDIO_DELEGATE_TOOL_CALLS` (tool calls one delegate turn
+may spend; 60 by default, `0` turns the cap off — human sessions are
+never capped),
 `NONTAINER_STUDIO_WSGIT` (give the agent the `ws-git` terminal verb —
 **off by default for now**, while the app-building path is polished;
 the human's rewind, fork, publish and restore are host-side and work
 either way), `NONTAINER_STUDIO_SESSIONS` (give the agent the `sessions`
 tool, so it can delegate and list published apps — **off by default for
-now**, for the same reason; the delegates rail, the drill-down and the
-retention sweep stay wired),
+now**, for the same reason; it turns `ws-git` on as well, since that is
+how a delegate's work comes back, and the delegates rail, the
+drill-down and the retention sweep stay wired either way),
 `NONTAINER_STUDIO_ISOLATION` (`process` by default — agent code runs in
 a worker process of its own so a segfault/OOM in C-extension guts costs
 the turn, not the server; the
@@ -323,13 +330,28 @@ ws-git checkout <name> -- <paths>   # take some
 ```
 
 `ws-git` is the agent's own git over the session — status, commit, log,
-diff, branch, merge, checkout — and it is on because delegation is what
-needs it. A delegate's work arrives as a *named* commit only if the
+diff, branch, merge, checkout — and `NONTAINER_STUDIO_SESSIONS` turns
+it on for exactly that reason: without it, delegation is the degraded
+half of itself, where the delegate's answer is all that ever comes
+back and the honest thing to ask it for is findings rather than edits.
+`NONTAINER_STUDIO_WSGIT` on its own is still versioning without
+delegation. A delegate's work arrives as a *named* commit only if the
 delegate runs `ws-git commit`; what it staged is taken as exactly that,
 and anything it wrote past its last commit is reported as left out
 rather than committed on its behalf. A delegate that never touches
 ws-git is simpler: its branch head is its result, since every write is
 already there.
+
+**A delegate the restart outlived is named, once.** The job table
+lives in the process and the branch lives in the store, so a restart
+keeps the record of who forked whom and the branch and takes every
+uncollected answer with it. The parent's next turn carries one note
+per such delegate — into the transcript and into what the model is
+sent — saying the task is outstanding, that `ws-git diff` / `merge` /
+`checkout` still reach the branch, and that asking again is `sessions
+ask` rather than `resume`. Delivery is a fact of the transcript like
+every other, so a rewind past the note brings it back and a second
+restart does not repeat it.
 
 **Delivery is pull, notification is the studio's.** nontainer holds the
 answer until something collects it; the studio shows a count on the
@@ -345,9 +367,30 @@ those are is recorded when the studio opens one, never read off the
 name: `analyst.sleepy-otter` says who asked, and a `analyst.notes` you
 made yourself is an ordinary session that nothing hides or deletes.
 A delegate's conversation never comes back — its reply is the summary.
+Shutting the studio down does not wait for a delegate: each delegate
+turn runs on a loop the registry can reach, and closing asks every
+turn in flight to stop before it joins the workers. A stopped turn is
+repaired like any other cut turn — the child's memory keeps what it
+did — and the job resolves as `failed` saying the studio shut down
+mid-run.
+
 Budget is turns: `Registry(delegate_turns=...)`, three by default, and
 a delegate that stops without a reply spends the rest being asked to
-finish before its answer resolves as `capped`.
+finish before its answer resolves as `capped`. Each of those turns is
+a tool loop with nobody watching it and no stop button over it, so a
+delegate's agent also carries a per-turn tool-call cap
+(`NONTAINER_STUDIO_DELEGATE_TOOL_CALLS`, 60 by default, `0` off). Past
+it the calls are refused with a tool result saying so and the turn
+carries on to its reply; a human's session carries no such cap.
+
+**Delegation does not nest forever.** A delegate is a full agent on
+the parent's model, with four delegate workers of its own, so nesting
+multiplies rather than adds. `NONTAINER_STUDIO_DELEGATE_DEPTH` counts
+hops from the session a human started: 2 by default, so that session
+delegates and its delegates delegate, and the generation after them
+reads a refusal on `sessions ask` telling it to do the task itself and
+answer with what it found. The other actions stay, and only the
+session the cap binds is told about it. `0` turns the cap off.
 
 **A delegate's branch is not forever.** Retention is an idle TTL: one
 nobody has dealt with for `NONTAINER_STUDIO_DELEGATE_TTL` hours (24 by

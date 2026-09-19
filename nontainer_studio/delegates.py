@@ -17,8 +17,10 @@ Three rules hold this together:
   branch, builds the same ``WorkspaceTools``, the same python config
   with the same app-db policy, and the same agent. The one thing a
   delegate needs that a new session does not is the parent's live app
-  state, so the app db is COPIED in first — a delegate that cannot read
-  the rows the app is serving would be testing a different program.
+  state, and it gets it by REFERENCE: the child's row names the
+  parent's db file, so a delegate writes to the store its parent is
+  looking at rather than to a copy of it, the way a real subagent
+  does.
 - **The runner never takes the parent's turn lock.** It is called on a
   worker thread inside ``Sessions.ask`` while the parent's own turn is
   still running, so touching the parent's lock would deadlock the turn
@@ -112,6 +114,41 @@ def brief(parent: str, commit: str | None, *, versioning: bool) -> str:
     )
 
 
+ORPHAN_VERSIONING = (
+    "Its branch is still here, exactly as it left it: `ws-git diff {name}` "
+    "reads it, `ws-git merge {name}` takes all of it, `ws-git checkout "
+    "{name} -- <paths>` takes some.\n"
+)
+
+
+def orphan_message(name: str, *, versioning: bool) -> str:
+    """A delegate whose answer a restart took, as the session that
+    asked reads it.
+
+    The job table lives in this process and the branch lives in the
+    store, so a restart parts them: the delegate is still recorded and
+    its branch is still there, while every answer nobody had collected
+    is gone. The session that asked would otherwise never hear of it
+    again — its live helper lists no job, so `sessions list` says
+    there are no delegated jobs over a branch sitting in the store.
+
+    Named as mechanism for the reason every other delegation message
+    is: it arrives in the slot a person's message occupies. The way
+    forward is a fresh ask, because `resume` continues a job and the
+    job is what went.
+    """
+    return (
+        f"[delegate `{name}` — the studio's delegation mechanism speaking, "
+        "not the person at the keyboard. You asked this delegate before the "
+        "studio restarted, and no answer of its was ever recorded here, so "
+        "the task it was given is outstanding.]\n"
+        + (ORPHAN_VERSIONING.format(name=name) if versioning else "")
+        + "To put the task to a delegate again, ask afresh with `sessions "
+        "ask`: `resume` continues a job, and the job is what the restart "
+        "took."
+    )
+
+
 def answer_message(name: str, answer: Answer) -> str:
     """A delegate's answer as it reaches the session that asked.
 
@@ -136,8 +173,9 @@ class StudioRunner:
     """``SessionRunner`` over one parent session's delegates.
 
     Built per parent because the answer's frame is per parent: the
-    header names the session that asked, and the child's app db is
-    seeded from that session's. ``Sessions`` calls :meth:`run` on a
+    header names the session that asked, and the child's row names
+    that session's db file, so what the delegate writes lands in the
+    store its parent is looking at. ``Sessions`` calls :meth:`run` on a
     worker thread of its own, one call per delegate.
     """
 
@@ -164,6 +202,12 @@ class StudioRunner:
         handed over by the caller that did the forking — the header the
         delegate opens with names it, and the child's own branch cannot
         be asked, since the fork writes commits of its own on top.
+
+        A turn stopped from outside — the studio shutting down on a
+        delegate mid-run — comes back as a ``failed`` answer saying so
+        in words, rather than as prose that simply stops: the caller
+        reads a status, and "it shut down" is a different fact from
+        "it had nothing more to say".
 
         The child's handles are released at the end either way: its
         branch is what the parent merges from, and an agent, a workspace
@@ -227,7 +271,11 @@ class StudioRunner:
 
         Its own event loop: the runner is on a worker thread, and a
         delegate's turn must not depend on a server loop being there to
-        borrow (nor block one for as long as the delegate takes).
+        borrow (nor block one for as long as the delegate takes). The
+        loop and the turn's task are handed to the registry for as long
+        as the turn runs, because a loop nobody else can reach is a
+        turn nobody can stop: shutdown would wait out every turn a
+        delegate had left.
 
         The registry goes with it, as it does from the routes. A
         delegate may delegate, and what its own job table knows about
@@ -236,12 +284,39 @@ class StudioRunner:
         runner releases the child the moment it answers, and the table
         goes with it, so a turn run without the registry loses a keep
         the delegate asked for and the branch is swept from under it.
+
+        Writing those handles down takes the registry's lock for the
+        moment it takes to write them, the way opening and releasing
+        the child already do. The only TURN lock this touches is still
+        the child's: the parent's turn is running on the thread that
+        asked, and reaching for its lock would deadlock it.
         """
         from .server import _run_turn
 
         child.turn_lock.acquire()  # _run_turn releases it
         since = child.next_seq
-        asyncio.run(_run_turn(child, prompt, self._registry))
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            task = loop.create_task(_run_turn(child, prompt, self._registry))
+            self._registry.hold_delegate_run(child.name, loop, task)
+            try:
+                loop.run_until_complete(task)
+            except asyncio.CancelledError:
+                # Asked for: somebody reached in and stopped this turn.
+                # `_run_turn` has already written why into the child's
+                # transcript, which is where the answer is read from.
+                pass
+            finally:
+                self._registry.drop_delegate_run(child.name)
+                # What `asyncio.run` did on the way out, kept: an
+                # unfinished async generator or a worker thread the
+                # turn started outlives the loop otherwise.
+                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.run_until_complete(loop.shutdown_default_executor())
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
         return _reply(child, since)
 
 

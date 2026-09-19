@@ -48,6 +48,16 @@ MAX_UPLOAD = 50_000_000  # upload bodies buffer in memory; cap them
 HTTP_VERBS = ["GET", "POST", "PUT", "DELETE", "PATCH"]
 
 
+STOPPED_AT_SHUTDOWN = "the studio shut down while this turn was running"
+"""Why a turn ended when nothing in it went wrong.
+
+It reaches two readers and must serve both: the human, who sees the
+turn stop mid-sentence and needs the reason to be the studio rather
+than the model, and a delegate's runner, which reads the error off
+the transcript and reports it as the answer to whoever asked.
+"""
+
+
 DELEGATE_SWEEP_EVERY = 3600
 """Seconds between delegate retention sweeps.
 
@@ -381,9 +391,10 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
 
     ``registry`` is passed so the turn can write down what its
     delegates' job table now says (retention outlives the table; see
-    ``Registry.snapshot_delegates``). Without one the turn runs
-    exactly as before and records nothing — every caller that has a
-    registry passes it."""
+    ``Registry.snapshot_delegates``), and so it can name the delegates
+    a restart left without answers. Without one the turn runs exactly
+    as before and does neither — every caller that has a registry
+    passes it."""
 
     def snapshot() -> None:
         if registry is not None:
@@ -404,6 +415,16 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
         # because they arrived first and the message is the instruction.
         # Marked as mechanism, never as the human asking (answer_message).
         answers = session.take_delegate_answers()
+        # And the ones a restart parted from their answers. Both are
+        # read before either is emitted: each is filtered on what the
+        # transcript already shows, and an emitted event is part of
+        # that.
+        notes = [
+            (name, delegates.orphan_message(name, versioning=session.wsgit))
+            for name in (
+                registry.orphaned_delegates(session) if registry is not None else []
+            )
+        ]
         for name, answer in answers:
             await session.emit(
                 {
@@ -413,6 +434,19 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
                     "text": delegates.answer_message(name, answer),
                 }
             )
+        for name, note in notes:
+            # The same event, because it is the same fact in the same
+            # slot: what became of a delegate this session asked for.
+            # Its status is what is true of it — asked, and never
+            # answered here.
+            await session.emit(
+                {
+                    "type": "delegate",
+                    "name": name,
+                    "status": "unanswered",
+                    "text": note,
+                }
+            )
         if answers:
             # Reading an answer is dealing with the delegate, and
             # nontainer moved its `touched` when this collected it.
@@ -420,7 +454,9 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
             # what decides whether a delivered answer counts as recent.
             await asyncio.to_thread(snapshot)
         prompt = "\n\n".join(
-            [delegates.answer_message(n, a) for n, a in answers] + [message]
+            [delegates.answer_message(n, a) for n, a in answers]
+            + [note for _, note in notes]
+            + [message]
         )
         async for ev in session.agent.arun(prompt, stream=True, stream_events=True):
             run_id = getattr(ev, "run_id", None) or run_id
@@ -468,6 +504,17 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
             await asyncio.to_thread(
                 repair_aborted_run, session, run_id, _short_middle(str(errored), 300)
             )
+    except asyncio.CancelledError:
+        # Cut from outside the loop, which is the studio shutting down
+        # on a turn it cannot wait out. The `error` event is what the
+        # human reads and what a delegate's runner reads its status
+        # off, and the repair is what keeps the work the turn really
+        # did in the agent's memory. Both run inline: the loop this
+        # turn is on is closing under it, so there is no thread to
+        # hand them to.
+        await session.emit({"type": "error", "message": STOPPED_AT_SHUTDOWN})
+        repair_aborted_run(session, run_id, STOPPED_AT_SHUTDOWN)
+        raise
     except Exception as e:
         await session.emit({"type": "error", "message": _short_middle(str(e))})
         # agno stamps the stored run status=error, and its history
