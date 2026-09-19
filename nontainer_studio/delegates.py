@@ -112,6 +112,41 @@ def brief(parent: str, commit: str | None, *, versioning: bool) -> str:
     )
 
 
+ORPHAN_VERSIONING = (
+    "Its branch is still here, exactly as it left it: `ws-git diff {name}` "
+    "reads it, `ws-git merge {name}` takes all of it, `ws-git checkout "
+    "{name} -- <paths>` takes some.\n"
+)
+
+
+def orphan_message(name: str, *, versioning: bool) -> str:
+    """A delegate whose answer a restart took, as the session that
+    asked reads it.
+
+    The job table lives in this process and the branch lives in the
+    store, so a restart parts them: the delegate is still recorded and
+    its branch is still there, while every answer nobody had collected
+    is gone. The session that asked would otherwise never hear of it
+    again — its live helper lists no job, so `sessions list` says
+    there are no delegated jobs over a branch sitting in the store.
+
+    Named as mechanism for the reason every other delegation message
+    is: it arrives in the slot a person's message occupies. The way
+    forward is a fresh ask, because `resume` continues a job and the
+    job is what went.
+    """
+    return (
+        f"[delegate `{name}` — the studio's delegation mechanism speaking, "
+        "not the person at the keyboard. You asked this delegate before the "
+        "studio restarted, and no answer of its was ever recorded here, so "
+        "the task it was given is outstanding.]\n"
+        + (ORPHAN_VERSIONING.format(name=name) if versioning else "")
+        + "To put the task to a delegate again, ask afresh with `sessions "
+        "ask`: `resume` continues a job, and the job is what the restart "
+        "took."
+    )
+
+
 def answer_message(name: str, answer: Answer) -> str:
     """A delegate's answer as it reaches the session that asked.
 

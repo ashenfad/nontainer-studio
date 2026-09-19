@@ -342,6 +342,17 @@ rather than committed on its behalf. A delegate that never touches
 ws-git is simpler: its branch head is its result, since every write is
 already there.
 
+**A delegate the restart outlived is named, once.** The job table
+lives in the process and the branch lives in the store, so a restart
+keeps the record of who forked whom and the branch and takes every
+uncollected answer with it. The parent's next turn carries one note
+per such delegate — into the transcript and into what the model is
+sent — saying the task is outstanding, that `ws-git diff` / `merge` /
+`checkout` still reach the branch, and that asking again is `sessions
+ask` rather than `resume`. Delivery is a fact of the transcript like
+every other, so a rewind past the note brings it back and a second
+restart does not repeat it.
+
 **Delivery is pull, notification is the studio's.** nontainer holds the
 answer until something collects it; the studio shows a count on the
 parent's rail row and injects the answer into that session's next turn

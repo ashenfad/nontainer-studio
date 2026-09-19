@@ -3206,6 +3206,43 @@ class Registry:
         rows.sort(key=lambda r: (-r["touched"], r["name"]))
         return rows
 
+    def orphaned_delegates(self, session: Session) -> list[str]:
+        """Delegates of ``session`` that no job table remembers and no
+        turn has mentioned yet, sorted — the ones a restart parted
+        from their answers.
+
+        A job table lives in this process and a branch lives in the
+        store, so a restart keeps the record of who forked whom and
+        the branch, and takes with it every answer nobody had
+        collected. Nothing else would ever say so: the session's live
+        helper lists no job, so `sessions list` reads "no delegated
+        jobs yet" over a branch that is sitting in the store and a
+        drill-down that still lists it.
+
+        A swept delegate is none of these — its branch is gone, so
+        there is nothing to point the session at. Neither is one the
+        transcript already shows, and reading delivery off the
+        transcript is what makes the note arrive once: a restart that
+        replays the transcript finds it delivered, and a rewind that
+        unsays it makes the next turn carry it again.
+        """
+        if session.delegates is None:
+            return []
+        try:
+            live = {job.name for job in session.delegates.list()}
+        except Exception:  # noqa: BLE001 - a closed helper remembers nothing
+            live = set()
+        shown = session.delivered_delegates()
+        record = self._manifest()["delegates"]
+        return sorted(
+            child
+            for child, entry in record.items()
+            if entry["parent"] == session.name
+            and child not in live
+            and child not in shown
+            and self._store.exists(child)
+        )
+
     def delegate_of(self, name: str) -> dict | None:
         """The row ``name``'s parent sees for it, with the parent named
         — ``None`` for a session nobody forked.

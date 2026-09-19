@@ -362,7 +362,7 @@ def _edit(registry, session, seq, message):
 
     async def go():
         await session.emit({"type": "truncate", "to": seq})
-        await server._run_turn(session, message)
+        await server._run_turn(session, message, registry)
 
     asyncio.run(go())
     return [e for e in session.events if e.get("seq", -1) >= since]
@@ -1385,3 +1385,133 @@ def test_a_delegate_past_the_cap_stops_calling_and_still_answers(tmp_path):
         assert not child.ws.files.fs.exists("/workspace/n2.md")
     finally:
         registry.close()
+
+
+# -- delegates a restart parted from their answers --------------------------
+
+
+def _reborn(tmp_path):
+    """A registry over a store some earlier process was using."""
+    return sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+    )
+
+
+def _asked_before_a_restart(tmp_path):
+    """A parent with a delegate in the store and no job table left."""
+    registry = _reborn(tmp_path)
+    try:
+        parent = registry.open("boss")
+        _turn(parent, ASK_ASYNC, registry)
+        _await_delegates(parent)
+    finally:
+        registry.close()
+
+
+def test_a_delegate_from_before_a_restart_is_named_on_the_next_turn(tmp_path):
+    """The job table is per process and the branch is in the store, so
+    a restart parts them: the answer is gone and the branch is not.
+    Nothing else would say so — the live helper lists no job, so
+    `sessions list` reads as though the delegate was never asked
+    for."""
+    _asked_before_a_restart(tmp_path)
+
+    registry = _reborn(tmp_path)
+    try:
+        parent = registry.open("boss")
+        assert parent.delegates.list() == []
+        assert "boss.scout" in registry._store.sessions()
+
+        events = _turn(parent, "where are we?", registry)
+
+        note = next(e for e in events if e["type"] == "delegate")
+        assert note["name"] == "boss.scout"
+        assert note["status"] == "unanswered"
+        assert "before the studio restarted" in note["text"]
+        # what is left of it, and how to ask again
+        assert "ws-git diff boss.scout" in note["text"]
+        assert "ws-git merge boss.scout" in note["text"]
+        assert "sessions ask" in note["text"]
+        assert "resume" in note["text"]
+
+        # the model was sent it too, ahead of the human's message (the
+        # dummy echoes what it was asked)
+        reply = "".join(e["delta"] for e in events if e["type"] == "text")
+        assert reply.startswith("dummy: [delegate `boss.scout`")
+
+        # once: the turn after it carries nothing
+        assert not any(
+            e["type"] == "delegate" for e in _turn(parent, "!text ok", registry)
+        )
+    finally:
+        registry.close()
+
+    # and not again after another restart: the transcript still shows
+    # the note, and delivery is a fact of the transcript
+    again = _reborn(tmp_path)
+    try:
+        assert not any(
+            e["type"] == "delegate"
+            for e in _turn(again.open("boss"), "!text still ok", again)
+        )
+    finally:
+        again.close()
+
+
+def test_a_rewind_past_the_note_delivers_it_again(tmp_path):
+    """An edit unsays the turn the note landed in, so the replacement
+    turn has to carry it or the rewound conversation never hears of
+    that delegate."""
+    _asked_before_a_restart(tmp_path)
+
+    registry = _reborn(tmp_path)
+    try:
+        parent = registry.open("boss")
+        delivered = _turn(parent, "where are we?", registry)
+        assert [e["name"] for e in delivered if e["type"] == "delegate"] == [
+            "boss.scout"
+        ]
+
+        seq = next(e["seq"] for e in delivered if e["type"] == "user")
+        again = _edit(registry, parent, seq, "actually, where are we?")
+
+        assert [e["name"] for e in again if e["type"] == "delegate"] == ["boss.scout"]
+        # once, though: the turn after it is not a third delivery
+        assert not any(
+            e["type"] == "delegate" for e in _turn(parent, "!text ok", registry)
+        )
+    finally:
+        registry.close()
+
+
+def test_a_swept_delegate_is_not_named(tmp_path):
+    """The note points at a branch. One the sweep has taken has no
+    branch and no record, so there is nothing to point at."""
+    _asked_before_a_restart(tmp_path)
+
+    registry = _tiny_ttl(tmp_path)  # sweeps at open, with no table left
+    try:
+        parent = registry.open("boss")
+        assert "boss.scout" not in registry._store.sessions()
+        assert registry.orphaned_delegates(parent) == []
+        assert not any(
+            e["type"] == "delegate" for e in _turn(parent, "!text ok", registry)
+        )
+    finally:
+        registry.close()
+
+
+def test_a_delegate_with_a_live_job_is_not_named(registry):
+    """The note is for the ones no table remembers. A delegate this
+    process asked for is in its parent's table, and its answer is
+    delivered the ordinary way."""
+    parent = registry.open("boss")
+    _turn(parent, ASK_ASYNC, registry)
+    _await_delegates(parent)
+
+    assert registry.orphaned_delegates(parent) == []
+    delivered = _turn(parent, "what did the scout say?", registry)
+    note = next(e for e in delivered if e["type"] == "delegate")
+    assert note["status"] == "answered"
