@@ -498,7 +498,7 @@ def test_the_tool_is_nontainers_shape_under_nontainers_name(registry):
     import inspect
 
     boss = registry.open("boss")
-    tool = registry._sessions_tool(boss.delegates)
+    tool = registry._sessions_tool(boss.name, boss.delegates)
 
     assert tool.__name__ == "sessions"
     assert list(inspect.signature(tool).parameters) == [
@@ -512,7 +512,7 @@ def test_the_tool_is_nontainers_shape_under_nontainers_name(registry):
         "wait",
     ]
     assert tool.__doc__ is sessions_mod.SESSIONS_TOOL_DESCRIPTION
-    assert registry._sessions_tool(boss.delegates).__doc__ is tool.__doc__
+    assert registry._sessions_tool(boss.name, boss.delegates).__doc__ is tool.__doc__
     assert '  action="published"' in tool.__doc__
 
     # and the agent is handed it once: nontainer's is not registered
@@ -1192,3 +1192,120 @@ def test_the_primer_says_the_number_and_the_verb(registry, tmp_path):
         assert "is swept" not in off.open("boss").agent.instructions
     finally:
         off.close()
+
+
+# -- the nesting cap: a delegate is a full agent ----------------------------
+
+
+def _tool(session):
+    """The `sessions` tool as the agent holds it."""
+    return next(
+        t for t in session.agent.tools if getattr(t, "__name__", "") == "sessions"
+    )
+
+
+def _nest(registry, *names):
+    """A chain of delegates, each forked by the one before it."""
+    session = registry.open(names[0])
+    for parent, child in zip(names, names[1:]):
+        session = registry.open_delegate(parent, child)
+    return session
+
+
+def test_the_depth_setting_is_hops_and_a_bad_one_falls_back(monkeypatch, tmp_path):
+    """Read where the other settings are read, in the unit the rule is
+    stated in. A value that is not a number keeps the default rather
+    than taking the studio down at startup."""
+    assert sessions_mod._delegate_depth() == 2
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_DEPTH", "deep")
+    assert sessions_mod._delegate_depth() == 2
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_DEPTH", "-1")
+    assert sessions_mod._delegate_depth() == 0
+
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_DEPTH", "1")
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+    )
+    try:
+        # one hop: the session a human started delegates, and its
+        # delegate does the work itself
+        child = _nest(registry, "boss", "boss.scout")
+        assert registry.delegate_depth == 1
+        assert registry.at_depth_cap("boss") is False
+        assert "refused" in _tool(child)(action="ask", task="have a look")
+    finally:
+        registry.close()
+
+
+def test_depth_is_counted_off_the_record_and_not_off_the_name(registry):
+    """A dot is a naming convention and a human may type one, so the
+    hops are walked over who forked whom."""
+    _nest(registry, "boss", "boss.scout", "boss.scout.finch")
+    registry.open("boss.notes")  # a human's own session, named under boss
+
+    assert registry.depth_of("boss") == 0
+    assert registry.depth_of("boss.scout") == 1
+    assert registry.depth_of("boss.scout.finch") == 2
+    assert registry.depth_of("boss.notes") == 0
+    assert registry.depth_of("nobody") == 0
+
+
+def test_a_grandchild_is_refused_a_delegate_and_told_what_to_do(registry):
+    """Two hops is as deep as forks nest by default: the session a
+    human started delegates, its delegate delegates, and the one after
+    that does the work itself."""
+    grandchild = _nest(registry, "boss", "boss.scout", "boss.scout.finch")
+
+    refused = _tool(grandchild)(action="ask", task="have a look at this")
+
+    assert "refused" in refused
+    # the way forward, not just the wall
+    assert "Do the task yourself" in refused
+    assert "answer with what you have found" in refused
+    # and nothing was forked to say it
+    assert registry.delegates_of("boss.scout.finch") == []
+    # the rest of the tool is untouched
+    assert "no delegated jobs yet" in _tool(grandchild)(action="list")
+
+
+def test_the_asks_above_the_cap_go_through(registry):
+    """A missing task is nontainer's refusal, not the studio's: reading
+    it back is how a test knows the ask reached the dispatch rather
+    than stopping at the gate."""
+    _nest(registry, "boss", "boss.scout")
+
+    for name in ("boss", "boss.scout"):
+        assert registry.at_depth_cap(name) is False
+        assert "needs a task" in _tool(registry.open(name))(action="ask")
+
+
+def test_zero_is_no_cap_at_all(tmp_path):
+    """`0` turns the cap off: delegation nests as far as the agents
+    take it."""
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+        delegate_depth=0,
+    )
+    try:
+        deep = _nest(registry, "boss", "boss.a", "boss.a.b", "boss.a.b.c")
+        assert registry.depth_of(deep.name) == 3
+        assert registry.at_depth_cap(deep.name) is False
+        assert "needs a task" in _tool(deep)(action="ask")
+    finally:
+        registry.close()
+
+
+def test_only_the_session_at_the_cap_is_told_about_it(registry):
+    """A cap nobody above it will hit is a sentence every session pays
+    for in prompt, so it is told to the one it binds."""
+    grandchild = _nest(registry, "boss", "boss.scout", "boss.scout.finch")
+
+    assert sessions_mod.DEPTH_CAP_PRIMER in grandchild.agent.instructions
+    for name in ("boss", "boss.scout"):
+        assert sessions_mod.DEPTH_CAP_PRIMER not in (
+            registry.open(name).agent.instructions
+        )

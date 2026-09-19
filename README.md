@@ -103,6 +103,9 @@ repo's `nontainer_studio/appassets/` — see **Works offline** below),
 compression watermark), `NONTAINER_STUDIO_DELEGATE_TTL` (hours a
 delegate's branch is kept after anyone last dealt with it; 24 by
 default, `0` turns the sweep off — see **Delegation** below),
+`NONTAINER_STUDIO_DELEGATE_DEPTH` (how deep delegation may nest,
+counted in hops from the session a human started; 2 by default, `0`
+turns the cap off — see **Delegation** below),
 `NONTAINER_STUDIO_WSGIT` (give the agent the `ws-git` terminal verb —
 **off by default for now**, while the app-building path is polished;
 the human's rewind, fork, publish and restore are host-side and work
@@ -348,6 +351,15 @@ A delegate's conversation never comes back — its reply is the summary.
 Budget is turns: `Registry(delegate_turns=...)`, three by default, and
 a delegate that stops without a reply spends the rest being asked to
 finish before its answer resolves as `capped`.
+
+**Delegation does not nest forever.** A delegate is a full agent on
+the parent's model, with four delegate workers of its own, so nesting
+multiplies rather than adds. `NONTAINER_STUDIO_DELEGATE_DEPTH` counts
+hops from the session a human started: 2 by default, so that session
+delegates and its delegates delegate, and the generation after them
+reads a refusal on `sessions ask` telling it to do the task itself and
+answer with what it found. The other actions stay, and only the
+session the cap binds is told about it. `0` turns the cap off.
 
 **A delegate's branch is not forever.** Retention is an idle TTL: one
 nobody has dealt with for `NONTAINER_STUDIO_DELEGATE_TTL` hours (24 by
