@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Shutdown no longer waits out a delegate mid-turn.** Closing a
+  session joins its delegate workers, and a delegate's turn could not
+  be interrupted — `sessions cancel` discards an answer without
+  stopping the loop — so Ctrl-C with a delegate working waited out as
+  many turns as that delegate had left. A delegate's turn now runs on
+  a loop the registry can reach from another thread, and closing asks
+  every turn in flight to stop before it joins anything. A stopped
+  turn takes the path a stopped human turn takes: the transcript says
+  the studio shut down mid-run, the run is repaired so the child's
+  memory keeps the work it really did, and the job resolves as
+  `failed` with that same sentence as its answer rather than as prose
+  that merely stops.
+
 - **A delegate from before a restart is named on the parent's next
   turn.** The job table is per process and the branch is in the store,
   so a restart parts them: the manifest still records the child and

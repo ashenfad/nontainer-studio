@@ -367,6 +367,13 @@ those are is recorded when the studio opens one, never read off the
 name: `analyst.sleepy-otter` says who asked, and a `analyst.notes` you
 made yourself is an ordinary session that nothing hides or deletes.
 A delegate's conversation never comes back — its reply is the summary.
+Shutting the studio down does not wait for a delegate: each delegate
+turn runs on a loop the registry can reach, and closing asks every
+turn in flight to stop before it joins the workers. A stopped turn is
+repaired like any other cut turn — the child's memory keeps what it
+did — and the job resolves as `failed` saying the studio shut down
+mid-run.
+
 Budget is turns: `Registry(delegate_turns=...)`, three by default, and
 a delegate that stops without a reply spends the rest being asked to
 finish before its answer resolves as `capped`. Each of those turns is

@@ -1356,6 +1356,13 @@ class Registry:
         # `_pin`). In memory only, because the flag it stands for is:
         # both die with this process.
         self._pinned: set[str] = set()
+        # Delegate turns in flight, by child name: the loop each is
+        # running on and the task that is the turn. A delegate's turn
+        # runs on a loop of its own, on a worker thread of its
+        # parent's helper, and nothing else can reach in — so the
+        # handles are kept here, where shutdown can ask a turn to stop
+        # instead of waiting out every turn the delegate has left.
+        self._delegate_runs: dict[str, tuple[Any, Any]] = {}
         # The store is the object that owns what outlives a session:
         # opening one, deleting one, and the tag scope that belongs to
         # none of them. Studio's own bookkeeping (the app dbs, the
@@ -3298,6 +3305,43 @@ class Registry:
             self._save_manifest(manifest)
         return next(row for row in self.delegate_rows(parent) if row["name"] == child)
 
+    def hold_delegate_run(self, name: str, loop: Any, task: Any) -> None:
+        """Take the handles on a delegate turn that has just started.
+
+        One per child, because a branch runs one job at a time: the
+        helper refuses a second run on a child the first is still
+        driving.
+        """
+        with self._lock:
+            self._delegate_runs[name] = (loop, task)
+
+    def drop_delegate_run(self, name: str) -> None:
+        """Give up the handles on a delegate turn that has ended,
+        cancelled or not."""
+        with self._lock:
+            self._delegate_runs.pop(name, None)
+
+    def stop_delegate_runs(self) -> list[str]:
+        """Ask every delegate turn in flight to stop; returns the
+        children asked, sorted.
+
+        Asking, not waiting: the cancel is posted to each turn's own
+        loop and this returns at once. What waits is whoever joins the
+        helpers afterwards, and by then the turns are unwinding rather
+        than starting their next one. A turn that ends on its own
+        between the read and the post is not an error — the loop is
+        closed, the post raises, and the turn it would have stopped is
+        already over.
+        """
+        with self._lock:
+            runs = sorted(self._delegate_runs.items())
+        for name, (loop, task) in runs:
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError as e:  # one loop already gone, not the rest
+                log.info("delegates: %s's turn could not be stopped (%s)", name, e)
+        return [name for name, _ in runs]
+
     def release(self, name: str) -> None:
         """Close a session's live handles and leave everything on disk.
 
@@ -4938,6 +4982,11 @@ class Registry:
         return seq + 1
 
     def close(self) -> None:
+        # First, before anything joins anything: closing a session
+        # joins its delegate workers, and a delegate mid-turn would
+        # hold that join for the rest of its turns. Stopping the turns
+        # is what turns Ctrl-C into a wait of seconds.
+        self.stop_delegate_runs()
         # Sessions go OUTSIDE the lock. Closing one joins its delegate
         # workers, and a delegate still running is inside `open_delegate`
         # on a thread of its own, waiting for this same lock — holding it

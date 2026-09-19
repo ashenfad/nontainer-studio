@@ -8,6 +8,7 @@ real against its own branch.
 
 import asyncio
 import json
+import threading
 import time
 
 import pytest
@@ -1515,3 +1516,62 @@ def test_a_delegate_with_a_live_job_is_not_named(registry):
     delivered = _turn(parent, "what did the scout say?", registry)
     note = next(e for e in delivered if e["type"] == "delegate")
     assert note["status"] == "answered"
+
+
+# -- shutdown does not wait out a delegate ----------------------------------
+
+
+class BlockingModel(DummyModel):
+    """A model whose turn never ends on its own.
+
+    The wait is on the turn's own loop, so only a cancel arriving
+    there ends it — which is exactly the thing under test, and a wait
+    on a worker thread would outlive the loop it was started from.
+    """
+
+    def __init__(self, entered):
+        super().__init__()
+        self._entered = entered
+
+    async def ainvoke_stream(self, messages, **kwargs):
+        self._entered.set()
+        await asyncio.Event().wait()
+        yield ModelResponse(role="assistant", content="unreachable")
+
+
+def test_closing_the_registry_does_not_wait_out_a_delegates_turn(tmp_path):
+    """Closing a session joins its delegate workers, so a delegate
+    mid-turn used to hold Ctrl-C for as many turns as it had left.
+    The turns are asked to stop first."""
+    entered = threading.Event()
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a, **k: BlockingModel(entered),
+        store=tmp_path,
+        default_model="dummy",
+    )
+    parent = registry.open("boss")
+    closed = False
+    try:
+        parent.delegates.ask("a task it will never finish", name="scout")
+        assert entered.wait(20), "the delegate's turn never started"
+
+        began = time.monotonic()
+        registry.close()
+        closed = True
+        assert time.monotonic() - began < 10
+    finally:
+        if not closed:
+            registry.close()
+
+    # the child's own transcript records the cut
+    log = (tmp_path / "events" / "boss.scout.jsonl").read_text()
+    cut = [json.loads(line) for line in log.splitlines()]
+    assert [e for e in cut if e["type"] == "error"] == [
+        {"type": "error", "message": server.STOPPED_AT_SHUTDOWN, "seq": 1}
+    ]
+    assert cut[-1]["type"] == "done"  # the turn was closed out, not abandoned
+
+    # and the job it belonged to resolved, in words
+    answer = parent.delegates.result("boss.scout")
+    assert answer.status == "failed"
+    assert answer.text == server.STOPPED_AT_SHUTDOWN

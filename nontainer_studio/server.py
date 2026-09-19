@@ -48,6 +48,16 @@ MAX_UPLOAD = 50_000_000  # upload bodies buffer in memory; cap them
 HTTP_VERBS = ["GET", "POST", "PUT", "DELETE", "PATCH"]
 
 
+STOPPED_AT_SHUTDOWN = "the studio shut down while this turn was running"
+"""Why a turn ended when nothing in it went wrong.
+
+It reaches two readers and must serve both: the human, who sees the
+turn stop mid-sentence and needs the reason to be the studio rather
+than the model, and a delegate's runner, which reads the error off
+the transcript and reports it as the answer to whoever asked.
+"""
+
+
 DELEGATE_SWEEP_EVERY = 3600
 """Seconds between delegate retention sweeps.
 
@@ -494,6 +504,17 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
             await asyncio.to_thread(
                 repair_aborted_run, session, run_id, _short_middle(str(errored), 300)
             )
+    except asyncio.CancelledError:
+        # Cut from outside the loop, which is the studio shutting down
+        # on a turn it cannot wait out. The `error` event is what the
+        # human reads and what a delegate's runner reads its status
+        # off, and the repair is what keeps the work the turn really
+        # did in the agent's memory. Both run inline: the loop this
+        # turn is on is closing under it, so there is no thread to
+        # hand them to.
+        await session.emit({"type": "error", "message": STOPPED_AT_SHUTDOWN})
+        repair_aborted_run(session, run_id, STOPPED_AT_SHUTDOWN)
+        raise
     except Exception as e:
         await session.emit({"type": "error", "message": _short_middle(str(e))})
         # agno stamps the stored run status=error, and its history
