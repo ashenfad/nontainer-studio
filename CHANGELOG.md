@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A delegate from before a restart is named on the parent's next
+  turn.** The job table is per process and the branch is in the store,
+  so a restart parts them: the manifest still records the child and
+  `ws-git branch` still lists it, while every answer nobody had
+  collected is gone. The parent had no way to learn that — its live
+  helper lists no job, so `sessions list` read "no delegated jobs yet"
+  over a branch the drill-down was still showing. One note per such
+  delegate now arrives in the slot an answer would have, in the
+  transcript and in what the model is sent: the task is outstanding,
+  the branch is still there (`ws-git diff` / `merge` / `checkout`
+  reach it), and asking again is `sessions ask`, since `resume`
+  continues a job and the job is what went. Delivery is derived from
+  the transcript like an answer's, so a rewind past the note
+  re-delivers it and a restart that still shows it does not.
+
 - **The `sessions` knob turns `ws-git` on with it.** Delegation
   without the verb is the degraded half of itself: the delegate's
   files stay on its own branch, the terminal has nothing that brings

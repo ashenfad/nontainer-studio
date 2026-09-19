@@ -381,9 +381,10 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
 
     ``registry`` is passed so the turn can write down what its
     delegates' job table now says (retention outlives the table; see
-    ``Registry.snapshot_delegates``). Without one the turn runs
-    exactly as before and records nothing — every caller that has a
-    registry passes it."""
+    ``Registry.snapshot_delegates``), and so it can name the delegates
+    a restart left without answers. Without one the turn runs exactly
+    as before and does neither — every caller that has a registry
+    passes it."""
 
     def snapshot() -> None:
         if registry is not None:
@@ -404,6 +405,16 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
         # because they arrived first and the message is the instruction.
         # Marked as mechanism, never as the human asking (answer_message).
         answers = session.take_delegate_answers()
+        # And the ones a restart parted from their answers. Both are
+        # read before either is emitted: each is filtered on what the
+        # transcript already shows, and an emitted event is part of
+        # that.
+        notes = [
+            (name, delegates.orphan_message(name, versioning=session.wsgit))
+            for name in (
+                registry.orphaned_delegates(session) if registry is not None else []
+            )
+        ]
         for name, answer in answers:
             await session.emit(
                 {
@@ -413,6 +424,19 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
                     "text": delegates.answer_message(name, answer),
                 }
             )
+        for name, note in notes:
+            # The same event, because it is the same fact in the same
+            # slot: what became of a delegate this session asked for.
+            # Its status is what is true of it — asked, and never
+            # answered here.
+            await session.emit(
+                {
+                    "type": "delegate",
+                    "name": name,
+                    "status": "unanswered",
+                    "text": note,
+                }
+            )
         if answers:
             # Reading an answer is dealing with the delegate, and
             # nontainer moved its `touched` when this collected it.
@@ -420,7 +444,9 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
             # what decides whether a delivered answer counts as recent.
             await asyncio.to_thread(snapshot)
         prompt = "\n\n".join(
-            [delegates.answer_message(n, a) for n, a in answers] + [message]
+            [delegates.answer_message(n, a) for n, a in answers]
+            + [note for _, note in notes]
+            + [message]
         )
         async for ev in session.agent.arun(prompt, stream=True, stream_events=True):
             run_id = getattr(ev, "run_id", None) or run_id
