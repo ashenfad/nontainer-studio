@@ -200,6 +200,12 @@ class StudioRunner:
         delegate opens with names it, and the child's own branch cannot
         be asked, since the fork writes commits of its own on top.
 
+        A turn stopped from outside — the studio shutting down on a
+        delegate mid-run — comes back as a ``failed`` answer saying so
+        in words, rather than as prose that simply stops: the caller
+        reads a status, and "it shut down" is a different fact from
+        "it had nothing more to say".
+
         The child's handles are released at the end either way: its
         branch is what the parent merges from, and an agent, a workspace
         and a sqlite connection held open per finished delegate would
@@ -262,7 +268,11 @@ class StudioRunner:
 
         Its own event loop: the runner is on a worker thread, and a
         delegate's turn must not depend on a server loop being there to
-        borrow (nor block one for as long as the delegate takes).
+        borrow (nor block one for as long as the delegate takes). The
+        loop and the turn's task are handed to the registry for as long
+        as the turn runs, because a loop nobody else can reach is a
+        turn nobody can stop: shutdown would wait out every turn a
+        delegate had left.
 
         The registry goes with it, as it does from the routes. A
         delegate may delegate, and what its own job table knows about
@@ -271,12 +281,39 @@ class StudioRunner:
         runner releases the child the moment it answers, and the table
         goes with it, so a turn run without the registry loses a keep
         the delegate asked for and the branch is swept from under it.
+
+        Writing those handles down takes the registry's lock for the
+        moment it takes to write them, the way opening and releasing
+        the child already do. The only TURN lock this touches is still
+        the child's: the parent's turn is running on the thread that
+        asked, and reaching for its lock would deadlock it.
         """
         from .server import _run_turn
 
         child.turn_lock.acquire()  # _run_turn releases it
         since = child.next_seq
-        asyncio.run(_run_turn(child, prompt, self._registry))
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            task = loop.create_task(_run_turn(child, prompt, self._registry))
+            self._registry.hold_delegate_run(child.name, loop, task)
+            try:
+                loop.run_until_complete(task)
+            except asyncio.CancelledError:
+                # Asked for: somebody reached in and stopped this turn.
+                # `_run_turn` has already written why into the child's
+                # transcript, which is where the answer is read from.
+                pass
+            finally:
+                self._registry.drop_delegate_run(child.name)
+                # What `asyncio.run` did on the way out, kept: an
+                # unfinished async generator or a worker thread the
+                # turn started outlives the loop otherwise.
+                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.run_until_complete(loop.shutdown_default_executor())
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
         return _reply(child, since)
 
 
