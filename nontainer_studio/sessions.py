@@ -1307,6 +1307,7 @@ class Registry:
         delegate_turns: int = DELEGATE_TURNS,
         delegate_ttl: float | None = None,
         delegate_depth: int | None = None,
+        delegate_tool_calls: int | None = None,
     ) -> None:
         self._model_factory = model_factory  # (spec) -> agno Model
         self._default_model = default_model
@@ -1328,6 +1329,15 @@ class Registry:
         # one are what this process puts on it.
         self.delegate_depth = (
             _delegate_depth() if delegate_depth is None else max(0, int(delegate_depth))
+        )
+        # Tool calls one delegate turn may spend; 0 is off. Only a
+        # delegate's agent carries it: a human's turn has somebody
+        # watching it and a stop button over it, and a delegate's turn
+        # has neither.
+        self.delegate_tool_calls = (
+            _delegate_tool_calls()
+            if delegate_tool_calls is None
+            else max(0, int(delegate_tool_calls))
         )
         # Delegates the sweep flagged kept in nontainer's job table to
         # spare a subtree, which is not a keep anybody asked for (see
@@ -2739,12 +2749,32 @@ class Registry:
         # with the knob off nothing hands the agent a name for it.
         delegation = delegates is not None and sessions_tool_enabled()
 
+        # A turn is one agno run and one agno run is a tool loop with
+        # no bound of its own. A human's session needs none — somebody
+        # is watching it and the stop button reaches it — but a
+        # delegate's turn has neither, so the calls it may spend are
+        # capped. Whether this session is a delegate is the record the
+        # studio wrote when it opened one, which is written before the
+        # open that builds this agent.
+        tool_calls = self.delegate_tool_calls if self.is_delegate(name) else 0
+
         return Agent(
             model=self._model_factory(model),
             tools=[toolkit]
             + ([self._sessions_tool(name, delegates)] if delegation else []),
             compress_tool_results=compression is not None,
             compression_manager=compression,
+            # Tool calls this run may spend, and None where there is
+            # no cap. Past the limit agno answers each further call
+            # with a tool result saying the limit is reached and not
+            # to retry, and the run carries on from there — so this
+            # bounds what a delegate DOES, and a model that keeps
+            # calling tools past the refusal is still in its own loop
+            # until it writes prose or the provider stops it. The turn
+            # budget is the other end of that: a turn that ends
+            # without prose spends one, and running out of turns
+            # resolves the answer as `capped`.
+            tool_call_limit=tool_calls or None,
             # runs per ATTEMPT, which is what makes it the right seam for
             # keeping files and memory rewinding together (see the hook)
             pre_hooks=[self._retry_rewind_hook(ws)],

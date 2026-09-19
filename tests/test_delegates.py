@@ -1309,3 +1309,79 @@ def test_only_the_session_at_the_cap_is_told_about_it(registry):
         assert sessions_mod.DEPTH_CAP_PRIMER not in (
             registry.open(name).agent.instructions
         )
+
+
+# -- the tool-call cap: a delegate's loop has nobody watching it ------------
+
+
+def test_the_tool_call_setting_is_calls_and_a_bad_one_falls_back(monkeypatch):
+    """Read where the other settings are read. A value that is not a
+    number keeps the default rather than taking the studio down at
+    startup."""
+    assert sessions_mod._delegate_tool_calls() == 60
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TOOL_CALLS", "12")
+    assert sessions_mod._delegate_tool_calls() == 12
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TOOL_CALLS", "lots")
+    assert sessions_mod._delegate_tool_calls() == 60
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TOOL_CALLS", "-1")
+    assert sessions_mod._delegate_tool_calls() == 0
+
+
+def test_only_a_delegates_agent_carries_the_cap(registry):
+    """The human's session is watched and can be stopped; a delegate's
+    turn is neither, which is the whole of why one has the cap and the
+    other does not."""
+    parent = registry.open("boss")
+    child = registry.open_delegate("boss", "boss.scout")
+
+    assert parent.agent.tool_call_limit is None
+    assert child.agent.tool_call_limit == registry.delegate_tool_calls == 60
+
+
+def test_no_cap_no_limit(tmp_path):
+    """`0` is the cap off: a delegate's loop is bounded by its turns
+    and nothing else."""
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+        delegate_tool_calls=0,
+    )
+    try:
+        registry.open("boss")
+        child = registry.open_delegate("boss", "boss.scout")
+        assert child.agent.tool_call_limit is None
+    finally:
+        registry.close()
+
+
+def test_a_delegate_past_the_cap_stops_calling_and_still_answers(tmp_path):
+    """What the cap buys, end to end: the calls past it do not run, and
+    the turn still resolves into an answer rather than hanging."""
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+        delegate_tool_calls=2,
+    )
+    try:
+        parent = registry.open("boss")
+        answer = _delegate(
+            registry,
+            parent,
+            "\n".join(
+                '!tool file_write {"path": "/workspace/n%d.md", "content": "%d"}'
+                % (i, i)
+                for i in range(3)
+            )
+            + "\n!text Wrote what I could.",
+        )
+
+        assert answer.status == "answered"
+        assert answer.text == "Wrote what I could."
+        child = registry.open(answer.branch)
+        assert child.ws.files.fs.exists("/workspace/n0.md")
+        assert child.ws.files.fs.exists("/workspace/n1.md")
+        assert not child.ws.files.fs.exists("/workspace/n2.md")
+    finally:
+        registry.close()

@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A delegate's turn spends at most sixty tool calls.** One turn is
+  one agno run and one agno run is a tool loop with no bound of its
+  own. A human's session needs none — somebody is watching it and the
+  stop button reaches it — but a delegate's turn has neither, so a
+  delegate that finds a rhythm it cannot break out of spends the
+  session's budget on it and `sessions cancel` cannot interrupt.
+  `NONTAINER_STUDIO_DELEGATE_TOOL_CALLS`
+  (`Registry(delegate_tool_calls=...)`) caps the calls of a DELEGATE's
+  turn, 60 by default; past it each further call comes back refused
+  with a tool result saying the limit is reached, and the run goes on
+  to its reply, so what it bounds is what a delegate does rather than
+  how long it talks. Human sessions carry no limit, and `0` turns the
+  cap off.
+
 - **Delegation stops nesting after two hops.** Every session builds a
   delegation helper with four workers, and every delegate is a full
   agent on the parent's model with a helper of its own — so a delegate
