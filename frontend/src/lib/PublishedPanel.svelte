@@ -1,14 +1,14 @@
 <script>
-    // The verbs on a published app, in two homes: a modal over the
-    // preview (a session's own apps) and inline under the rail's app
-    // view (one app, possibly with no session left). Same component
-    // both times — the verbs are the app's, not the caller's — so
-    // `apps` is passed in rather than read off a runtime, and
-    // `onChanged` says who reloads afterwards.
+    // The verbs on a published app: its link, its versions, and what
+    // can be done to them. The strip sits under the frame that serves
+    // the app, in the preview and in the rail's app view alike. The
+    // verbs are the app's, not the caller's — so the app is passed in
+    // rather than read off a runtime (it may have no session left),
+    // and `onChanged` says who reloads afterwards.
     import { api } from './api.js'
     import { rail, refreshSessions } from './runtime.svelte.js'
 
-    let { apps, onChanged, onSwitch, onClose = null, inline = false } = $props()
+    let { app, onChanged, onSwitch } = $props()
 
     let busy = $state(null) // "verb:token/version" while a call is in flight
     let armed = $state(null) // a destructive verb one tap from happening
@@ -19,7 +19,7 @@
     // with it. The app itself is untouched by that — it owns its db and
     // each version lives on a branch of its own — so the row says why
     // the one verb is gone rather than hiding it.
-    const alive = (app) => rail.sessions.some((s) => s.name === app.session)
+    const alive = $derived(rail.sessions.some((s) => s.name === app.session))
 
     function arm(key) {
         // first tap arms, second commits — the rail's delete pattern,
@@ -46,12 +46,12 @@
         }
     }
 
-    const makeCurrent = (app, v) =>
+    const makeCurrent = (v) =>
         run(`current:${app.token}/${v.name}`, () =>
             api(`/api/apps/${app.token}/current`, { version: v.name }),
         )
 
-    const dropVersion = (app, v) => {
+    const dropVersion = (v) => {
         const key = `drop:${app.token}/${v.name}`
         if (!arm(key)) return
         return run(key, () =>
@@ -59,13 +59,13 @@
         )
     }
 
-    const unpublish = (app) => {
+    const unpublish = () => {
         const key = `unpublish:${app.token}`
         if (!arm(key)) return
         return run(key, () => api(`/api/apps/${app.token}`, undefined, 'DELETE'))
     }
 
-    async function copyLink(app) {
+    async function copyLink() {
         try {
             await navigator.clipboard.writeText(`${location.origin}${app.url}`)
             copied = app.token
@@ -77,7 +77,7 @@
 
     // Branching opens the child where the publish stood — files and
     // conversation both — so switching to it is the whole action.
-    async function branch(app, v) {
+    async function branch(v) {
         const key = `branch:${app.token}/${v.name}`
         busy = key
         error = null
@@ -87,7 +87,6 @@
                 {},
             )
             await refreshSessions()
-            onClose?.()
             onSwitch(child.name)
         } catch (e) {
             error = e.message
@@ -107,174 +106,95 @@
     }
 </script>
 
-{#snippet body()}
+<div class="panel">
     {#if error}
         <p class="err">{error}</p>
     {/if}
-    {#if apps.length === 0}
-        <p class="empty">
-            Nothing published from this session yet. Publishing freezes the app
-            behind a URL that keeps serving while you keep working.
-        </p>
-    {/if}
-    {#each apps as app (app.token)}
-        <section class="app">
-            <div class="app-head">
-                <a class="app-url" href={app.url} target="_blank" rel="noopener"
-                    >{app.title} ↗</a
-                >
-                <span class="grow"></span>
-                <button class="verb" onclick={() => copyLink(app)}
-                    >{copied === app.token ? 'copied' : 'copy link'}</button
-                >
-                <button
-                    class="verb danger"
-                    class:armed={armed === `unpublish:${app.token}`}
-                    disabled={busy != null}
-                    title="removes every version, the app's database, and the link stops working"
-                    onclick={() => unpublish(app)}
-                >
-                    {armed === `unpublish:${app.token}`
-                        ? `really unpublish — ${app.versions.length} version${app.versions.length === 1 ? '' : 's'}, its database, and the link stop working`
-                        : 'unpublish'}
-                </button>
-            </div>
-            <code class="token">{app.url}</code>
-            {#if app.description}
-                <!-- What the app IS, generated from the session that
-                     built it at each publish (the human's own words win
-                     where they wrote any). Read-only here: it is a
-                     label on the app, not a verb. -->
-                <p class="app-desc">{app.description}</p>
-            {/if}
-            <ul>
-                {#each app.versions as v (v.name)}
-                    <li class:current={v.name === app.current}>
-                        <span class="vname">{v.name}</span>
-                        {#if v.name === app.current}
-                            <span class="tag">serving</span>
-                        {/if}
-                        <span class="when">{when(v.created)}</span>
-                        <span class="grow"></span>
-                        {#if v.name !== app.current}
-                            <button
-                                class="verb"
-                                disabled={busy != null}
-                                onclick={() => makeCurrent(app, v)}
-                                title="point this app's URL at {v.name}"
-                                >make current</button
-                            >
-                        {/if}
-                        <button
-                            class="verb"
-                            disabled={busy != null || !alive(app)}
-                            onclick={() => branch(app, v)}
-                            title={alive(app)
-                                ? `open a new session with the files and the conversation as they stood at ${v.name}`
-                                : `the session that published this is deleted — its files are still served here, but there is no conversation left to branch`}
-                            >branch from</button
-                        >
-                        {#if v.name !== app.current && app.versions.length > 1}
-                            <button
-                                class="verb danger"
-                                class:armed={armed === `drop:${app.token}/${v.name}`}
-                                disabled={busy != null}
-                                onclick={() => dropVersion(app, v)}
-                                >{armed === `drop:${app.token}/${v.name}`
-                                    ? 'really delete'
-                                    : 'delete'}</button
-                            >
-                        {/if}
-                    </li>
-                {/each}
-            </ul>
-        </section>
-    {/each}
-{/snippet}
-
-{#if inline}
-    <div class="panel inline">{@render body()}</div>
-{:else}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="scrim" onclick={onClose}>
-        <div class="panel" onclick={(e) => e.stopPropagation()}>
-            <header>
-                <h3>published</h3>
-                <button class="x" aria-label="close" onclick={onClose}>✕</button>
-            </header>
-            {@render body()}
-        </div>
+    <div class="app-head">
+        <a class="app-url" href={app.url} target="_blank" rel="noopener"
+            >{app.title} ↗</a
+        >
+        <span class="grow"></span>
+        <button class="verb" onclick={copyLink}
+            >{copied === app.token ? 'copied' : 'copy link'}</button
+        >
+        <button
+            class="verb danger"
+            class:armed={armed === `unpublish:${app.token}`}
+            disabled={busy != null}
+            title="removes every version, the app's database, and the link stops working"
+            onclick={unpublish}
+        >
+            {armed === `unpublish:${app.token}`
+                ? `really unpublish — ${app.versions.length} version${app.versions.length === 1 ? '' : 's'}, its database, and the link stop working`
+                : 'unpublish'}
+        </button>
     </div>
-{/if}
+    <code class="token">{app.url}</code>
+    {#if app.description}
+        <!-- What the app IS, generated from the session that built it
+             at each publish (the human's own words win where they
+             wrote any). Read-only here: it is a label on the app, not
+             a verb. -->
+        <p class="app-desc">{app.description}</p>
+    {/if}
+    <ul>
+        {#each app.versions as v (v.name)}
+            <li class:current={v.name === app.current}>
+                <span class="vname">{v.name}</span>
+                {#if v.name === app.current}
+                    <span class="tag">serving</span>
+                {/if}
+                <span class="when">{when(v.created)}</span>
+                <span class="grow"></span>
+                {#if v.name !== app.current}
+                    <button
+                        class="verb"
+                        disabled={busy != null}
+                        onclick={() => makeCurrent(v)}
+                        title="point this app's URL at {v.name}">make current</button
+                    >
+                {/if}
+                <button
+                    class="verb"
+                    disabled={busy != null || !alive}
+                    onclick={() => branch(v)}
+                    title={alive
+                        ? `open a new session with the files and the conversation as they stood at ${v.name}`
+                        : `the session that published this is deleted — its files are still served here, but there is no conversation left to branch`}
+                    >branch from</button
+                >
+                {#if v.name !== app.current && app.versions.length > 1}
+                    <button
+                        class="verb danger"
+                        class:armed={armed === `drop:${app.token}/${v.name}`}
+                        disabled={busy != null}
+                        onclick={() => dropVersion(v)}
+                        >{armed === `drop:${app.token}/${v.name}`
+                            ? 'really delete'
+                            : 'delete'}</button
+                    >
+                {/if}
+            </li>
+        {/each}
+    </ul>
+</div>
 
 <style>
-    .scrim {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.45);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 40;
-    }
+    /* The strip is bounded so the frame above it keeps most of the
+       pane: the versions are the controls, the app is the subject. */
     .panel {
         background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        width: min(560px, 92vw);
-        max-height: 80vh;
-        overflow-y: auto;
-        padding: 0.9rem 1rem 1.1rem;
-    }
-    .panel.inline {
-        width: auto;
-        max-height: none;
-        border: none;
         border-top: 1px solid var(--border);
-        border-radius: 0;
         padding: 0.6rem 0.8rem 0.8rem;
         flex: none;
         max-height: 40%;
         overflow-y: auto;
     }
-    header {
-        display: flex;
-        align-items: center;
-        margin-bottom: 0.6rem;
-    }
-    header h3 {
-        flex: 1;
-        font-size: 0.95rem;
-        color: var(--text);
-        font-variation-settings: 'opsz' 32, 'SOFT' 80;
-    }
-    .x {
-        background: none;
-        border: none;
-        color: var(--text-muted);
-        cursor: pointer;
-        font-size: 0.85rem;
-    }
     .err {
         color: var(--error);
         font-size: 0.75rem;
         margin-bottom: 0.5rem;
-    }
-    .empty {
-        color: var(--text-muted);
-        font-size: 0.8rem;
-        line-height: 1.5;
-    }
-    .app {
-        border-top: 1px solid var(--border);
-        padding-top: 0.6rem;
-        margin-top: 0.6rem;
-    }
-    .app:first-of-type {
-        border-top: none;
-        margin-top: 0;
-        padding-top: 0;
     }
     .app-head {
         display: flex;

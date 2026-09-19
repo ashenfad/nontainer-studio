@@ -443,6 +443,7 @@ def test_publish_a_version_and_toggle_between_live_and_published(page, server):
         "!text App is up.",
     )
     frame = page.frame_locator("iframe[title='app preview']")
+    served = page.frame_locator("iframe[title='published app']")
     expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
 
     # one click publishes, and the server picks the name
@@ -457,7 +458,7 @@ def test_publish_a_version_and_toggle_between_live_and_published(page, server):
 
     # the app's own URL is a click away, and serves the frozen version
     page.get_by_role("button", name="published", exact=True).click()
-    expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
+    expect(served.locator("#marker")).to_have_text("version one", timeout=20000)
 
     # the session keeps moving; the published app doesn't
     _send(
@@ -471,25 +472,27 @@ def test_publish_a_version_and_toggle_between_live_and_published(page, server):
     )
     # the edit is unpublished, and the button counts it
     expect(page.locator(".pub-main")).to_have_text("publish · 1 file", timeout=15000)
-    expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
+    expect(served.locator("#marker")).to_have_text("version one", timeout=20000)
 
     page.get_by_role("button", name="live", exact=True).click()
     expect(frame.locator("#marker")).to_have_text("version two", timeout=20000)
 
-    # publish v2, then roll the URL back to v1 from the Published panel:
-    # the URL is stable, so only the version in the iframe's key makes
-    # the pane show the rollback
+    # publish v2, then roll the URL back to v1 from the version strip
+    # under the frame: the URL is stable, so only the version in the
+    # iframe's key makes the pane show the rollback
     page.locator(".pub-main").click()
     expect(page.locator(".pub-main")).to_have_text("published v2", timeout=15000)
     page.get_by_role("button", name="published", exact=True).click()
-    expect(frame.locator("#marker")).to_have_text("version two", timeout=20000)
+    expect(served.locator("#marker")).to_have_text("version two", timeout=20000)
 
-    page.get_by_role("button", name="published…").click()
     page.locator(".panel li", has_text="v1").get_by_role(
         "button", name="make current"
     ).click()
     expect(page.locator(".panel li.current")).to_contain_text("v1", timeout=10000)
-    # the rail reads a store-wide list, the modal a per-session one —
+    # nothing covers the app any more, so the frame beside the strip
+    # shows the rollback as it happens
+    expect(served.locator("#marker")).to_have_text("version one", timeout=20000)
+    # the rail reads a store-wide list, the strip a per-session one —
     # both are projections of the row that just changed, so the rail
     # must not wait for its 4s poll to say so (hence the tight bound)
     rail_row = page.locator(".app-row", has_text="Toggle app")
@@ -503,9 +506,6 @@ def test_publish_a_version_and_toggle_between_live_and_published(page, server):
         "button", name="really delete"
     ).click()
     expect(rail_row).to_contain_text("v1 · 1 version ", timeout=2500)
-
-    page.get_by_role("button", name="close").click()
-    expect(frame.locator("#marker")).to_have_text("version one", timeout=20000)
 
 
 def test_publish_as_names_the_version(page, server):
@@ -626,7 +626,8 @@ def test_a_published_jsx_app_loads_in_the_sandboxed_frame(page, server):
     # and now the published mount: the loader's fetch for app.jsx is
     # cross-origin from the opaque frame, so nothing renders without the
     # header the wrapper adds
-    expect(frame.locator("#marker")).to_contain_text(
+    served = page.frame_locator("iframe[title='published app']")
+    expect(served.locator("#marker")).to_contain_text(
         "compiled in the browser", timeout=25000
     )
 
@@ -663,14 +664,13 @@ def test_a_publish_marker_says_when_its_app_is_gone(page, server):
     expect(markers.last.get_by_role("link", name="open ↗")).to_be_visible()
 
     # delete v1 (v2 is current, so v1 can go) — only ITS marker changes
-    page.get_by_role("button", name="published…").click()
+    page.get_by_role("button", name="published", exact=True).click()
     page.locator(".panel li", has_text="v1").get_by_role(
         "button", name="delete"
     ).click()
     page.locator(".panel li", has_text="v1").get_by_role(
         "button", name="really delete"
     ).click()
-    page.get_by_role("button", name="close").click()
     expect(markers.first).to_contain_text("version removed", timeout=10000)
     expect(markers.first.get_by_role("link", name="open ↗")).to_have_count(0)
     expect(

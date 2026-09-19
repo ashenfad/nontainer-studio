@@ -2,9 +2,10 @@
     // A published app on its own, opened from the rail — no session
     // involved. That is the whole reason this view exists: an app
     // outlives the session that made it, so the ones whose origin is
-    // deleted are reachable from nowhere else. Read-only: the served
-    // URL in the frame, the version list and its verbs beneath.
-    import PublishedPanel from './PublishedPanel.svelte'
+    // deleted are reachable from nowhere else. The frame and the
+    // version strip are the preview's published mode; only the bar
+    // differs, because there is no live side to toggle to.
+    import PublishedView from './PublishedView.svelte'
     import { published, refreshApps } from './runtime.svelte.js'
 
     let { token, onSwitch, onClose } = $props()
@@ -12,10 +13,6 @@
     let manual = $state(0)
 
     const app = $derived(published.apps.find((a) => a.token === token) ?? null)
-    // the served version is in the key, not just the URL: the URL is
-    // stable by design, so make-current changes what it serves without
-    // changing the src a keyed iframe is built from
-    const src = $derived(app ? `${app.url}?v=${app.current}-${manual}` : null)
 </script>
 
 <div class="app-view">
@@ -32,23 +29,7 @@
         <button class="small" onclick={onClose}>close</button>
     </div>
     {#if app}
-        {#key src}
-            <!-- No allow-same-origin, exactly as in the live preview:
-                 the app stays an opaque origin and cannot reach the
-                 studio API. What makes it work here is the CORS header
-                 the /apps mount adds (see cors_for_apps). -->
-            <iframe
-                title="published app"
-                {src}
-                sandbox="allow-scripts allow-forms allow-modals"
-            ></iframe>
-        {/key}
-        <PublishedPanel
-            apps={[app]}
-            inline
-            {onSwitch}
-            onChanged={refreshApps}
-        />
+        <PublishedView {app} tick={manual} {onSwitch} onChanged={refreshApps} />
     {:else}
         <div class="gone">
             <p>This app is no longer published.</p>
@@ -100,12 +81,6 @@
     .small:hover {
         color: var(--text);
         background: var(--surface-hover);
-    }
-    iframe {
-        flex: 1;
-        border: none;
-        background: #fff;
-        min-height: 0;
     }
     .gone {
         flex: 1;

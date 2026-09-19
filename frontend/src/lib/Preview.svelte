@@ -3,14 +3,15 @@
     // runtime — a sandboxed iframe (opaque origin, so app code can't
     // reach the studio API) that reloads on the runtime's version tick.
     // PUBLISHED is the app's own URL: frozen code at the version that
-    // URL currently serves, over the app's own db. The toggle is the
-    // whole point — what you are building beside what people have.
+    // URL currently serves, over the app's own db, with the version
+    // strip under it. The toggle is the whole point — what you are
+    // building beside what people have.
     import { api } from './api.js'
-    import PublishedPanel from './PublishedPanel.svelte'
+    import PublishedView from './PublishedView.svelte'
 
     // `readonly` is a delegate: publishing commits its open work and
     // puts a version behind a public URL, which is the parent agent's
-    // call, not a reader's. The published panel stays — an app is
+    // call, not a reader's. The version strip stays — an app is
     // addressed by token and outlives whatever session made it.
     let { rt, onSwitch, readonly = false } = $props()
 
@@ -22,7 +23,6 @@
     // a publish in flight: it holds the session until the version
     // lands, and the route refuses a second one meanwhile
     let publishing = $state(false)
-    let panel = $state(false)
 
     // the session's current app: the one it published to last, which is
     // what an unqualified `publish` extends and what the toggle shows
@@ -109,15 +109,9 @@
         }
     }
 
-    // The app's URL is stable by design, so the CURRENT VERSION has to
-    // be in the cache-busting key: making an older version current
-    // changes what the URL serves without changing the URL, and a
-    // keyed iframe with an identical src would keep showing the old one.
-    const src = $derived(
-        mode === 'published' && app
-            ? `${app.url}?v=${app.current}-${rt.version + manual}`
-            : `/preview/${rt.name}/?v=${rt.version + manual}`,
-    )
+    // the live authoring runtime, reloaded on every version tick so the
+    // pane follows the agent's writes (the published side keys itself)
+    const src = $derived(`/preview/${rt.name}/?v=${rt.version + manual}`)
 
     // the iframe is an opaque origin (we can't read its document), so
     // probe from the shell: no /app yet → friendly empty state. The
@@ -132,8 +126,6 @@
             .catch(() => {})
         return () => (dead = true)
     })
-
-    const showing = $derived(mode === 'published' ? app != null : hasApp)
 </script>
 
 <div class="preview">
@@ -160,9 +152,6 @@
             target="_blank"
             rel="noopener">open ↗</a
         >
-        {#if rt.apps.length}
-            <button class="small" onclick={() => (panel = true)}>published…</button>
-        {/if}
         {#if readonly}
             <!-- nothing to offer: the publish route refuses this
                  session, and a button whose only outcome is a refusal
@@ -211,7 +200,14 @@
     {#if error}
         <div class="pub-error">{error}</div>
     {/if}
-    {#if showing}
+    {#if mode === 'published' && app}
+        <PublishedView
+            {app}
+            tick={rt.version + manual}
+            {onSwitch}
+            onChanged={() => rt.syncApps()}
+        />
+    {:else if hasApp}
         {#key src}
             <!-- allow-modals: agent apps use alert()/confirm() for
                  error surfacing; a localhost demo pane gains nothing
@@ -235,15 +231,6 @@
         </div>
     {/if}
 </div>
-
-{#if panel}
-    <PublishedPanel
-        apps={rt.apps}
-        onChanged={() => rt.syncApps()}
-        {onSwitch}
-        onClose={() => (panel = false)}
-    />
-{/if}
 
 <style>
     .preview {
