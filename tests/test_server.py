@@ -4279,7 +4279,6 @@ def test_the_sessions_knob_puts_the_tool_back(studio, monkeypatch):
     """On, the agent is handed the tool and told what a delegate's
     answer and the human's published apps are good for."""
     monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")
-    monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     agent = _real_agent(registry, "s1")
@@ -4287,6 +4286,33 @@ def test_the_sessions_knob_puts_the_tool_back(studio, monkeypatch):
     assert "sessions" in _tool_names(agent)
     assert sessions_mod.DELEGATION_PRIMER in agent.instructions
     assert 'action="published"' in sessions_mod.SESSIONS_TOOL_DESCRIPTION
+
+
+def test_the_sessions_knob_brings_ws_git_with_it(studio, monkeypatch):
+    """Delegation without the verb is the degraded half of itself: the
+    delegate's files stay on its branch and its answer is all that
+    comes back. So asking for the tool asks for the verb too — and the
+    verb on its own is still versioning without delegation."""
+    monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    agent = _real_agent(registry, "s1")
+
+    assert sessions_mod.wsgit_enabled() is True
+    assert session.wsgit is True
+    assert "ws-git" in session.ws.runtime.commands
+    assert sessions_mod.VERSIONING_PRIMER in agent.instructions
+    # the half that says a delegate's work comes over, not the one that
+    # says it never does
+    assert sessions_mod.DELEGATION_PRIMER in agent.instructions
+    assert sessions_mod.NO_VERSIONING_PRIMER not in agent.instructions
+
+    monkeypatch.delenv("NONTAINER_STUDIO_SESSIONS")
+    monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
+    client.post("/api/sessions", json={"name": "s2"})
+    assert registry.get("s2").wsgit is True
+    assert "sessions" not in _tool_names(_real_agent(registry, "s2"))
 
 
 def test_the_delegates_machinery_stands_with_the_tool_switched_off(studio):
@@ -4351,9 +4377,8 @@ def test_the_published_skill_is_seeded_only_where_it_can_be_followed(
     """A SKILL.md is text with no conditions in it, so a skill the
     session cannot follow is withheld at the seed. Starting from a
     published app takes the `sessions` tool's `published` action AND the
-    ws-git verbs that read the origin tag it names — with the tool and
-    no verb, every step after the listing is a spelling the terminal
-    answers `command not found` to."""
+    ws-git verbs that read the origin tag it names — with the verb and
+    no tool, there is nothing to list."""
     client, registry = studio
 
     client.post("/api/sessions", json={"name": "neither"})
@@ -4361,17 +4386,18 @@ def test_the_published_skill_is_seeded_only_where_it_can_be_followed(
     assert "building-apps" in seeded  # the ungated one is always there
     assert "starting-from-published" not in seeded
 
-    # the tool alone is not enough: the workflow after the listing is
-    # ws-git, and this session has no ws-git
-    monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")
-    client.post("/api/sessions", json={"name": "tool-only"})
-    tool_only = registry.get("tool-only")
-    assert tool_only.wsgit is False
-    assert "starting-from-published" not in tool_only.ws.files.fs.list(
+    # the verb alone is not enough: the workflow starts at the tool's
+    # own listing, and this session has no tool
+    monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
+    client.post("/api/sessions", json={"name": "verb-only"})
+    verb_only = registry.get("verb-only")
+    assert verb_only.wsgit is True
+    assert "starting-from-published" not in verb_only.ws.files.fs.list(
         "/workspace/skills"
     )
 
-    monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
+    monkeypatch.delenv("NONTAINER_STUDIO_WSGIT")
+    monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")  # brings the verb with it
     client.post("/api/sessions", json={"name": "both"})
     both = registry.get("both")
     assert both.wsgit is True
