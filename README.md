@@ -106,6 +106,9 @@ default, `0` turns the sweep off — see **Delegation** below),
 `NONTAINER_STUDIO_DELEGATE_DEPTH` (how deep delegation may nest,
 counted in hops from the session a human started; 2 by default, `0`
 turns the cap off — see **Delegation** below),
+`NONTAINER_STUDIO_DELEGATE_TOOL_CALLS` (tool calls one delegate turn
+may spend; 60 by default, `0` turns the cap off — human sessions are
+never capped),
 `NONTAINER_STUDIO_WSGIT` (give the agent the `ws-git` terminal verb —
 **off by default for now**, while the app-building path is polished;
 the human's rewind, fork, publish and restore are host-side and work
@@ -350,7 +353,12 @@ made yourself is an ordinary session that nothing hides or deletes.
 A delegate's conversation never comes back — its reply is the summary.
 Budget is turns: `Registry(delegate_turns=...)`, three by default, and
 a delegate that stops without a reply spends the rest being asked to
-finish before its answer resolves as `capped`.
+finish before its answer resolves as `capped`. Each of those turns is
+a tool loop with nobody watching it and no stop button over it, so a
+delegate's agent also carries a per-turn tool-call cap
+(`NONTAINER_STUDIO_DELEGATE_TOOL_CALLS`, 60 by default, `0` off). Past
+it the calls are refused with a tool result saying so and the turn
+carries on to its reply; a human's session carries no such cap.
 
 **Delegation does not nest forever.** A delegate is a full agent on
 the parent's model, with four delegate workers of its own, so nesting
