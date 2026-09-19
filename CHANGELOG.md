@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The `sessions` knob turns `ws-git` on with it.** Delegation
+  without the verb is the degraded half of itself: the delegate's
+  files stay on its own branch, the terminal has nothing that brings
+  them over, and the primer tells the agent to ask for findings rather
+  than edits. A studio configured to hand out delegation was still
+  able to withhold the one thing that makes a delegate's work
+  arrive. `NONTAINER_STUDIO_SESSIONS=1` now means the verb too;
+  `NONTAINER_STUDIO_WSGIT` alone still means versioning without
+  delegation. The degraded path stays for the session whose executor
+  cannot carry the verb at all — the primer and a delegate's brief
+  read what the session recorded, not what the knob asked for.
+
 - **A delegate's turn spends at most sixty tool calls.** One turn is
   one agno run and one agno run is a tool loop with no bound of its
   own. A human's session needs none — somebody is watching it and the

@@ -114,8 +114,9 @@ never capped),
 the human's rewind, fork, publish and restore are host-side and work
 either way), `NONTAINER_STUDIO_SESSIONS` (give the agent the `sessions`
 tool, so it can delegate and list published apps — **off by default for
-now**, for the same reason; the delegates rail, the drill-down and the
-retention sweep stay wired),
+now**, for the same reason; it turns `ws-git` on as well, since that is
+how a delegate's work comes back, and the delegates rail, the
+drill-down and the retention sweep stay wired either way),
 `NONTAINER_STUDIO_ISOLATION` (`process` by default — agent code runs in
 a worker process of its own so a segfault/OOM in C-extension guts costs
 the turn, not the server; the
@@ -329,8 +330,12 @@ ws-git checkout <name> -- <paths>   # take some
 ```
 
 `ws-git` is the agent's own git over the session — status, commit, log,
-diff, branch, merge, checkout — and it is on because delegation is what
-needs it. A delegate's work arrives as a *named* commit only if the
+diff, branch, merge, checkout — and `NONTAINER_STUDIO_SESSIONS` turns
+it on for exactly that reason: without it, delegation is the degraded
+half of itself, where the delegate's answer is all that ever comes
+back and the honest thing to ask it for is findings rather than edits.
+`NONTAINER_STUDIO_WSGIT` on its own is still versioning without
+delegation. A delegate's work arrives as a *named* commit only if the
 delegate runs `ws-git commit`; what it staged is taken as exactly that,
 and anything it wrote past its last commit is reported as left out
 rather than committed on its behalf. A delegate that never touches

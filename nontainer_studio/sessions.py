@@ -400,8 +400,16 @@ def _flag(name: str) -> bool:
 
 
 def wsgit_enabled() -> bool:
-    """``NONTAINER_STUDIO_WSGIT``: whether the agent's terminal carries
-    the ``ws-git`` verb.
+    """Whether the agent's terminal carries the ``ws-git`` verb:
+    ``NONTAINER_STUDIO_WSGIT`` asks for it, and
+    ``NONTAINER_STUDIO_SESSIONS`` asks for it too.
+
+    Delegation without the verb is the degraded half of itself — a
+    delegate's files stay on its own branch and its answer is all that
+    ever comes back — so a studio told to hand an agent the `sessions`
+    tool is told to hand it what brings a delegate's work over.
+    Versioning without delegation is a state worth having, so the verb
+    alone still means exactly the verb.
 
     Off, ``register_wsgit`` is never called, so the verb is absent from
     the terminal and the primer teaches no spelling for it. The
@@ -410,13 +418,17 @@ def wsgit_enabled() -> bool:
     host-side verbs over that history — so this decides what the AGENT
     can type, nothing about what the studio can do.
     """
-    return _flag("NONTAINER_STUDIO_WSGIT")
+    return _flag("NONTAINER_STUDIO_WSGIT") or _flag("NONTAINER_STUDIO_SESSIONS")
 
 
 def sessions_tool_enabled() -> bool:
     """``NONTAINER_STUDIO_SESSIONS``: whether the agent is given the
     ``sessions`` tool, its handle on delegation and on what the human
     has published.
+
+    On, it also turns the ``ws-git`` verb on, because a delegate's work
+    comes back through that verb and nothing else does
+    (:func:`wsgit_enabled`).
 
     Off, the tool is not registered and the primer says nothing about
     delegating or about published apps. The session's ``Sessions``
