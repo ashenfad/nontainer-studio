@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The version strip sits under the published app, and one pane
+  serves both places it is shown.** The version list used to open as a
+  modal over the preview, which covered the app it acts on: pointing
+  the URL at another version or deleting one hid the frame that would
+  have shown the result. It is now a strip under the published frame,
+  bounded so the app keeps most of the pane, and the `published…`
+  button is gone — the `published` segment of the preview's toggle is
+  the way in. The frame and the strip are one component, shared by the
+  preview's published mode and the rail's view of an app whose session
+  is gone, so the two differ only in the bar above them: the toggle
+  and the publish button in a session, the app's title and `close`
+  without one.
+
 - **A `changes` tab says which files are unpublished, and what the
   edit was.** The publish button carries a count; the count needed
   somewhere to lead. The third side tab lists the app files that
