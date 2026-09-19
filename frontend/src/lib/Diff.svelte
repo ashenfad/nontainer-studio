@@ -10,10 +10,16 @@
     // file arriving or leaving — which is what happened.
     let { old = '', new: latest = '' } = $props()
 
-    const lines = $derived(lineDiff(old ?? '', latest ?? ''))
+    const diff = $derived(lineDiff(old ?? '', latest ?? ''))
 </script>
 
-<pre class="diff">{#each lines as line, i (i)}<span
+{#if diff.bounded}
+    <!-- the middle was too large to align line by line and is shown
+         as the old block over the new; the reader is told, since an
+         aligned diff and a replaced block read differently -->
+    <div class="coarse">too much changed to align line by line — the old lines, then the new</div>
+{/if}
+<pre class="diff">{#each diff.lines as line, i (i)}<span
             class="diff-{line.type}"
             >{line.type === 'removed'
                 ? '− '
@@ -23,6 +29,11 @@
 </span>{/each}</pre>
 
 <style>
+    .coarse {
+        color: var(--text-muted);
+        font-size: 0.68rem;
+        margin: 0.25rem 0 0;
+    }
     .diff {
         font-size: 0.72rem;
         background: rgba(255, 255, 255, 0.05);
