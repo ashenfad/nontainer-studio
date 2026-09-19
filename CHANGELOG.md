@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Delegation stops nesting after two hops.** Every session builds a
+  delegation helper with four workers, and every delegate is a full
+  agent on the parent's model with a helper of its own — so a delegate
+  that delegates multiplies rather than adds, and nothing bounded it.
+  `NONTAINER_STUDIO_DELEGATE_DEPTH` (`Registry(delegate_depth=...)`)
+  counts hops from the session a human started, 2 by default: that
+  session may delegate, its delegates may delegate, and the generation
+  after them reads a refusal on `sessions ask` that names the way
+  forward — do the task, answer with what you found. The refusal is
+  the studio's and lands before the fork, so nothing is created to
+  say it; `list`, `result`, `keep`, `cancel` and `published` are
+  untouched. Depth is walked over the record of who forked whom, never
+  off the dotted name, and the primer sentence about the cap goes only
+  to the session it binds. `0` turns the cap off.
+
 - **The version strip sits under the published app, and one pane
   serves both places it is shown.** The version list used to open as a
   modal over the preview, which covered the app it acts on: pointing
