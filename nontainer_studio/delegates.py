@@ -17,8 +17,10 @@ Three rules hold this together:
   branch, builds the same ``WorkspaceTools``, the same python config
   with the same app-db policy, and the same agent. The one thing a
   delegate needs that a new session does not is the parent's live app
-  state, so the app db is COPIED in first — a delegate that cannot read
-  the rows the app is serving would be testing a different program.
+  state, and it gets it by REFERENCE: the child's row names the
+  parent's db file, so a delegate writes to the store its parent is
+  looking at rather than to a copy of it, the way a real subagent
+  does.
 - **The runner never takes the parent's turn lock.** It is called on a
   worker thread inside ``Sessions.ask`` while the parent's own turn is
   still running, so touching the parent's lock would deadlock the turn
@@ -171,8 +173,9 @@ class StudioRunner:
     """``SessionRunner`` over one parent session's delegates.
 
     Built per parent because the answer's frame is per parent: the
-    header names the session that asked, and the child's app db is
-    seeded from that session's. ``Sessions`` calls :meth:`run` on a
+    header names the session that asked, and the child's row names
+    that session's db file, so what the delegate writes lands in the
+    store its parent is looking at. ``Sessions`` calls :meth:`run` on a
     worker thread of its own, one call per delegate.
     """
 
