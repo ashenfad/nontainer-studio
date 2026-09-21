@@ -1356,6 +1356,50 @@ def test_no_cap_no_limit(tmp_path):
         registry.close()
 
 
+def _turn_that_reports_its_cancel(loop, seen, *, sleep=10):
+    async def turn():
+        try:
+            await asyncio.sleep(sleep)
+        except asyncio.CancelledError:
+            seen.append("cancelled")
+            raise
+        seen.append("finished")
+
+    return loop.create_task(turn())
+
+
+def test_a_turn_registered_after_the_sweep_is_stopped_on_arrival(registry):
+    """`sessions ask` queues a worker, and a worker still on its way
+    to registering when shutdown swept the table is one the sweep
+    never saw. Registering after the sweep is what stops it."""
+    assert registry.stop_delegate_runs() == []
+    loop = asyncio.new_event_loop()
+    seen = []
+    try:
+        task = _turn_that_reports_its_cancel(loop, seen)
+        registry.hold_delegate_run("boss.scout", loop, task)
+        with pytest.raises(asyncio.CancelledError):
+            loop.run_until_complete(task)
+    finally:
+        registry.drop_delegate_run("boss.scout")
+        loop.close()
+    assert seen == ["cancelled"]
+
+
+def test_a_turn_registered_before_any_sweep_runs(registry):
+    """The control: with no sweep behind it, registering stops nothing."""
+    loop = asyncio.new_event_loop()
+    seen = []
+    try:
+        task = _turn_that_reports_its_cancel(loop, seen, sleep=0)
+        registry.hold_delegate_run("boss.scout", loop, task)
+        loop.run_until_complete(task)
+    finally:
+        registry.drop_delegate_run("boss.scout")
+        loop.close()
+    assert seen == ["finished"]
+
+
 def test_a_delegate_past_the_cap_stops_calling_and_still_answers(tmp_path):
     """What the cap buys, end to end: the calls past it do not run, and
     the turn still resolves into an answer rather than hanging."""
@@ -1480,6 +1524,32 @@ def test_a_rewind_past_the_note_delivers_it_again(tmp_path):
 
         assert [e["name"] for e in again if e["type"] == "delegate"] == ["boss.scout"]
         # once, though: the turn after it is not a third delivery
+        assert not any(
+            e["type"] == "delegate" for e in _turn(parent, "!text ok", registry)
+        )
+    finally:
+        registry.close()
+
+
+def test_the_note_stays_delivered_past_the_event_window(tmp_path, monkeypatch):
+    """Memory holds the transcript's tail. A delivery that has aged
+    out of it is still on disk, and that is where the check looks
+    before it names the same delegate a second time."""
+    _asked_before_a_restart(tmp_path)
+
+    registry = _reborn(tmp_path)
+    try:
+        parent = registry.open("boss")
+        first = _turn(parent, "where are we?", registry)
+        assert [e["name"] for e in first if e["type"] == "delegate"] == ["boss.scout"]
+
+        monkeypatch.setattr(sessions_mod, "MAX_EVENTS", 2)
+        for _ in range(3):
+            _turn(parent, "!text ok", registry)
+        assert len(parent.events) <= 2
+        assert not any(e.get("type") == "delegate" for e in parent.events)
+
+        assert registry.orphaned_delegates(parent) == []
         assert not any(
             e["type"] == "delegate" for e in _turn(parent, "!text ok", registry)
         )

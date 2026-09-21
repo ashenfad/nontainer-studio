@@ -1124,6 +1124,25 @@ class Db:
             self._c.close()
 
 
+def _read_log(log_path: Path | None) -> list[dict]:
+    """A transcript log, whole, compacted (torn last lines from a
+    crash are skipped, not fatal). Legacy logs predate stored seqs and
+    compaction: seqs are assigned by line position (which is what
+    truncate events' `to` referenced back then), and the granular
+    delta runs collapse on the way in."""
+    if log_path is None or not log_path.exists():
+        return []
+    events = []
+    for line in log_path.read_text().splitlines():
+        try:
+            events.append(json.loads(line))
+        except ValueError:
+            continue
+    for i, e in enumerate(events):
+        e.setdefault("seq", i)
+    return _compact(events)
+
+
 @dataclass
 class Session:
     name: str
@@ -1256,13 +1275,13 @@ class Session:
         count means."""
         if self.delegates is None:
             return []
-        shown = self.delivered_delegates()
-        return [
+        done = [
             job
             for job in self.delegates.list()
             if job.status not in ("running", "cancelled", "expired")
-            and job.name not in shown
         ]
+        unread = self.undelivered(job.name for job in done)
+        return [job for job in done if job.name in unread]
 
     def delivered_delegates(self) -> set:
         """Job names whose answers the transcript still shows.
@@ -1277,11 +1296,33 @@ class Session:
         "what the transcript now says" does: the log is append-only, and
         a cut is an event rather than a deletion.
         """
+        return self._delivered_in(self.events)
+
+    @staticmethod
+    def _delivered_in(events: list) -> set:
         return {
             event["name"]
-            for _, event in Registry._visible(self.events)
+            for _, event in Registry._visible(events)
             if event.get("type") == "delegate" and event.get("name")
         }
+
+    def undelivered(self, names: Iterable[str]) -> set:
+        """Those of ``names`` whose answers the transcript does not
+        show.
+
+        Memory holds the transcript's tail, ``MAX_EVENTS`` long, and a
+        restart reloads only that much; a delivery older than the
+        window is on disk and not in the list. So a name the tail does
+        not show is checked against the whole log before it counts as
+        undelivered, and only then: the log is read when the tail is
+        full and a name is missing from it, which is the one case the
+        tail cannot answer. A rewind still unsays a delivery either
+        way, since the log is read through the same truncate projection.
+        """
+        missing = set(names) - self.delivered_delegates()
+        if missing and len(self.events) >= MAX_EVENTS and self.log_path is not None:
+            missing -= self._delivered_in(_read_log(self.log_path))
+        return missing
 
     def take_delegate_answers(self) -> list:
         """Those answers, as ``(job name, Answer)``.
@@ -1363,6 +1404,10 @@ class Registry:
         # handles are kept here, where shutdown can ask a turn to stop
         # instead of waiting out every turn the delegate has left.
         self._delegate_runs: dict[str, tuple[Any, Any]] = {}
+        # Set by the shutdown sweep and never cleared: a turn that
+        # registers after the sweep has already run is stopped on
+        # arrival, so nothing the sweep could not see starts afterwards.
+        self._stopping = False
         # The store is the object that owns what outlives a session:
         # opening one, deleting one, and the tag scope that belongs to
         # none of them. Studio's own bookkeeping (the app dbs, the
@@ -2576,22 +2621,8 @@ class Registry:
 
     @staticmethod
     def _load_events(log_path: Path | None) -> list[dict]:
-        """Reload a prior run's transcript tail (torn last lines from
-        a crash are skipped, not fatal). Legacy logs predate stored
-        seqs and compaction: seqs are assigned by line position (which
-        is what truncate events' `to` referenced back then), and the
-        granular delta runs collapse on the way in."""
-        if log_path is None or not log_path.exists():
-            return []
-        events = []
-        for line in log_path.read_text().splitlines():
-            try:
-                events.append(json.loads(line))
-            except ValueError:
-                continue
-        for i, e in enumerate(events):
-            e.setdefault("seq", i)
-        return _compact(events)[-MAX_EVENTS:]
+        """Reload a prior run's transcript tail."""
+        return _read_log(log_path)[-MAX_EVENTS:]
 
     def _sessions_tool(self, owner: str, delegates: Any) -> Callable:
         """The agent's handle on delegation, and on what the human has
@@ -3239,16 +3270,15 @@ class Registry:
             live = {job.name for job in session.delegates.list()}
         except Exception:  # noqa: BLE001 - a closed helper remembers nothing
             live = set()
-        shown = session.delivered_delegates()
         record = self._manifest()["delegates"]
-        return sorted(
+        parted = [
             child
             for child, entry in record.items()
             if entry["parent"] == session.name
             and child not in live
-            and child not in shown
             and self._store.exists(child)
-        )
+        ]
+        return sorted(session.undelivered(parted))
 
     def delegate_of(self, name: str) -> dict | None:
         """The row ``name``'s parent sees for it, with the parent named
@@ -3311,9 +3341,20 @@ class Registry:
         One per child, because a branch runs one job at a time: the
         helper refuses a second run on a child the first is still
         driving.
+
+        A turn that arrives after the shutdown sweep is asked to stop
+        the way the sweep asks: `sessions ask` queues a worker, and a
+        worker still on its way here when the sweep read the table is
+        one the sweep never saw. Posted to the loop rather than
+        cancelled outright, so the turn starts, meets the cancel at its
+        first await, and writes why into the child's transcript like
+        any other stopped turn.
         """
         with self._lock:
             self._delegate_runs[name] = (loop, task)
+            stopping = self._stopping
+        if stopping:
+            loop.call_soon_threadsafe(task.cancel)
 
     def drop_delegate_run(self, name: str) -> None:
         """Give up the handles on a delegate turn that has ended,
@@ -3334,6 +3375,7 @@ class Registry:
         already over.
         """
         with self._lock:
+            self._stopping = True
             runs = sorted(self._delegate_runs.items())
         for name, (loop, task) in runs:
             try:
