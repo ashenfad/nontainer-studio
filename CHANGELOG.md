@@ -46,6 +46,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The nontainer floor is 0.7.9.** A minted app token can no longer
+  begin with a dash, which is what made `ws-git worktree add`, `diff`
+  and `checkout` refuse an origin tag about one time in 64: the token
+  names the publication and the tag under it, and every verb reads a
+  leading dash as a flag. The floor is what carries the fix into a
+  fresh install.
+
 - **The origin-tag mount test says what it saw.** It failed three
   times on CI since 2026-09-18, always on Python 3.13 and never
   locally, and each time the only evidence was a missing file: the
