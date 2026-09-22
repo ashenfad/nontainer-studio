@@ -94,5 +94,8 @@ app.
 The live preview and `test_app` both drive dispatch host-side, so they
 run under dud unchanged, and the handler pattern the apps guide
 recommends — state in `cache` or an external store — crosses the
-boundary cleanly. Every backend mounts the workspace at `/workspace`, so
-absolute paths mean the same thing on every rung.
+boundary cleanly. Absolute paths are the one thing that differs by
+rung: `dud-vm` mounts the workspace at `/workspace`, so they mean what
+they mean in the local sandbox, while `dud` keeps the workspace in a
+temp directory of the subprocess's own, so an agent on that rung should
+work in relative paths from its cwd.

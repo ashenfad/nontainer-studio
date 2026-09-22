@@ -113,7 +113,7 @@ to `process` rather than raising.
 |---|---|---|
 | unset (default) | the in-process sandbox | sandtrap's gates, under `ISOLATION` |
 | `dud-vm` | a disposable microVM — vfkit on macOS, firecracker on Linux/KVM | real |
-| `dud` | a host process — real bash, real files | **none** |
+| `dud` | a host process — real bash, real files; the workspace lives in a temp directory of its own, not at `/workspace` | **none** |
 
 ```sh
 uv sync --extra dud
