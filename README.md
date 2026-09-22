@@ -297,6 +297,22 @@ and the `sessions` tool's `published` listing hands to an agent
 weighing where to start. It follows the same two tiers, so
 your own words outrank it.
 
+**Words for an agent that is already working.** The composer stays
+open while a turn runs. A message sent then is QUEUED — the server
+answers 202 and holds it on the session — and the agent reads it
+appended to its next tool result, framed as coming from you rather
+than as the tool's output: nothing is interrupted, and nothing it has
+already read is rewritten. The transcript shows it where it landed,
+mid-turn, with no edit handle, because the turn it arrived in began
+before you said it. A run that finishes with something still queued
+starts a follow-up turn with it, as an ordinary message you can edit.
+A turn you STOPPED is the exception: what was still waiting stays
+waiting for your next send, since a stopped turn staying stopped
+matters more than promptness. Withdraw a queued message with the ✕
+beside it, while the agent has not read it yet — delivery cannot be
+taken back. "Send now" is not on offer: stop, then send, is the
+interrupt, and it already exists.
+
 ### Delegation
 
 Behind `NONTAINER_STUDIO_SESSIONS`, which is **off by default for

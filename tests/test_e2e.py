@@ -380,6 +380,35 @@ def test_thinking_interleaves_into_the_work_chip(page, server):
     expect(page.locator(".think-text").last).to_contain_text("Just musing")
 
 
+def test_a_message_typed_while_the_agent_works_waits_then_lands(page, server):
+    """The composer stays open while a turn runs: Enter queues the
+    message, it shows as waiting, and it becomes an ordinary user
+    bubble the moment the agent reads it — with no edit handle, since
+    the turn it landed in began before it was said."""
+    page.goto(f"{server}/?session=e2e-queue")
+    _send(
+        page,
+        '!tool run_python {"code": "import time\\ntime.sleep(3)"}\n!text all done',
+    )
+    expect(page.locator(".send-btn.stop")).to_be_visible(timeout=10000)
+
+    page.fill("textarea", "use a log scale")
+    page.keyboard.press("Enter")
+    expect(page.locator(".user-bubble.queued")).to_contain_text(
+        "use a log scale", timeout=10000
+    )
+
+    # delivered with the tool result, and the turn carries on past it
+    expect(page.locator(".user-bubble.queued")).to_have_count(0, timeout=30000)
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "all done", timeout=30000
+    )
+    rows = page.locator(".user-row")
+    expect(rows.last).to_contain_text("use a log scale")
+    rows.last.hover()
+    expect(rows.last.locator(".edit")).to_have_count(0)
+
+
 def test_edit_rewinds_files_and_truncates_transcript(page, server):
     page.goto(f"{server}/?session=e2e-edit")
     _send(page, '!tool file_write {"path": "/a.txt", "content": "A"}\n!text one done')

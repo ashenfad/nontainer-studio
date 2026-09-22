@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **A message typed while the agent works is queued, not refused.**
+  The composer used to lock for the length of a turn and `POST /chat`
+  answered 409, so a correction that arrived one second late waited
+  for the work it was meant to redirect to finish. The seam that
+  exists mid-run is the tool result, and nontainer 0.7.8's inbox is
+  how a note gets there: the chat route now queues the message (202,
+  with the note's id) and the agent reads it appended to its next tool
+  result, framed as coming from the person it works for rather than as
+  the tool's output. Nothing is interrupted and no message the model
+  has already read is rewritten. The transcript records the delivery
+  as an `interject` event in the slot it arrived in — visible, and
+  NOT an edit anchor, since the turn it landed in began before it was
+  said. The tool box keeps showing the tool's own output: the block is
+  cut back off (`nontainer.inbox.split`) before the result reaches the
+  transcript. A run that ends with the queue still full starts a
+  follow-up turn with what is waiting, as an ordinary editable message
+  — except after a stop or an error, where the notes stay queued for
+  the human's next send, because a turn they stopped must stay
+  stopped. `DELETE /api/sessions/{name}/queue/{id}` takes a message
+  back while it is still waiting, and the session payload lists the
+  queue, so a reload shows what is pending: the queue is the server's,
+  not the tab's.
+
+- **A delegate's answer that lands mid-turn arrives mid-turn.** The
+  same delivery point carries answers the parent's own turn was too
+  late to collect, through `Sessions.take()`. It is the same
+  `delegate` event the between-turns path emits, so the delivery
+  record, the rail's waiting count and an edit's re-delivery all keep
+  working, and an answer taken this way is not delivered twice.
+
+- **Compression keeps a queued message verbatim.** agno's tool-result
+  compression summarises what it is given; a person's words inside a
+  tool result must not become a paraphrase in the agent's memory. The
+  studio's compression manager splits the block off, compresses the
+  tool's own half, and re-appends the block byte for byte.
+
 ### Changed
 
 - **Shutdown no longer waits out a delegate mid-turn.** Closing a

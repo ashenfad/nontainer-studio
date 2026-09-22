@@ -93,7 +93,11 @@ def transcript_text(session: object, limit: int = TRANSCRIPT_LIMIT) -> str:
             assistant.append(event.get("delta") or "")
             continue
         flush()
-        if kind == "user":
+        if kind in ("user", "interject"):
+            # An `interject` is the person speaking too — a message they
+            # queued while the agent worked, delivered with a tool
+            # result instead of starting a turn. What it says names the
+            # work exactly as anything else they typed does.
             text = (event.get("text") or "").strip()
             if text:
                 lines.append(f"user: {text}")
