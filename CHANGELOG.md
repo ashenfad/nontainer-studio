@@ -46,6 +46,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The origin-tag mount test says what it saw.** It failed three
+  times on CI since 2026-09-18, always on Python 3.13 and never
+  locally, and each time the only evidence was a missing file: the
+  guard on the terminal's answer accepted any text containing the word
+  "worktree", which the verb's refusals also do. The test now requires
+  the exact line a mount prints and reports the mounted tree beside
+  the file it could not find. The dummy model no longer answers a
+  tool call to an agent that offered it no tools, so the naming pass
+  stops logging a missing `file_write` on every run of that test.
+
 - **The README was split into a `docs/` set.** It had grown into four
   documents in one — a front door, a configuration reference, a design
   essay and a delegation manual — so the front door is now short and

@@ -24,7 +24,7 @@ class ScriptedModel(DummyModel):
         self.reply = reply
         self.asked: list[str] = []
 
-    def _plan(self, messages) -> ModelResponse:  # type: ignore[override]
+    def _plan(self, messages, **_) -> ModelResponse:  # type: ignore[override]
         self.asked.append(
             "\n".join(str(m.content) for m in messages if m.role == "user")
         )

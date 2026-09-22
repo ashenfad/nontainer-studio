@@ -41,7 +41,13 @@ class DummyModel(Model):
     # -- script interpretation ---------------------------------------------
 
     @staticmethod
-    def _plan(messages: List[Message]) -> ModelResponse:
+    def _plan(messages: List[Message], offered: bool = True) -> ModelResponse:
+        """``offered`` is whether the caller put any tools on the table.
+        A model offered none calls none, whatever the script says: the
+        studio's naming pass hands a tool-less agent the transcript of
+        a session, directives and all, and a reply that asked for
+        ``file_write`` there would be answered with an error about a
+        function that was never offered."""
         last_user = next((m for m in reversed(messages) if m.role == "user"), None)
         text = str(getattr(last_user, "content", "") or "")
         tools_ran = (
@@ -76,7 +82,7 @@ class DummyModel(Model):
         if thinking and not tools_ran:
             # thinking precedes the first action, like real reasoners
             response.reasoning_content = "\n".join(thinking)
-        if tool_calls and not tools_ran:
+        if tool_calls and offered and not tools_ran:
             response.tool_calls = tool_calls
         else:
             response.content = "\n".join(reply) or f"dummy: {text[:200]}"
@@ -85,20 +91,24 @@ class DummyModel(Model):
     # -- Model surface -------------------------------------------------------
 
     def invoke(self, messages: List[Message], **kwargs: Any) -> ModelResponse:
-        return self._plan(messages)
+        return self._plan(messages, offered=bool(kwargs.get("tools")))
 
     async def ainvoke(self, messages: List[Message], **kwargs: Any) -> ModelResponse:
-        return self._plan(messages)
+        return self._plan(messages, offered=bool(kwargs.get("tools")))
 
     def invoke_stream(
         self, messages: List[Message], **kwargs: Any
     ) -> Iterator[ModelResponse]:
-        yield from self._stream_chunks(self._plan(messages))
+        yield from self._stream_chunks(
+            self._plan(messages, offered=bool(kwargs.get("tools")))
+        )
 
     async def ainvoke_stream(
         self, messages: List[Message], **kwargs: Any
     ) -> AsyncIterator[ModelResponse]:
-        for chunk in self._stream_chunks(self._plan(messages)):
+        for chunk in self._stream_chunks(
+            self._plan(messages, offered=bool(kwargs.get("tools")))
+        ):
             yield chunk
 
     @staticmethod

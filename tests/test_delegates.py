@@ -564,12 +564,21 @@ def test_an_agent_starts_from_an_app_whose_session_is_gone(registry, tmp_path):
         f'!tool terminal {{"command": "ws-git worktree add old {tag}"}}\n'
         "!text Mounted it.",
     )
-    # the verb's own answer first, so a mount that did not happen is
-    # reported as what the terminal said and not as a missing file
-    assert "worktree" in _tool_results(mounted, "terminal")[0], _tool_results(
-        mounted, "terminal"
-    )
+    # The verb's own answer first, and the exact line a mount prints,
+    # so a mount that did not happen is reported as what the terminal
+    # said and not as a missing file. A refusal from the verb also
+    # contains the word "worktree", so the word alone proves nothing.
+    said = _tool_results(mounted, "terminal")[0]
+    assert said.startswith("worktree old: ") and said.rstrip().endswith(
+        "(read-only)"
+    ), said
     fs = builder.ws.files.fs
+    # What the mount holds, before what one file in it says: a file
+    # that is not there is then reported beside the tree it is missing
+    # from, and beside what the terminal claimed to have mounted.
+    mounted_tree = sorted(fs.list("/workspace/old", recursive=True))
+    assert "app/index.html" in mounted_tree, (said, mounted_tree)
+    assert "notes/loader.md" in mounted_tree, (said, mounted_tree)
     assert fs.read("/workspace/old/app/index.html") == b"<h1>revenue</h1>"
     assert fs.read("/workspace/old/notes/loader.md").decode() == NOTE
 
