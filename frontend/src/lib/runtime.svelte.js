@@ -204,6 +204,11 @@ export class SessionRuntime {
     foreground = false // set via setForeground; gates the SSE stream
     cursor = 0
     #turnArts = []
+    // Ids whose delivery arrived before the POST that queued them came
+    // back. The SSE event and the response race, and the loser must not
+    // put a message back on screen as waiting after the agent has read
+    // it — nothing later would clear it.
+    #landed = new Set()
     #ctl = null
     #following = false
 
@@ -283,8 +288,7 @@ export class SessionRuntime {
             this.busy = true
             this.#turnArts = []
             // a turn STARTED from the queue says which messages it took
-            if (ev.from_queue?.length)
-                this.queued = this.queued.filter((q) => !ev.from_queue.includes(q.id))
+            if (ev.from_queue?.length) this.#stopWaiting(ev.from_queue)
             this.messages.push({
                 role: 'user',
                 text: ev.text,
@@ -298,7 +302,7 @@ export class SessionRuntime {
             // `busy` and the turn's artifacts are left exactly as they
             // are, and the agent message so far is closed off: what
             // comes next is its answer to this.
-            this.queued = this.queued.filter((q) => q.id !== ev.id)
+            this.#stopWaiting([ev.id])
             const open = this.messages.at(-1)
             if (open?.role === 'agent') open.streaming = false
             this.messages.push({
@@ -327,16 +331,17 @@ export class SessionRuntime {
                 running: true,
             })
         } else if (ev.type === 'tool_end') {
-            const items = this.#agentItems()
             // tool calls can run in PARALLEL (several starts, then the
-            // ends) — pair by name first, oldest open call wins
-            let tool =
-                items.find(
-                    (i) => i.kind === 'tool' && i.running && i.name === ev.name,
-                ) ?? items.find((i) => i.kind === 'tool' && i.running)
+            // ends) — pair by name first, oldest open call wins. The
+            // search spans the whole turn rather than the message being
+            // written: a message the human interjected splits the
+            // agent's message in two, and the call this result belongs
+            // to opened before the split.
+            const open = this.#openTools()
+            let tool = open.find((i) => i.name === ev.name) ?? open[0]
             if (!tool) {
                 tool = { kind: 'tool', name: ev.name, args: '', running: false }
-                items.push(tool)
+                this.#agentItems().push(tool)
             }
             tool.result = ev.result
             tool.running = false
@@ -403,9 +408,14 @@ export class SessionRuntime {
             this.version++
             // Jupyter's rule: outputs always show. Artifacts the reply
             // didn't reference render after it instead of vanishing.
-            const msg = this.messages.findLast((m) => m.role === 'agent')
+            // read across the turn, not just its last message: an
+            // interjection splits one reply in two, and an artifact the
+            // agent cited before the split is referenced all the same
+            const turn = this.#turnMessages()
+            const msg = turn.at(-1)
             if (msg) {
-                const prose = msg.items
+                const prose = turn
+                    .flatMap((m) => m.items)
                     .filter((i) => i.kind === 'text')
                     .map((i) => i.text)
                     .join('\n')
@@ -418,6 +428,40 @@ export class SessionRuntime {
             if (!this.foreground) this.unseen = true
             refreshSessions()
         }
+    }
+
+    /** this turn's agent messages, oldest first. Usually one — a
+     * message the human interjected splits it, and what came before
+     * the split is still this turn's. The turn's own `user` message
+     * is the boundary; an interjected one is not. */
+    #turnMessages() {
+        const out = []
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+            const msg = this.messages[i]
+            if (msg.role === 'user' && !msg.mid_turn) break
+            if (msg.role === 'agent') out.unshift(msg)
+        }
+        return out
+    }
+
+    /** the tool calls of this turn still waiting for a result, in
+     * arrival order */
+    #openTools() {
+        return this.#turnMessages().flatMap((m) =>
+            m.items.filter((i) => i.kind === 'tool' && i.running),
+        )
+    }
+
+    /** These queued messages have reached the agent: drop their
+     * bubbles. An id with no bubble yet is REMEMBERED instead — its
+     * delivery beat the response to the POST that queued it, and that
+     * response must not then show it as waiting. */
+    #stopWaiting(ids) {
+        const landed = new Set(ids)
+        const kept = this.queued.filter((q) => !landed.has(q.id))
+        for (const q of this.queued) landed.delete(q.id)
+        for (const id of landed) this.#landed.add(id)
+        this.queued = kept
     }
 
     /** the streaming agent message's item list (created on first use —
@@ -478,7 +522,9 @@ export class SessionRuntime {
         }
         try {
             const res = await api(`/api/sessions/${this.name}/chat`, { message })
-            if (res.queued)
+            // ...unless it has already been delivered: the event can
+            // beat this response, and then there is nothing to wait for
+            if (res.queued && !this.#landed.delete(res.queued))
                 this.queued = [...this.queued, { id: res.queued, text: message }]
             return true
         } catch (e) {

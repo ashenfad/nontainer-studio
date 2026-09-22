@@ -408,6 +408,13 @@ def test_a_message_typed_while_the_agent_works_waits_then_lands(page, server):
     rows.last.hover()
     expect(rows.last.locator(".edit")).to_have_count(0)
 
+    # the interjection splits the agent's message in two, and the tool
+    # call it landed inside opened in the first half: its result must
+    # still pair with THAT call, not open a second activity chip and
+    # leave the first spinning forever
+    expect(page.locator(".activity .chip")).to_have_count(1)
+    expect(page.locator(".dot.running")).to_have_count(0)
+
 
 def test_edit_rewinds_files_and_truncates_transcript(page, server):
     page.goto(f"{server}/?session=e2e-edit")
