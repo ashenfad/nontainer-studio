@@ -60,10 +60,11 @@ from nontainer.errors import (
     SessionsError,
     WorkspaceError,
 )
+from nontainer.inbox import Inbox, Note
 from nontainer.sessions import Sessions, run_action
 from nontainer.wsgit import register_wsgit
 
-from .delegates import DELEGATE_TURNS, StudioRunner
+from .delegates import DELEGATE_TURNS, StudioRunner, answer_message
 from .summaries import _clean_description
 
 log = logging.getLogger(__name__)
@@ -1182,6 +1183,41 @@ class Session:
     indicator, the answer injected next turn) reads these jobs, and
     closing the session has to join their workers."""
 
+    loop: Any = None
+    """The event loop the running turn is on.
+
+    A tool runs on a worker thread, so anything discovered there — a
+    message delivered from the inbox, say — reaches the transcript
+    through this: ``emit`` is a coroutine on the loop that owns the
+    event buffer. A session's turns do not all run on the same loop (a
+    delegate's runner makes one of its own), so it is recorded per
+    turn rather than once.
+    """
+
+    in_turn: bool = False
+    """Whether the holder of ``turn_lock`` is an agent turn.
+
+    The lock is also taken as a RESERVATION — a publish holds it so
+    that nothing lands between the tag it writes and the marker it
+    appends — and the difference matters to a message that arrives
+    meanwhile: a turn will read it at its next tool result, where a
+    reservation has no delivery to make, so a message arriving then is
+    refused rather than left queued for nobody.
+    """
+
+    inbox: Inbox = field(default_factory=Inbox)
+    """Messages queued while a turn runs, delivered to the model with
+    its next tool result.
+
+    A run is opaque: between the moment it starts and the moment it
+    ends there is no seam a human's sentence can reach the model
+    through except the text a tool call comes back with. The queue is
+    the studio's half of that — POST /chat on a busy session fills it
+    instead of refusing — and it lives on the session rather than on
+    the toolkit because the toolkit is rebuilt on every model switch
+    while the queue must not be.
+    """
+
     log_path: Path | None = None
     """Durable transcript: the COMPACTED event stream, appended at
     each non-delta boundary; open() reloads the tail. Replay-vs-live
@@ -1346,6 +1382,76 @@ class Session:
                 continue
             out.append((job.name, answer))
         return out
+
+
+_EMIT_TIMEOUT = 10.0
+"""Seconds a delivery waits for its transcript event to land. A bound
+rather than a promise: the wait is on a tool's worker thread, and a
+loop that has stopped answering must not hold the tool result the
+model is waiting for."""
+
+
+def _delivery_event(note: Note) -> dict:
+    """The transcript event for a note the model has just read.
+
+    A delegate's answer taken mid-turn is the SAME fact as one
+    collected between turns, so it is the same `delegate` event: the
+    delivery record, `Session.undelivered` and the rail's waiting count
+    all read that event and would each miss an answer written down any
+    other way. Everything else is the person this session works for,
+    speaking mid-turn — an `interject`, which carries no `head` because
+    there is no pre-turn commit to rewind to: the turn it landed in
+    began before it was said, so an edit cannot start from here.
+    """
+    if note.kind == "mechanism" and note.job:
+        answer = note.answer
+        if answer is None:
+            return {
+                "type": "delegate",
+                "name": note.job,
+                "status": "answered",
+                "text": note.text,
+            }
+        return {
+            "type": "delegate",
+            "name": note.job,
+            "status": answer.status,
+            "text": answer_message(note.job, answer),
+        }
+    return {"type": "interject", "id": note.id, "text": note.text}
+
+
+def _record_delivery(session: "Session") -> Callable:
+    """The session's ``Inbox.on_delivered``: write down what the model
+    was just handed.
+
+    Called on the worker thread the tool ran on, since that is where
+    the delivery happens, so each event is handed to the loop the turn
+    is on and waited for: the transcript then says the note arrived
+    BEFORE the tool result it rode out with, which is the order it
+    happened in. A failure is logged and nothing more — the notes are
+    already in the result the model is about to read, and an exception
+    escaping here would replace that result with an error.
+    """
+
+    def record(notes: "list[Note]") -> None:
+        loop = session.loop
+        for note in notes:
+            try:
+                if loop is None:
+                    raise RuntimeError("no event loop is carrying this turn")
+                future = asyncio.run_coroutine_threadsafe(
+                    session.emit(_delivery_event(note)), loop
+                )
+                future.result(timeout=_EMIT_TIMEOUT)
+            except Exception:  # noqa: BLE001 - the tool result wins
+                log.warning(
+                    "inbox: note %s reached the model but not the transcript",
+                    note.id,
+                    exc_info=True,
+                )
+
+    return record
 
 
 class Registry:
@@ -2606,18 +2712,29 @@ class Registry:
             StudioRunner(self, name, self._delegate_turns),
             budget=self._delegate_turns,
         )
-        return Session(
+        # Built here and handed to the toolkit rather than taken from
+        # it: a model switch rebuilds the toolkit, and a queue that
+        # moved with it would drop whatever was waiting.
+        inbox = Inbox()
+        session = Session(
             name=name,
             ws=ws,
             runtime=runtime,
-            agent=self._build_agent(name, ws, runtime, model, delegates, wsgit=wsgit),
+            agent=self._build_agent(
+                name, ws, runtime, model, delegates, wsgit=wsgit, inbox=inbox
+            ),
             db=db,
             turn_lock=threading.Lock(),
             model=model,
             wsgit=wsgit,
             delegates=delegates,
+            inbox=inbox,
             log_path=log_dir / f"{name}.jsonl",
         )
+        # After the session exists, because what a delivery records is
+        # a transcript event on it.
+        inbox.on_delivered = _record_delivery(session)
+        return session
 
     @staticmethod
     def _load_events(log_path: Path | None) -> list[dict]:
@@ -2745,12 +2862,17 @@ class Registry:
         delegates: Any = None,
         *,
         wsgit: bool = False,
+        inbox: Inbox | None = None,
     ) -> Any:
         """``wsgit`` is whether the ``ws-git`` verb was installed on this
         workspace, which decides the primer's ws-git half and which
         delegation half is true. It defaults to the conservative answer:
         an agent that is not told about a verb it has loses a spelling,
-        where one told about a verb it lacks loses a turn."""
+        where one told about a verb it lacks loses a turn.
+
+        ``inbox`` is the session's queue of mid-run messages; the
+        toolkit is given it rather than minting its own so the queue
+        survives the rebuild a model switch does."""
         from agno.agent import Agent
 
         from . import providers
@@ -2778,7 +2900,15 @@ class Registry:
             # endpoints support image input"), losing the turn. Model
             # switches rebuild the agent, so this stays correct.
             vision=providers.supports_vision(model or self._default_model),
+            inbox=inbox,
         )
+        # Assigned rather than passed as `sessions=`: the toolkit reads
+        # this to take delegate answers at a tool result — the answer
+        # arrives mid-turn instead of on the next one — while passing
+        # it to the constructor would ALSO register nontainer's own
+        # `sessions` tool beside the studio's.
+        if delegates is not None:
+            toolkit.sessions = delegates
         # Compaction: wave-based tool-result compression at a per-model
         # high-water mark (never count-based, never a sliding window —
         # both would bust the prompt cache every turn). The transcript
@@ -2787,9 +2917,12 @@ class Registry:
         compression = None
         limit = providers.compress_token_limit(model or self._default_model)
         if limit is not None:
-            from agno.compression.manager import CompressionManager
+            from .compression import InboxAwareCompression
 
-            compression = CompressionManager(compress_token_limit=limit)
+            # The studio's subclass, because a tool result may carry a
+            # message the human sent mid-turn: their words are kept
+            # verbatim while the tool's own output compresses.
+            compression = InboxAwareCompression(compress_token_limit=limit)
 
         # The `sessions` tool is registered only where there is a helper
         # to delegate through, which is nontainer's gate for it too: an
@@ -2826,8 +2959,27 @@ class Registry:
             # resolves the answer as `capped`.
             tool_call_limit=tool_calls or None,
             # runs per ATTEMPT, which is what makes it the right seam for
-            # keeping files and memory rewinding together (see the hook)
-            pre_hooks=[self._retry_rewind_hook(ws)],
+            # keeping files and memory rewinding together (see the hook).
+            # `begin_turn` rides the same seam from the other end: a
+            # retried attempt drops the tool calls its predecessor made,
+            # so notes delivered on one of them were never read and go
+            # back to the front of the queue.
+            pre_hooks=[self._retry_rewind_hook(ws), toolkit.begin_turn],
+            # `end_turn` commits nothing here — the session db owns the
+            # commit — so all it does is settle the notes this turn
+            # delivered: the turn that read them is over, and nothing
+            # will hand them to the model a second time.
+            post_hooks=[toolkit.end_turn],
+            # Delivery itself, on the SYNC spelling even though the
+            # studio drives `arun`. agno runs a sync tool through
+            # `asyncio.to_thread` — unless a tool hook is a coroutine
+            # function, and then it runs the whole call inline on the
+            # event loop instead. Every tool here is sync, so the async
+            # hook would hold the server's loop for the length of each
+            # one: no streaming, no stop button, no other session
+            # moving. The sync hook keeps the tool in its thread, and
+            # the queue is drained there.
+            tool_hooks=[toolkit.deliver],
             # studio-owned context: nontainer's tool descriptions cover
             # the MECHANICS (workspace, handlers, curl); this covers the
             # product the human is looking at (preview, artifacts,
@@ -3624,6 +3776,7 @@ class Registry:
             spec,
             session.delegates,
             wsgit=session.wsgit,
+            inbox=session.inbox,
         )
         session.model = spec
         with self._lock:

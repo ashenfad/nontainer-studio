@@ -76,6 +76,27 @@ def test_transcript_carries_the_exchange_and_names_the_tools():
     assert "wrote 4kb" not in text
 
 
+def test_a_queued_message_reads_as_the_person_speaking():
+    """An `interject` is a message the human queued while the agent
+    worked, delivered with a tool result rather than starting a turn.
+    It is still them speaking, and what they said names the work."""
+    text = summaries.transcript_text(
+        _session(
+            {"type": "user", "text": "chart the revenue csv"},
+            {"type": "tool_start", "name": "run_python", "args": {}},
+            {"type": "interject", "id": "n1", "text": "make it a log scale"},
+            {"type": "text", "delta": "Charted it."},
+            {"type": "done"},
+        )
+    )
+    assert text.splitlines() == [
+        "user: chart the revenue csv",
+        "[tool] run_python",
+        "user: make it a log scale",
+        "assistant: Charted it.",
+    ]
+
+
 def test_transcript_reads_through_an_edit():
     """A turn the human unsaid must not name the session: the
     projection is what the shell shows, and it is what a generator

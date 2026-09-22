@@ -517,9 +517,11 @@ def test_the_tool_is_nontainers_shape_under_nontainers_name(registry):
     assert '  action="published"' in tool.__doc__
 
     # and the agent is handed it once: nontainer's is not registered
-    # beside it
+    # beside it. The toolkit still KNOWS the helper — that is what lets
+    # it hand a delegate's answer over mid-turn — but it learned it
+    # after construction, which is the half that registers no tool.
     toolkit = boss.agent.tools[0]
-    assert toolkit.sessions is None
+    assert toolkit.sessions is boss.delegates
     assert [f for f in toolkit.functions if f == "sessions"] == []
     assert [getattr(t, "__name__", None) for t in boss.agent.tools].count(
         "sessions"
@@ -1645,3 +1647,85 @@ def test_closing_the_registry_does_not_wait_out_a_delegates_turn(tmp_path):
     answer = parent.delegates.result("boss.scout")
     assert answer.status == "failed"
     assert answer.text == server.STOPPED_AT_SHUTDOWN
+
+
+# -- an answer that lands mid-turn -------------------------------------------
+
+
+ASK_A_SCOUT = (
+    '!tool sessions {"action": "ask", "name": "scout", '
+    '"task": "!text Found it."}\n'
+    "!text Sent a scout."
+)
+
+WRITE_SOMETHING = (
+    '!tool file_write {"path": "/workspace/looked.md", "content": "looking"}\n'
+    "!text Had a look."
+)
+
+
+@pytest.fixture
+def thinking_model(monkeypatch):
+    """A model that takes half a second to decide on its first tool
+    call, as every real one does. The dummy answers instantly, which
+    closes a window a real session always has open: the stretch of a
+    turn between the message and the first tool result, where a
+    delegate can land."""
+    plain = DummyModel.ainvoke_stream
+
+    async def slow_first_call(self, messages, **kwargs):
+        if DummyModel._plan(messages).tool_calls:
+            await asyncio.sleep(0.5)
+        async for chunk in plain(self, messages, **kwargs):
+            yield chunk
+
+    monkeypatch.setattr(DummyModel, "ainvoke_stream", slow_first_call)
+
+
+def test_an_answer_that_lands_mid_turn_is_delivered_once(registry, thinking_model):
+    """A delegate that answers after a turn has begun reaches the
+    parent THERE, appended to the next tool result, instead of waiting
+    for the turn after. It is the same fact either way, so it is the
+    same `delegate` event — and that event is the delivery record, so
+    nothing carries the answer a second time."""
+    parent = registry.open("boss")
+    _turn(parent, ASK_A_SCOUT, registry)
+    # deliberately NOT awaited: the next turn begins while the scout is
+    # still working, so the between-turns path has nothing to hand over
+    # and the answer has to arrive mid-turn or not at all
+    assert parent.answered_delegates() == []
+
+    events = _turn(parent, WRITE_SOMETHING, registry)
+    kinds = [e["type"] for e in events]
+    answer = next(e for e in events if e["type"] == "delegate")
+    assert answer["name"] == "boss.scout"
+    assert answer["status"] == "answered"
+    # the studio's own framing, the one the between-turns path emits
+    assert "not the person at the keyboard" in answer["text"]
+    assert "Found it." in answer["text"]
+    # mid-turn: after this turn's own message and its tool call, and
+    # before the turn ends
+    assert kinds.index("delegate") > kinds.index("tool_start")
+    assert kinds.index("delegate") < kinds.index("done")
+
+    # the tool box shows the tool's own output; the answer is its own event
+    for event in events:
+        if event["type"] == "tool_end":
+            assert "---- inbox ----" not in event["result"]
+    # the model read it where the transcript says it arrived
+    stored = registry.db.get_session("boss")
+    carried = [
+        str(m.content)
+        for run in (stored.runs or [])
+        for m in (run.messages or [])
+        if m.role == "tool" and "---- inbox ----" in str(m.content)
+    ]
+    assert len(carried) == 1
+    assert "Found it." in carried[0]
+    assert "the delegation mechanism speaking" in carried[0]
+
+    # delivered once: the transcript says so, so nothing carries it again
+    assert parent.answered_delegates() == []
+    assert parent.take_delegate_answers() == []
+    assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [0]
+    assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok", registry))

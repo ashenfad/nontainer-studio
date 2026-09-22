@@ -377,16 +377,27 @@ def test_chat_missing_session_and_empty_message(studio):
     )
 
 
-def test_busy_session_409s_chat(studio):
+def test_a_message_sent_while_busy_is_queued_not_refused(studio):
+    """A turn already running no longer refuses the next message: it
+    queues, for the agent to read with its next tool result. 202,
+    because nothing has run yet — and the queue is on the SERVER, so a
+    reload sees what is still waiting."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
     session.turn_lock.acquire()  # simulate a running turn
+    session.in_turn = True  # ... held by a turn, not by a publish
     try:
-        assert (
-            client.post("/api/sessions/s1/chat", json={"message": "x"}).status_code
-            == 409
-        )
+        r = client.post("/api/sessions/s1/chat", json={"message": "use a log scale"})
+        assert r.status_code == 202
+        note_id = r.json()["queued"]
+        assert [n.text for n in session.inbox.pending()] == ["use a log scale"]
+
+        info = client.get("/api/sessions/s1").json()
+        assert info["busy"] is True
+        assert info["queued"] == [{"id": note_id, "text": "use a log scale"}]
+
+        # the rail's own row is unchanged: busy is busy
         assert client.get("/api/sessions").json()["sessions"] == [
             {
                 "name": "s1",
@@ -397,8 +408,23 @@ def test_busy_session_409s_chat(studio):
                 "delegate_count": 0,
             }
         ]
+
+        # withdrawn while it is still pending, and gone for good after
+        assert client.delete(f"/api/sessions/s1/queue/{note_id}").status_code == 200
+        assert session.inbox.pending() == []
+        assert client.get("/api/sessions/s1").json()["queued"] == []
+        assert client.delete(f"/api/sessions/s1/queue/{note_id}").status_code == 404
     finally:
         session.turn_lock.release()
+
+
+def test_an_idle_session_runs_the_message_instead_of_queueing_it(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    r = client.post("/api/sessions/s1/chat", json={"message": "hello"})
+    assert r.status_code == 200 and "queued" not in r.json()
+    _collect_until_done(client, "s1")
+    assert registry.get("s1").inbox.pending() == []
 
 
 def test_bad_session_name_400(studio):
@@ -6225,3 +6251,297 @@ def test_an_existing_session_is_topped_up_with_the_seed_files_it_lacks(studio):
         reopened.read("/workspace/skills/building-apps/references/mine.md")
         == b"agent-added"
     )
+
+
+# -- the inbox: messages queued while the agent works -------------------------
+
+
+SLOW_THEN_MORE = (
+    '!tool run_python {"code": "import time; time.sleep(2)"}\n'
+    '!tool file_write {"path": "/workspace/after.md", "content": "done"}\n'
+    "!text All set."
+)
+
+
+def _await(predicate, timeout: float = 15) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition never held")
+
+
+def _stored_messages(registry, name: str) -> list:
+    """Every message of every stored run, as the agent's memory holds
+    them — the model's view, which is not the transcript's."""
+    record = registry.db.get_session(name)
+    out = []
+    for run in record.runs or []:
+        out.extend(run.messages or [])
+    return out
+
+
+def test_a_note_queued_mid_turn_rides_out_with_the_next_tool_result(scripted):
+    """The whole point, on the real stack: a message queued while a
+    tool is running reaches the MODEL appended to that tool's result,
+    and reaches the TRANSCRIPT as its own event — never inside the tool
+    box, which shows what the tool said."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    started = client.post("/api/sessions/s1/chat", json={"message": SLOW_THEN_MORE})
+    assert started.status_code == 200
+    # sent through the route, mid-tool: the tool runs on a worker
+    # thread, so the server is still answering while it does
+    _await(lambda: session.busy)
+    time.sleep(0.5)
+    queued = client.post(
+        "/api/sessions/s1/chat", json={"message": "switch the chart to a log scale"}
+    )
+    assert queued.status_code == 202
+    note_id = queued.json()["queued"]
+
+    events = _collect_until_done(client, "s1", since=started.json()["since"])
+    kinds = [e["type"] for e in events]
+    interject = next(e for e in events if e["type"] == "interject")
+    assert interject["text"] == "switch the chart to a log scale"
+    assert interject["id"] == note_id
+    # in the slot it arrived in: after the tool it was delivered with
+    # started, and with no `head` — the turn began before it was said,
+    # so there is no pre-turn commit an edit could rewind to
+    assert kinds.index("interject") > kinds.index("tool_start")
+    assert "head" not in interject
+
+    # the tool box shows the tool's own output, not the note
+    for event in events:
+        if event["type"] == "tool_end":
+            assert "---- inbox ----" not in event["result"]
+
+    # the model, though, read it: it is in the stored tool message
+    tools = [m for m in _stored_messages(registry, "s1") if m.role == "tool"]
+    carried = [m for m in tools if "switch the chart to a log scale" in str(m.content)]
+    assert len(carried) == 1
+    assert "---- inbox ----" in str(carried[0].content)
+
+    # delivered once, and nothing is left waiting
+    assert session.inbox.pending() == []
+    assert session.inbox.delivered() == []
+    assert kinds.count("interject") == 1
+    assert kinds.count("user") == 1  # no follow-up turn: it was delivered
+
+
+def test_a_note_queued_after_the_last_tool_call_starts_a_follow_up_turn(
+    scripted, monkeypatch
+):
+    """A run can end without calling another tool, and then there is no
+    result left to deliver with. The queue is not dropped: the turn
+    chain starts another turn with it, as an ordinary message of the
+    human's — editable, because that turn began with it."""
+    from nontainer_studio.dummy import DummyModel
+
+    plain = DummyModel.ainvoke_stream
+
+    async def slow_reply(self, messages, **kwargs):
+        # widen the window between the last tool result and the end of
+        # the run, where a real model spends its time writing prose
+        if not DummyModel._plan(messages).tool_calls:
+            await asyncio.sleep(0.8)
+        async for chunk in plain(self, messages, **kwargs):
+            yield chunk
+
+    monkeypatch.setattr(DummyModel, "ainvoke_stream", slow_reply)
+
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    started = client.post(
+        "/api/sessions/s1/chat",
+        json={"message": _script("/workspace/note.md", "one", "Wrote it.")},
+    )
+    since = started.json()["since"]
+    # wait for the tool to finish: from here the run has no further
+    # tool result to carry anything
+    _await(
+        lambda: any(
+            e["type"] == "tool_end"
+            for e in client.get(f"/api/sessions/s1/events?since={since}&wait=0").json()[
+                "events"
+            ]
+        )
+    )
+    queued = client.post("/api/sessions/s1/chat", json={"message": "and a chart too"})
+    assert queued.status_code == 202
+
+    _await(
+        lambda: (
+            len(
+                [
+                    e
+                    for e in client.get(
+                        f"/api/sessions/s1/events?since={since}&wait=0"
+                    ).json()["events"]
+                    if e["type"] == "done"
+                ]
+            )
+            == 2
+        )
+    )
+    events = client.get(f"/api/sessions/s1/events?since={since}&wait=0").json()[
+        "events"
+    ]
+    users = [e for e in events if e["type"] == "user"]
+    assert [u["text"] for u in users] == [
+        _script("/workspace/note.md", "one", "Wrote it."),
+        "and a chart too",
+    ]
+    # an ordinary user event: it began its turn, so it carries the head
+    # an edit rewinds to — and it names the queued message it came
+    # from, which is how the shell stops showing it as waiting
+    assert users[1]["head"]
+    assert users[1]["from_queue"] == [queued.json()["queued"]]
+    assert "from_queue" not in users[0]
+    assert not any(e["type"] == "interject" for e in events)
+    assert session.inbox.pending() == []
+    assert session.inbox.delivered() == []
+
+
+class StoppedAgent:
+    """A turn that reads a queued note at its tool call and is then
+    stopped — the two halves of the cancel rule in one stream. The
+    drain is what the delivery hook does at a tool result; the put
+    stands for a human queueing another message while the turn is
+    being stopped."""
+
+    def __init__(self, inbox) -> None:
+        self.inbox = inbox
+        self.delivered: list = []
+
+    async def arun(self, message: str, stream: bool = True, stream_events: bool = True):
+        tool = SimpleNamespace(tool_name="terminal", tool_args={"command": "ls"})
+        yield SimpleNamespace(event="ToolCallStarted", tool=tool, run_id="run-1")
+        self.delivered = self.inbox.drain()
+        yield SimpleNamespace(
+            event="ToolCallCompleted",
+            tool=SimpleNamespace(tool_name="terminal", result="a.txt"),
+        )
+        self.inbox.put("and one more thing")
+        yield SimpleNamespace(event="RunCancelled", run_id="run-1")
+
+
+def test_a_stop_settles_what_was_delivered_and_keeps_what_was_not(tmp_path):
+    """agno runs no post hook for a cancelled run, and the studio keeps
+    that run's messages — so the model DID read the notes it was
+    handed, and the turn's cancel path has to settle them or the next
+    turn says them all again. What never left the queue stays there,
+    waiting for the human's own next send: a turn they stopped stays
+    stopped."""
+    registry = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
+    registry._build_agent = lambda *a, **k: StoppedAgent(k["inbox"])
+    with TestClient(server.build_app(registry)) as client:
+        client.post("/api/sessions", json={"name": "s1"})
+        session = registry.get("s1")
+        read = session.inbox.put("use a log scale")
+
+        started = client.post("/api/sessions/s1/chat", json={"message": "go"})
+        events = _collect_until_done(client, "s1", since=started.json()["since"])
+
+        assert [n.id for n in session.agent.delivered] == [read.id]
+        # settled: nothing will hand it to the model a second time
+        assert session.inbox.delivered() == []
+        # and the one that never reached it is still waiting, with no
+        # turn started to carry it
+        assert [n.text for n in session.inbox.pending()] == ["and one more thing"]
+        assert [e["type"] for e in events].count("user") == 1
+        assert [e["type"] for e in events].count("done") == 1
+    registry.close()
+
+
+# -- compression: the tool's output coarsens, the human's words do not --------
+
+
+def _tool_message(content: str):
+    from agno.models.message import Message
+
+    return Message(role="tool", tool_name="run_python", content=content)
+
+
+def _with_note(bare: str, text: str) -> tuple:
+    """A tool result as the delivery hook leaves it: the tool's own
+    output, then the rendered block."""
+    from nontainer.inbox import Inbox
+
+    inbox = Inbox()
+    block = inbox.render([inbox.put(text)])
+    return bare + block, block
+
+
+def test_compression_summarises_the_tool_and_keeps_the_note_verbatim(monkeypatch):
+    """A tool result that carried a mid-turn message must not have that
+    message paraphrased into the model's memory: the agent would go on
+    acting on a retelling of words it was given exactly once."""
+    from agno.compression.manager import CompressionManager
+
+    from nontainer_studio.compression import InboxAwareCompression
+
+    monkeypatch.setattr(
+        CompressionManager,
+        "_compress_tool_result",
+        lambda self, tool_result, run_metrics=None: (
+            f"summary of: {tool_result.content}"
+        ),
+    )
+    content, block = _with_note("12000 rows, 4 columns", "switch to a log scale")
+    message = _tool_message(content)
+
+    manager = InboxAwareCompression(compress_token_limit=1000)
+    assert manager._compress_tool_result(message) == (
+        "summary of: 12000 rows, 4 columns" + block
+    )
+    # the live message is untouched by the pass that read it
+    assert message.content == content
+
+    # and through agno's own loop, which is what actually runs
+    manager.compress([message])
+    assert message.compressed_content == "summary of: 12000 rows, 4 columns" + block
+    assert "switch to a log scale" in message.compressed_content
+
+
+def test_compression_leaves_a_plain_tool_result_alone(monkeypatch):
+    from agno.compression.manager import CompressionManager
+
+    from nontainer_studio.compression import InboxAwareCompression
+
+    monkeypatch.setattr(
+        CompressionManager,
+        "_compress_tool_result",
+        lambda self, tool_result, run_metrics=None: (
+            f"summary of: {tool_result.content}"
+        ),
+    )
+    message = _tool_message("12000 rows, 4 columns")
+    assert InboxAwareCompression()._compress_tool_result(message) == (
+        "summary of: 12000 rows, 4 columns"
+    )
+
+
+def test_the_async_compression_path_keeps_the_note_too(monkeypatch):
+    """Two spellings because agno has two run loops, and the studio
+    drives the async one."""
+    from agno.compression.manager import CompressionManager
+
+    from nontainer_studio.compression import InboxAwareCompression
+
+    async def summarise(self, tool_result, run_metrics=None):
+        return f"summary of: {tool_result.content}"
+
+    monkeypatch.setattr(CompressionManager, "_acompress_tool_result", summarise)
+    content, block = _with_note("12000 rows, 4 columns", "switch to a log scale")
+    message = _tool_message(content)
+
+    manager = InboxAwareCompression(compress_token_limit=1000)
+    asyncio.run(manager.acompress([message]))
+    assert message.compressed_content == "summary of: 12000 rows, 4 columns" + block
+    assert message.content == content

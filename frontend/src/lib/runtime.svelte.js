@@ -5,7 +5,10 @@
 // rail's busy/unseen dots and instant session switching work).
 //
 // The server's event schema (all events also ride a `cursor`):
-//   {type:'user',   text, head}      — head = pre-turn workspace commit (edit anchor)
+//   {type:'user',   text, head, from_queue?}
+//                                    — head = pre-turn workspace commit (edit
+//                                      anchor); from_queue names the queued
+//                                      messages this turn was started with
 //   {type:'text',   delta}           — streamed reply tokens
 //   {type:'thinking', delta}         — native model reasoning (when the
 //                                      model/provider exposes it)
@@ -23,6 +26,11 @@
 //                                      answered; the text carries its own
 //                                      provenance header and is what the
 //                                      model was sent this turn too
+//   {type:'interject', id, text}     — a message the human queued while
+//                                      the turn was running, now delivered
+//                                      to the model with a tool result. No
+//                                      `head`: the turn began before it was
+//                                      said, so it is not an edit anchor
 //   {type:'notice', text}            — uploads, ...
 //   {type:'error',  message}
 //   {type:'done',   run_id, head}    — turn boundary
@@ -184,6 +192,10 @@ export class SessionRuntime {
     lastError = $state(null)
     /** latest model-call context size: {input_tokens, cached_tokens} */
     usage = $state(null)
+    /** messages typed while the agent was working, still waiting to be
+     * delivered. The SERVER holds the queue — they are the session's,
+     * not this tab's — so a reload seeds this from it. */
+    queued = $state([])
     /** this session's published apps, most recently published first
      * (GET /api/sessions/{name}/apps) — each with its versions and how
      * far the live workspace has moved since the one being served */
@@ -220,6 +232,7 @@ export class SessionRuntime {
         this.foreground = fg
         if (fg) {
             this.unseen = false
+            this.syncQueue()
             this.#startFollow()
         } else {
             this.#following = false
@@ -269,11 +282,31 @@ export class SessionRuntime {
         if (ev.type === 'user') {
             this.busy = true
             this.#turnArts = []
+            // a turn STARTED from the queue says which messages it took
+            if (ev.from_queue?.length)
+                this.queued = this.queued.filter((q) => !ev.from_queue.includes(q.id))
             this.messages.push({
                 role: 'user',
                 text: ev.text,
                 head: ev.head ?? null,
                 seq: ev.cursor ?? null, // its event-log position: the edit handle
+            })
+        } else if (ev.type === 'interject') {
+            // A queued message reached the model, appended to a tool
+            // result. It stops waiting and becomes an ordinary user
+            // bubble — but the turn carrying it is still running, so
+            // `busy` and the turn's artifacts are left exactly as they
+            // are, and the agent message so far is closed off: what
+            // comes next is its answer to this.
+            this.queued = this.queued.filter((q) => q.id !== ev.id)
+            const open = this.messages.at(-1)
+            if (open?.role === 'agent') open.streaming = false
+            this.messages.push({
+                role: 'user',
+                text: ev.text,
+                mid_turn: true, // delivered INTO a turn: no rewind anchor
+                head: null,
+                seq: null,
             })
         } else if (ev.type === 'text') {
             const items = this.#agentItems()
@@ -433,19 +466,49 @@ export class SessionRuntime {
 
     // -- verbs ---------------------------------------------------------------
 
+    /** Send a message. While a turn is running it is QUEUED rather
+     * than refused: the agent reads it with its next tool result, and
+     * nothing interrupts what it is doing. */
     async send(text) {
         let message = text.trim()
-        if (!message || this.busy) return false
+        if (!message) return false
         if (this.attachments.length) {
             message = `[attached: ${this.attachments.join(', ')}]\n${message}`
             this.attachments = []
         }
         try {
-            await api(`/api/sessions/${this.name}/chat`, { message })
+            const res = await api(`/api/sessions/${this.name}/chat`, { message })
+            if (res.queued)
+                this.queued = [...this.queued, { id: res.queued, text: message }]
             return true
         } catch (e) {
             this.messages.push({ role: 'error', text: e.message })
             return false
+        }
+    }
+
+    /** Take a queued message back, while it is still waiting.
+     * Delivery cannot be undone, so one the agent has already read
+     * answers 404 — and the server's list is what stands. */
+    async withdraw(id) {
+        try {
+            await api(`/api/sessions/${this.name}/queue/${id}`, undefined, 'DELETE')
+            this.queued = this.queued.filter((q) => q.id !== id)
+            return true
+        } catch {
+            await this.syncQueue()
+            return false
+        }
+    }
+
+    /** What is still waiting, as the server has it — the queue lives
+     * there, so this is how a reload (or a second tab) catches up. */
+    async syncQueue() {
+        try {
+            const info = await api(`/api/sessions/${this.name}`)
+            this.queued = info.queued ?? []
+        } catch {
+            /* transient; the next send or foreground wins */
         }
     }
 

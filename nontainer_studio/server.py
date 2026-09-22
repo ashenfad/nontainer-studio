@@ -26,6 +26,7 @@ from nontainer.apps import build_router
 from nontainer.apps import request as make_request
 from nontainer.apps.contract import filter_headers
 from nontainer.errors import SessionIdError
+from nontainer.inbox import split
 from starlette.applications import Starlette
 from starlette.datastructures import Headers
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -217,6 +218,12 @@ def _client_events(ev: Any) -> list[dict]:
     if kind == "ToolCallCompleted":
         tool = getattr(ev, "tool", None)
         result = getattr(tool, "result", "")
+        # A message queued mid-turn rides out appended to the tool
+        # result that delivered it. The transcript shows it as its own
+        # `interject` (or `delegate`) event, in the slot it arrived in —
+        # so the tool box shows the tool's own output and nothing else.
+        if isinstance(result, str):
+            result, _ = split(result)
         events: list[dict] = [
             {
                 "type": "tool_end",
@@ -383,22 +390,105 @@ class _A2uiTurns:
         return out
 
 
+def _settle_inbox(session: Any) -> None:
+    """Close the delivery of notes this turn already handed the model.
+
+    agno runs no post hook for a cancelled or errored run, so nothing
+    settles the inbox on those endings — and ``repair_aborted_run``
+    keeps the run's messages in the agent's memory, which means the
+    model DID read whatever rode out with them. Left unsettled, the
+    next turn's pre hook would put those notes back in the queue and
+    say them all over again.
+    """
+    session.inbox.settle()
+
+
+def _snapshot_delegates(session: Any, registry: Any) -> None:
+    """Write down what this session's delegate job table now says —
+    retention outlives the table (see ``Registry.snapshot_delegates``).
+    A caller without a registry has nothing to write it to."""
+    if registry is not None:
+        registry.snapshot_delegates(session.name)
+
+
 async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
-    """One agent turn, as a server-side task DECOUPLED from any HTTP
-    request: events land in the session's buffer, subscribers follow
-    from a cursor. Disconnects, reloads, and session switches never
-    abort work. Caller holds the turn lock; released here.
+    """The human's message, and every turn it leads to, as one
+    server-side task DECOUPLED from any HTTP request: events land in
+    the session's buffer, subscribers follow from a cursor.
+    Disconnects, reloads, and session switches never abort work.
+    Caller holds the turn lock; released here.
+
+    Usually that is one turn. A message queued while this one ran rides
+    out with the agent's next tool result — but a run can end without
+    making another tool call, and then the queue is still full with
+    nobody to hand it to. So the lock is held across the chain: what is
+    still queued when a turn finishes normally starts the next turn, as
+    an ordinary message of the human's, until the queue is empty.
 
     ``registry`` is passed so the turn can write down what its
-    delegates' job table now says (retention outlives the table; see
-    ``Registry.snapshot_delegates``), and so it can name the delegates
-    a restart left without answers. Without one the turn runs exactly
-    as before and does neither — every caller that has a registry
-    passes it."""
+    delegates' job table now says, and so it can name the delegates a
+    restart left without answers. Without one the turn runs exactly as
+    before and does neither — every caller that has a registry passes
+    it."""
+    # What the lock is held FOR, which is what decides whether a
+    # message arriving now is queued or refused.
+    session.in_turn = True
+    # And where a tool's worker thread reaches the transcript: this
+    # turn's loop owns the event buffer.
+    session.loop = asyncio.get_running_loop()
+    from_queue: list[str] = []
+    try:
+        while True:
+            if not await _one_turn(session, message, registry, from_queue):
+                # Stopped or errored. Whatever is queued stays queued,
+                # for the human's next explicit send: a turn they
+                # stopped must stay stopped, and starting another one
+                # with their words in it would take the stop back.
+                break
+            queued = session.inbox.drain()
+            if not queued:
+                break
+            # A drained note is delivered-but-unsettled, which the next
+            # turn's pre hook would put back in the queue. These are
+            # not going to a tool result — they ARE the next turn's
+            # message — so the delivery is closed here.
+            session.inbox.settle()
+            message = "\n\n".join(note.text for note in queued)
+            from_queue = [note.id for note in queued]
+    finally:
+        session.in_turn = False
+        session.turn_lock.release()
+        # After the lock: the agent may have asked for a delegate or
+        # kept one during the turn, and both live only in a job table
+        # until this writes them down.
+        await asyncio.to_thread(_snapshot_delegates, session, registry)
+        # And after that, the session's own name, read off the
+        # transcript this turn just extended. It is a second model run,
+        # so it happens where it can cost nothing: the turn is over,
+        # the lock is released, and the next turn may start on top of
+        # it — a failure logs and leaves the name the session had.
+        if registry is not None:
+            await _name_the_session(session, registry)
+
+
+async def _one_turn(
+    session: Any,
+    message: str,
+    registry: Any = None,
+    from_queue: "list[str] | tuple[str, ...]" = (),
+) -> bool:
+    """One agent turn; True when it finished normally.
+
+    False means the run was cancelled or errored — the two endings
+    after which nothing may start another turn on the human's behalf.
+
+    ``from_queue`` names the queued messages this turn was started
+    with, when it was: the shell has them on screen as waiting, and
+    this is what tells it they are waiting no longer.
+    """
 
     def snapshot() -> None:
-        if registry is not None:
-            registry.snapshot_delegates(session.name)
+        _snapshot_delegates(session, registry)
 
     run_id = None
     cancelled = False
@@ -407,7 +497,10 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
     try:
         # head here = the workspace BEFORE this turn: the user event's
         # stamp is the undo anchor (check it out = unwind this turn)
-        await session.emit({"type": "user", "text": message, "head": session.ws.head})
+        opening = {"type": "user", "text": message, "head": session.ws.head}
+        if from_queue:
+            opening["from_queue"] = list(from_queue)
+        await session.emit(opening)
         # Delegates answer between turns, and nontainer holds the answer
         # until something collects it. This turn is that something: the
         # answers go into the transcript where the human can read them,
@@ -497,6 +590,7 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
             await asyncio.to_thread(
                 repair_aborted_run, session, run_id, "stopped by the user"
             )
+            _settle_inbox(session)
         elif errored is not None:
             # same skip-on-replay problem for status=error runs — the
             # equal-grouse amnesia: without repair, "please continue"
@@ -504,6 +598,7 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
             await asyncio.to_thread(
                 repair_aborted_run, session, run_id, _short_middle(str(errored), 300)
             )
+            _settle_inbox(session)
     except asyncio.CancelledError:
         # Cut from outside the loop, which is the studio shutting down
         # on a turn it cannot wait out. The `error` event is what the
@@ -514,6 +609,7 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
         # hand them to.
         await session.emit({"type": "error", "message": STOPPED_AT_SHUTDOWN})
         repair_aborted_run(session, run_id, STOPPED_AT_SHUTDOWN)
+        _settle_inbox(session)
         raise
     except Exception as e:
         await session.emit({"type": "error", "message": _short_middle(str(e))})
@@ -523,6 +619,8 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
         await asyncio.to_thread(
             repair_aborted_run, session, run_id, _short_middle(str(e), 300)
         )
+        _settle_inbox(session)
+        errored = errored or str(e)
     finally:
         # done BEFORE the lock releases: the buffer is the permanent
         # source of truth (replays reconstruct it forever), so a next
@@ -532,18 +630,7 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
         # rewind put the agent's memory back in sync with the files.
         session.run_id = None
         await session.emit({"type": "done", "run_id": run_id, "head": session.ws.head})
-        session.turn_lock.release()
-        # After the lock: the agent may have asked for a delegate or
-        # kept one during the turn, and both live only in a job table
-        # until this writes them down.
-        await asyncio.to_thread(snapshot)
-        # And after that, the session's own name, read off the
-        # transcript this turn just extended. It is a second model run,
-        # so it happens where it can cost nothing: the turn is over,
-        # the lock is released, and the next turn may start on top of
-        # it — a failure logs and leaves the name the session had.
-        if registry is not None:
-            await _name_the_session(session, registry)
+    return not cancelled and errored is None
 
 
 async def _name_the_session(session: Any, registry: Any) -> None:
@@ -688,6 +775,14 @@ def build_app(registry: Registry) -> Starlette:
                 "model": session.model,
                 "busy": session.busy,
                 "delegate": delegate,
+                # Messages queued while the turn runs, in arrival order.
+                # The server is the truth about them: they live on the
+                # session, not in the tab that typed them, so a reload
+                # (or a second tab) shows what is still waiting.
+                "queued": [
+                    {"id": note.id, "text": note.text}
+                    for note in session.inbox.pending()
+                ],
             }
         )
 
@@ -706,16 +801,48 @@ def build_app(registry: Registry) -> Starlette:
 
     @human_driven
     async def chat(request: Any, session: Any) -> Any:
+        """Send a message. With a turn already running it is QUEUED
+        rather than refused: the agent reads it with its next tool
+        result, and the turn that is running is not interrupted — 202,
+        because the work of it has not started."""
         body = await request.json()
         message = (body.get("message") or "").strip()
         if not message:
             return JSONResponse({"error": "empty message"}, status_code=400)
         if not session.turn_lock.acquire(blocking=False):
-            return JSONResponse({"error": "a turn is already running"}, status_code=409)
+            if not session.in_turn:
+                # The lock is held as a reservation rather than by a
+                # turn — a publish takes it that way — and a message
+                # queued there would wait for a delivery nothing is
+                # about to make.
+                return JSONResponse(
+                    {"error": "a turn is already running"}, status_code=409
+                )
+            note = session.inbox.put(message)
+            return JSONResponse(
+                {"ok": True, "queued": note.id, "since": session.next_seq},
+                status_code=202,
+            )
         # keep a strong reference: the loop holds tasks weakly, and a
-        # GC'd task is a silently dead turn with a stuck lock
+        # GC'd task is a silently dead turn with a stuck lock. The
+        # flag is set here rather than left to the task: the task
+        # starts on a later tick, and a message arriving in between is
+        # one for the turn that is starting.
+        session.in_turn = True
         session.turn_task = asyncio.create_task(_run_turn(session, message, registry))
         return JSONResponse({"ok": True, "since": session.next_seq})
+
+    @human_driven
+    async def unqueue(request: Any, session: Any) -> Any:
+        """Take a queued message back. Only while it is still pending:
+        delivery cannot be undone, so a note already on its way to the
+        model answers 404 rather than pretending it was withdrawn."""
+        note_id = request.path_params["id"]
+        if not session.inbox.withdraw(note_id):
+            return JSONResponse(
+                {"error": f"no queued message {note_id!r}"}, status_code=404
+            )
+        return JSONResponse({"ok": True})
 
     @human_driven
     async def edit(request: Any, session: Any) -> Any:
@@ -746,6 +873,7 @@ def build_app(registry: Registry) -> Starlette:
             session.turn_lock.release()
             return JSONResponse({"error": str(e)}, status_code=400)
         await session.emit({"type": "truncate", "to": seq})
+        session.in_turn = True
         session.turn_task = asyncio.create_task(_run_turn(session, message, registry))
         return JSONResponse({"ok": True, "since": session.next_seq})
 
@@ -1366,6 +1494,7 @@ def build_app(registry: Registry) -> Starlette:
             Route("/api/sessions/{name}", session_info, methods=["GET"]),
             Route("/api/sessions/{name}", delete_session, methods=["DELETE"]),
             Route("/api/sessions/{name}/chat", chat, methods=["POST"]),
+            Route("/api/sessions/{name}/queue/{id}", unqueue, methods=["DELETE"]),
             Route("/api/sessions/{name}/edit", edit, methods=["POST"]),
             Route("/api/sessions/{name}/cancel", cancel, methods=["POST"]),
             Route("/api/sessions/{name}/events", events, methods=["GET"]),

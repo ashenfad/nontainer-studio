@@ -42,10 +42,13 @@
         if (!(await rt.send(message))) text = message // keep the draft on failure
     }
 
+    // Enter sends whether or not the agent is working: a message sent
+    // mid-turn is QUEUED, and reaches the agent with its next tool
+    // result rather than waiting for the turn to end.
     function onkeydown(e) {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault()
-            if (!rt.busy && text.trim()) submit()
+            if (text.trim()) submit()
         }
     }
 </script>
@@ -91,7 +94,9 @@
             bind:value={text}
             {onkeydown}
             rows="1"
-            placeholder="Ask the agent to build something…"
+            placeholder={rt.busy
+                ? 'Queue a message — it reaches the agent mid-task (Enter)'
+                : 'Ask the agent to build something…'}
         ></textarea>
 
         <div class="toolbar">

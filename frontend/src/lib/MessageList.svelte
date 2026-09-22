@@ -175,7 +175,7 @@
                     {/if}
                     {parts.body}
                 </div>
-                {#if msg.head && msg.seq != null && !rt.busy && !readonly}
+                {#if msg.head && msg.seq != null && !msg.mid_turn && !rt.busy && !readonly}
                     <button
                         class="edit"
                         title="edit this prompt — rewinds and replaces this turn and everything after"
@@ -227,6 +227,25 @@
     {#if rt.busy && rt.messages.at(-1)?.role === 'user'}
         <div class="thinking"><span class="pulse-dot"></span></div>
     {/if}
+    <!-- Messages typed while the agent works: they are waiting, not
+         said yet, so they sit at the bottom looking like it until the
+         agent reads one at its next tool result. -->
+    {#each rt.queued as q (q.id)}
+        <div class="user-row queued-row">
+            <div class="user-bubble queued">
+                <span class="queued-label">queued</span>
+                {q.text}
+            </div>
+            {#if !readonly}
+                <button
+                    class="edit"
+                    title="take this message back — only while the agent has not read it"
+                    aria-label="Withdraw queued message"
+                    onclick={() => rt.withdraw(q.id)}>✕</button
+                >
+            {/if}
+        </div>
+    {/each}
 </div>
 
 <style>
@@ -331,6 +350,21 @@
     .edit-actions button.send:disabled {
         opacity: 0.4;
         cursor: default;
+    }
+    .queued-row .edit {
+        opacity: 1;
+    }
+    .user-bubble.queued {
+        opacity: 0.55;
+        border: 1px dashed var(--border);
+    }
+    .queued-label {
+        display: block;
+        font-size: 0.62rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-muted);
+        padding-bottom: 0.2rem;
     }
     .user-bubble {
         background: var(--user-bubble);
