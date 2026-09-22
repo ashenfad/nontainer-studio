@@ -46,6 +46,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The README was split into a `docs/` set.** It had grown into four
+  documents in one — a front door, a configuration reference, a design
+  essay and a delegation manual — so the front door is now short and
+  links [Configuration](docs/configuration.md), [Apps](docs/apps.md),
+  [What owns what](docs/design.md), [Delegation](docs/delegation.md) and
+  [Hacking](docs/hacking.md). Every claim was checked against the code on
+  the way across; the HTTP routes and the event log's event types are
+  documented for the first time.
+
 - **Shutdown no longer waits out a delegate mid-turn.** Closing a
   session joins its delegate workers, and a delegate's turn could not
   be interrupted — `sessions cancel` discards an answer without
