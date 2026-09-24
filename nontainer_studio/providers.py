@@ -473,8 +473,9 @@ def build_model(spec: str | None = None) -> Any:
 # stream; restarting it from the prompt loses all of that AND starts the
 # model blind while its work still sits in the workspace — it then writes
 # a second, divergent implementation over the first. So the fine layer is
-# the primary defense here; Agent.retries stays as a last-ditch floor
-# (see the Agent construction in sessions.py).
+# the only retry; Agent.retries stays at 0, and a run that still fails is
+# resumed where it stopped rather than restarted (see the Agent
+# construction in sessions.py).
 #
 # Only ModelProviderError routes through this, and agno declines to retry
 # 400/401/403/404/413/422 and context-window overflow — a transient 429 or

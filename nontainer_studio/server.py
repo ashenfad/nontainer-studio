@@ -20,7 +20,9 @@ from typing import Any, AsyncIterator, Callable
 from urllib.parse import quote
 
 import anyio
+from agno.run.cancel import ais_cancelled
 from nontainer.adapters.a2ui import turn_to_a2ui
+from nontainer.adapters.agno import keep_aborted_run
 from nontainer.adapters.render import artifact_kind, parse_artifacts_note
 from nontainer.apps import build_router
 from nontainer.apps import request as make_request
@@ -38,7 +40,6 @@ from .sessions import (
     Registry,
     ReservedSessionError,
     SweptSessionError,
-    repair_aborted_run,
 )
 
 log = logging.getLogger(__name__)
@@ -56,6 +57,18 @@ It reaches two readers and must serve both: the human, who sees the
 turn stop mid-sentence and needs the reason to be the studio rather
 than the model, and a delegate's runner, which reads the error off
 the transcript and reports it as the answer to whoever asked.
+"""
+
+
+RESUME_BACKOFF = 5.0
+"""Seconds a turn waits, after its run ends in a provider error, before
+resuming that run where it stopped.
+
+The model call has already retried the failure with its own backoff by
+the time the run gives up, so what is left is an outage measured in
+seconds rather than a blip; the wait gives it that long to clear
+before the one resume the turn gets is spent. A stop pressed during
+the wait is honored and the run is not resumed.
 """
 
 
@@ -278,13 +291,6 @@ def _client_events(ev: Any) -> list[dict]:
                 }
             ]
         return []
-    if kind == "RunError":
-        return [
-            {
-                "type": "error",
-                "message": _short_middle(getattr(ev, "content", "run error")),
-            }
-        ]
     return []
 
 
@@ -394,13 +400,91 @@ def _settle_inbox(session: Any) -> None:
     """Close the delivery of notes this turn already handed the model.
 
     agno runs no post hook for a cancelled or errored run, so nothing
-    settles the inbox on those endings — and ``repair_aborted_run``
+    settles the inbox on those endings — and ``_keep_aborted_run``
     keeps the run's messages in the agent's memory, which means the
     model DID read whatever rode out with them. Left unsettled, the
     next turn's pre hook would put those notes back in the queue and
     say them all over again.
     """
     session.inbox.settle()
+
+
+def _keep_aborted_run(session: Any, run_id: str | None, note: str) -> None:
+    """Keep a run that errored or was cancelled in the agent's memory,
+    closed with ``note`` as the reason it ended early.
+
+    agno's history leaves out runs whose status is error or cancelled,
+    so without this the model forgets a turn whose files are still in
+    the workspace. The work up to the cut is real: the run is marked
+    completed and closed with a note saying the turn was cut short
+    (nontainer's ``keep_aborted_run``).
+
+    Best-effort. It runs on every way a turn can fail, including the
+    ones where the turn handler is already unwinding, so a failure here
+    is logged and swallowed: losing the note costs the model some
+    memory, while raising would cost the transcript its `done`.
+    """
+    try:
+        keep_aborted_run(getattr(session.agent, "db", None), session.name, run_id, note)
+    except Exception:
+        log.warning(
+            "could not keep aborted run %s of session %s",
+            run_id,
+            session.name,
+            exc_info=True,
+        )
+
+
+class _RunState:
+    """What one turn's stream has revealed so far: the run id, and
+    whether the run was cancelled or ended in a provider error.
+
+    Held outside the loop that fills it, so an exception out of the
+    loop leaves behind the run id the abort path needs."""
+
+    def __init__(self) -> None:
+        self.run_id: str | None = None
+        self.cancelled = False
+        self.errored: str | None = None
+
+
+async def _follow_run(session: Any, stream: Any, state: _RunState) -> None:
+    """Stream one agno run's events into the session's transcript.
+
+    Records the run id on the session as soon as the stream reveals it
+    — the handle the stop button cancels by. A ``RunError`` is recorded
+    in ``state`` and not emitted: a provider failure ends the stream
+    cleanly (no exception), and whether it becomes the turn's `error`
+    is the turn's decision, made once it knows whether the run resumed.
+    """
+    async for ev in stream:
+        state.run_id = getattr(ev, "run_id", None) or state.run_id
+        session.run_id = state.run_id
+        kind = getattr(ev, "event", "")
+        state.cancelled = state.cancelled or kind == "RunCancelled"
+        if kind == "RunError":
+            state.errored = getattr(ev, "content", None) or "provider error"
+            continue
+        for payload in _client_events(ev):
+            await session.emit(payload)
+
+
+async def _stopped_while_waiting(run_id: str | None, seconds: float) -> bool:
+    """Wait ``seconds``; True as soon as a stop reaches ``run_id``.
+
+    The stop button cancels by run id through agno, which records the
+    intent even for a run that is not running at the moment. Reading
+    that record is how a stop pressed between a failure and its resume
+    is seen at all."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    while True:
+        if run_id is not None and await ais_cancelled(run_id):
+            return True
+        left = deadline - loop.time()
+        if left <= 0:
+            return False
+        await asyncio.sleep(min(0.1, left))
 
 
 def _snapshot_delegates(session: Any, registry: Any) -> None:
@@ -490,10 +574,7 @@ async def _one_turn(
     def snapshot() -> None:
         _snapshot_delegates(session, registry)
 
-    run_id = None
-    cancelled = False
-    errored = None
-    attempts = 0
+    state = _RunState()
     try:
         # head here = the workspace BEFORE this turn: the user event's
         # stamp is the undo anchor (check it out = unwind this turn)
@@ -551,76 +632,57 @@ async def _one_turn(
             + [note for _, note in notes]
             + [message]
         )
-        async for ev in session.agent.arun(prompt, stream=True, stream_events=True):
-            run_id = getattr(ev, "run_id", None) or run_id
-            session.run_id = run_id  # the stop button's cancel handle
-            kind = getattr(ev, "event", "")
-            cancelled = cancelled or kind == "RunCancelled"
-            if kind == "RunStarted":
-                # agno yields RunStarted once PER ATTEMPT (inside the
-                # retry loop in agent/_run.py), so a second one means the
-                # run restarted from the user message and dropped this
-                # turn's tool calls from the agent's memory. The
-                # workspace rewinds with it (Registry._retry_rewind_hook),
-                # so the restart is clean rather than divergent — but the
-                # human still watches the turn redo itself, and nothing
-                # else in the stream explains why: agno logs a warning
-                # and the event feed otherwise looks seamless.
-                attempts += 1
-                if attempts > 1:
-                    await session.emit(
-                        {
-                            "type": "notice",
-                            "text": f"provider error — the turn restarted "
-                            f"(attempt {attempts}); files and memory rewound "
-                            "to where it began",
-                        }
-                    )
-            if kind == "RunError":
-                # provider failure after agno's retries are exhausted:
-                # the stream ends CLEANLY (no exception), so this flag
-                # is the only signal the turn died
-                errored = getattr(ev, "content", None) or "provider error"
-            for payload in _client_events(ev):
-                await session.emit(payload)
-        if cancelled:
-            # agno stores the run status=cancelled and its history
-            # builder skips those — repair keeps the partial work in
-            # the agent's memory (see repair_aborted_run)
+        await _follow_run(
+            session,
+            session.agent.arun(prompt, stream=True, stream_events=True),
+            state,
+        )
+        if state.errored is not None and not state.cancelled:
+            await _resume_once(session, state)
+        if state.cancelled:
+            # agno leaves a cancelled run out of the agent's history;
+            # keeping it keeps the partial work in the agent's memory
             await asyncio.to_thread(
-                repair_aborted_run, session, run_id, "stopped by the user"
+                _keep_aborted_run, session, state.run_id, "stopped by the user"
             )
             _settle_inbox(session)
-        elif errored is not None:
-            # same skip-on-replay problem for status=error runs — the
-            # equal-grouse amnesia: without repair, "please continue"
-            # replans from scratch while the workspace holds the work
+        elif state.errored is not None:
+            # The resume failed too. The same skip-on-replay problem for
+            # an errored run: without keeping it, "please continue"
+            # replans from scratch while the workspace holds the work.
+            await session.emit(
+                {"type": "error", "message": _short_middle(state.errored)}
+            )
             await asyncio.to_thread(
-                repair_aborted_run, session, run_id, _short_middle(str(errored), 300)
+                _keep_aborted_run,
+                session,
+                state.run_id,
+                _short_middle(str(state.errored), 300),
             )
             _settle_inbox(session)
     except asyncio.CancelledError:
         # Cut from outside the loop, which is the studio shutting down
         # on a turn it cannot wait out. The `error` event is what the
         # human reads and what a delegate's runner reads its status
-        # off, and the repair is what keeps the work the turn really
-        # did in the agent's memory. Both run inline: the loop this
-        # turn is on is closing under it, so there is no thread to
+        # off, and keeping the run is what keeps the work the turn
+        # really did in the agent's memory. Both run inline: the loop
+        # this turn is on is closing under it, so there is no thread to
         # hand them to.
         await session.emit({"type": "error", "message": STOPPED_AT_SHUTDOWN})
-        repair_aborted_run(session, run_id, STOPPED_AT_SHUTDOWN)
+        _keep_aborted_run(session, state.run_id, STOPPED_AT_SHUTDOWN)
         _settle_inbox(session)
         raise
     except Exception as e:
+        # An exception out of the run loop — from the first run or from
+        # its resume — ends the turn here. agno stamps a stored run
+        # status=error and its history skips error runs, so the run is
+        # kept to hold the turn's real work in the agent's memory.
         await session.emit({"type": "error", "message": _short_middle(str(e))})
-        # agno stamps the stored run status=error, and its history
-        # builder skips error runs — repair it so the turn's real work
-        # stays in the agent's memory (see repair_aborted_run).
         await asyncio.to_thread(
-            repair_aborted_run, session, run_id, _short_middle(str(e), 300)
+            _keep_aborted_run, session, state.run_id, _short_middle(str(e), 300)
         )
         _settle_inbox(session)
-        errored = errored or str(e)
+        state.errored = state.errored or str(e)
     finally:
         # done BEFORE the lock releases: the buffer is the permanent
         # source of truth (replays reconstruct it forever), so a next
@@ -629,8 +691,66 @@ async def _one_turn(
         # turn end — the commit <-> conversation mapping that lets a
         # rewind put the agent's memory back in sync with the files.
         session.run_id = None
-        await session.emit({"type": "done", "run_id": run_id, "head": session.ws.head})
-    return not cancelled and errored is None
+        await session.emit(
+            {"type": "done", "run_id": state.run_id, "head": session.ws.head}
+        )
+    return not state.cancelled and state.errored is None
+
+
+async def _resume_once(session: Any, state: _RunState) -> None:
+    """Resume a run that ended in a provider error, in place, once.
+
+    A provider failure is an interruption, not a restart. By the time a
+    run reports one, the model call has already retried it, so the run
+    stopped mid-turn with its tool calls done and their files written.
+    Restarting from the user message would forget that work while the
+    files stay; resuming the SAME run keeps every message it has, and
+    the model picks up after its last tool result. agno 3 continues an
+    errored run in place under its own run id (a completed run would be
+    forked instead, which is why the run is kept only after this).
+
+    Once. A second failure is left to end the turn: the run is then
+    kept as an interrupted turn, and the human decides what happens
+    next. A stop pressed during the wait is honored — the turn ends
+    stopped, not resumed.
+
+    Only a ``RunError`` event leads here. An exception out of the run
+    loop is not a provider hiccup the next call can clear — it is the
+    studio, a tool hook or agno itself failing — and resuming into it
+    would repeat it.
+
+    On return ``state`` says how the turn ended: ``cancelled`` for a
+    stop, ``errored`` holding the resume's own error when it failed
+    the same way, and neither when the resumed run completed. An
+    exception out of the resume (agno refusing it, say) propagates to
+    the turn's own handler.
+    """
+    await session.emit(
+        {
+            "type": "notice",
+            "text": "provider error — resuming the turn where it stopped",
+        }
+    )
+    if await _stopped_while_waiting(state.run_id, RESUME_BACKOFF):
+        state.cancelled = True
+        await session.emit({"type": "notice", "text": "turn stopped"})
+        return
+    # The part of the run that ran is kept by the resume, notes and
+    # all: the model read whatever rode out on its tool results, so
+    # their delivery is closed here rather than at the end of a run
+    # that may not finish.
+    _settle_inbox(session)
+    state.errored = None
+    await _follow_run(
+        session,
+        session.agent.acontinue_run(
+            run_id=state.run_id,
+            session_id=session.name,
+            stream=True,
+            stream_events=True,
+        ),
+        state,
+    )
 
 
 async def _name_the_session(session: Any, registry: Any) -> None:
@@ -1064,7 +1184,8 @@ def build_app(registry: Registry) -> Starlette:
         """Branch this session into a new one: files, cache, cwd and —
         unless the body says `"conversation": "fresh"` — the agent's
         memory and the visible transcript, all in one kvgit operation.
-        The app db is copied, since live state has no history.
+        The app db is named, not copied: the child writes to the same
+        file as the parent, since live state has no history.
 
         409 while a turn is in flight or the workspace holds staged
         changes: a fork of half a turn would be a state no commit

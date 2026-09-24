@@ -99,9 +99,9 @@ event carries its sequence number as its cursor.
 | `tool_start` | `name`, `args` | a tool call begins; `args` are shaped and shortened for display |
 | `tool_end` | `name`, `result` | a tool call returns. A mid-run message is cut back out of the result first, so the tool box shows the tool's own output |
 | `artifact` | `name`, `path`, `kind` | a `ui = {...}` value became a file; parsed from the raw tool result, so a long one does not truncate the note away |
-| `notice` | `text` | turn stopped, model switched, upload written, compression started or finished, a provider error that restarted the turn |
+| `notice` | `text` | turn stopped, model switched, upload written, compression started or finished, a provider error the turn is resuming from |
 | `usage` | `input_tokens`, `cached_tokens` | context telemetry, one per model call; the frontend keeps only the latest |
-| `error` | `message` | the run errored, or the studio shut down on a turn it could not wait out |
+| `error` | `message` | the run errored and its one resume did not clear it, the run loop raised, or the studio shut down on a turn it could not wait out |
 | `done` | `run_id`, `head` | the turn ended. `head` is the workspace at turn end — the commit ↔ conversation mapping a rewind needs |
 | `title` | `title`, plus what was stored | the session was named or renamed |
 | `publish` | `token`, `version`, `title`, `url`, `head`, `tree` | a version exists. Emitted only after the fact, since it is a durable landmark you can restore to |
@@ -136,6 +136,7 @@ side channel between the test process and the server:
 ```
 !think Hmm, let me consider this.
 !tool file_write {"path": "/notes.md", "content": "hi"}
+!fail provider overloaded
 !text Here is your reply.
 ```
 
@@ -143,6 +144,15 @@ One model turn emits the `!tool` calls if there are any that have not run
 yet — the real loop executes them and reinvokes — and otherwise emits the
 `!text` reply, streamed in two deltas to exercise the streaming path. A
 message with no directives echoes back.
+
+`!fail` makes the reply call raise agno's `ModelProviderError` with the
+rest of the line as its message, the way a provider failure reaches the
+run. Each `!fail` line is spent on one call, in order, and the call after
+the last one answers with `!text` — so the script above writes the file,
+fails once, and answers when the turn resumes. The tests build the model
+without the server's model-call retry, where one `!fail` ends the run;
+under the server's own model, which retries a failed call twice, three
+lines are what get past it.
 
 That makes it useful interactively too: run the server with
 `NONTAINER_STUDIO_MODEL=dummy` and type directives to puppet the agent

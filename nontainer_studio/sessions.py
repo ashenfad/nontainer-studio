@@ -2802,57 +2802,6 @@ class Registry:
         sessions_tool.__doc__ = SESSIONS_TOOL_DESCRIPTION
         return sessions_tool
 
-    @staticmethod
-    def _retry_rewind_hook(ws: Workspace) -> Callable:
-        """Keep the WORKSPACE in step with the agent's memory when agno
-        restarts a run.
-
-        agno's whole-run retry rebuilds the message list from persisted
-        history + the user message, so a restarted attempt begins with
-        no memory of the previous attempt's tool calls — while every
-        file those calls wrote is still on disk. That divergence is the
-        exact thing this product exists to prevent: an edit rewinds
-        files, memory, and transcript together, and a retry is the same
-        rewind, just triggered by the provider instead of the human.
-        Left unsynchronized it produces the worst failure mode we have
-        — the model, blind to work it can still see the effects of,
-        builds a second divergent version beside the first.
-
-        The seam is agno's ``pre_hooks``: they run INSIDE the attempt
-        loop, after the session read and before the messages are built,
-        and ``run_context.run_id`` is stable across attempts (the
-        RunOutput is created once, outside the loop). So the first call
-        of a run records the pre-turn head — the same commit the `user`
-        event stamps as its undo anchor — and any later call under that
-        run_id is by definition a retry: check that commit out.
-
-        Anchored on the commit id, not on a count of steps, so it holds
-        however many attempts a run takes: a checkout lands a NEW commit
-        holding the pre-turn content, and checking the anchor out again
-        from there writes nothing and returns where it stands.
-
-        One slot rather than a map: a session runs one turn at a time
-        (``turn_lock``), so there is only ever one live run to track.
-        """
-        state: dict[str, str | None] = {}
-
-        async def rewind_workspace_on_retry(run_context: Any) -> None:
-            run_id = getattr(run_context, "run_id", None)
-            if run_id is None:
-                return
-            if state.get("run_id") != run_id:  # first attempt of a new turn
-                state["run_id"] = run_id
-                state["head"] = ws.head
-                return
-            head = state.get("head")
-            if head is None or ws.head == head:
-                return  # the attempt committed nothing; nothing to unwind
-            # off-loop: a checkout takes the workspace lock and rewrites
-            # the tree (and re-syncs a remote executor's guest)
-            await asyncio.to_thread(ws.checkout, head)
-
-        return rewind_workspace_on_retry
-
     def _build_agent(
         self,
         name: str,
@@ -2958,13 +2907,11 @@ class Registry:
             # without prose spends one, and running out of turns
             # resolves the answer as `capped`.
             tool_call_limit=tool_calls or None,
-            # runs per ATTEMPT, which is what makes it the right seam for
-            # keeping files and memory rewinding together (see the hook).
-            # `begin_turn` rides the same seam from the other end: a
-            # retried attempt drops the tool calls its predecessor made,
-            # so notes delivered on one of them were never read and go
-            # back to the front of the queue.
-            pre_hooks=[self._retry_rewind_hook(ws), toolkit.begin_turn],
+            # `begin_turn` puts back in the queue any note a run handed
+            # out and then dropped. agno runs pre hooks when a run
+            # starts and not when a run is continued, so a turn resumed
+            # after a provider error does not come through here.
+            pre_hooks=[toolkit.begin_turn],
             # `end_turn` commits nothing here — the session db owns the
             # commit — so all it does is settle the notes this turn
             # delivered: the turn that read them is over, and nothing
@@ -3005,26 +2952,21 @@ class Registry:
             session_id=name,
             add_history_to_context=True,
             markdown=True,
-            # A LAST-DITCH FLOOR, not the primary defense. Transient
-            # provider errors are absorbed one layer down, at the model
-            # call, where the retry keeps the turn's tool results (see
-            # providers._with_retries). This layer restarts the WHOLE
-            # run: attempt > 0 re-reads the session from the db and
-            # rebuilds the messages from persisted history + the user
-            # message, so every tool call the failed attempt made is
-            # gone from the agent's memory while its side effects stay
-            # in the workspace — the model then builds a second,
-            # divergent version over the first. Kept at 1 because only
-            # ModelProviderError routes through the model layer; a
-            # failure of another class would otherwise cost the turn
-            # outright. When it does fire, the workspace rewinds with
-            # the memory (_retry_rewind_hook) so the restart is a clean
-            # one, and the turn says so (server.py counts RunStarted).
-            # If all attempts fail, the run lands status=error and
-            # repair_aborted_run keeps it in the agent's memory.
-            retries=1,
-            delay_between_retries=2,
-            exponential_backoff=True,
+            # No run-level retry (agno's `retries` stays at its default
+            # of 0). A run-level retry restarts the run from the user
+            # message: it forgets every tool call the failed attempt
+            # made while the files those calls wrote stay in the
+            # workspace, and undoing the files instead would also undo
+            # whatever else was written during the turn. A provider
+            # failure is an interruption, not a restart:
+            # - the model call retries a transient error itself and
+            #   keeps the turn's tool results (providers._with_retries);
+            # - past that the run ends in error, and the turn resumes
+            #   the SAME run in place, once, from where it stopped
+            #   (server._resume_once);
+            # - if that fails too, the run is kept in the agent's memory
+            #   as an interrupted turn, and the workspace keeps what it
+            #   wrote.
         )
 
     # -- delegates: sessions the registry did not create ----------------------
@@ -5201,43 +5143,3 @@ class Registry:
             # Last: the store outlives every workspace opened through
             # it, so it closes once nothing is still holding a branch.
             self._store.close()
-
-
-def repair_aborted_run(session: Session, run_id: str | None, note: str) -> None:
-    """agno's history builder SKIPS runs with status=error or
-    status=cancelled — so a transport hiccup at the end of a long turn
-    (or a user hitting stop) would erase the whole turn from the
-    agent's memory while the human transcript still shows it. That
-    divergence produces confident confabulation, not "I don't
-    remember".
-
-    The messages up to the cut are real work: append a closing note
-    explaining the abnormal end, mark the run completed, and the agent
-    keeps its memory AND knows the turn was cut short."""
-    db = getattr(session.agent, "db", None)
-    if db is None or run_id is None:
-        return
-    try:
-        from agno.db.base import SessionType
-        from agno.models.message import Message
-        from agno.run.base import RunStatus
-
-        record = db.get_session(session_id=session.name, session_type=SessionType.AGENT)
-        if record is None or not record.runs:
-            return
-        run = next(
-            (r for r in record.runs if getattr(r, "run_id", None) == run_id), None
-        )
-        if run is None or run.status not in (RunStatus.error, RunStatus.cancelled):
-            return
-        run.status = RunStatus.completed
-        run.messages = (run.messages or []) + [
-            Message(
-                role="assistant",
-                content=f"[turn aborted early: {note} — the work above "
-                "this point is real and completed]",
-            )
-        ]
-        db.upsert_session(record)
-    except Exception:
-        pass  # repair is best-effort; never take down the turn handler

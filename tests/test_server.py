@@ -71,6 +71,13 @@ def knobs_off(monkeypatch):
     monkeypatch.delenv("NONTAINER_STUDIO_SESSIONS", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_resume_backoff(monkeypatch):
+    """A provider error resumes its turn after a wait meant for a real
+    outage; a test's failures are scripted and clear at once."""
+    monkeypatch.setattr(server, "RESUME_BACKOFF", 0)
+
+
 @pytest.fixture
 def studio(tmp_path):
     """A real Registry over a tmp store, with the agent faked out —
@@ -2636,8 +2643,8 @@ def test_a_second_edit_rewinds_to_its_own_anchor(scripted):
     assert len(after) == 2 and after[0] == kept
 
 
-def test_a_repaired_run_persists_through_the_store_db(scripted):
-    """``repair_aborted_run`` rewrites a stored run in place (agno's
+def test_a_kept_run_persists_through_the_store_db(scripted):
+    """Keeping an aborted run rewrites the stored run in place (agno's
     history builder skips error/cancelled runs, so the turn's real work
     would vanish from memory). Over the branch db that is a re-upsert of
     a run the branch already holds — allowed, and committed."""
@@ -2654,7 +2661,7 @@ def test_a_repaired_run_persists_through_the_store_db(scripted):
     record.runs[-1].status = RunStatus.error
     registry.db.upsert_session(record)
 
-    sessions_mod.repair_aborted_run(session, run_id, "credit balance too low")
+    server._keep_aborted_run(session, run_id, "credit balance too low")
 
     stored = registry.db.get_session(session_id="s1", session_type=SessionType.AGENT)
     repaired = stored.runs[-1]
@@ -3033,7 +3040,7 @@ class CancellableAgent(FakeAgent):
         yield SimpleNamespace(event="RunCancelled", run_id="run-9")
 
 
-def test_cancel_stops_the_turn_and_repairs_memory(studio):
+def test_cancel_stops_the_turn_and_keeps_it_in_memory(studio):
     client, registry = studio
     agent = CancellableAgent()
     registry._build_agent = lambda *a, **k: agent
@@ -3057,7 +3064,7 @@ def test_cancel_stops_the_turn_and_repairs_memory(studio):
     events = _collect_until_done(client, "s1")
     assert any(e["type"] == "notice" and e["text"] == "turn stopped" for e in events)
     assert not session.busy and session.run_id is None
-    # the cancelled run was repaired: memory keeps the partial work
+    # the cancelled run was kept: memory holds the partial work
     run = chat_db.record.runs[0]
     assert run.status == RunStatus.completed
     assert "stopped by the user" in run.messages[-1].content
@@ -3069,7 +3076,7 @@ def test_cancel_when_idle_409s(studio):
     assert client.post("/api/sessions/s1/cancel", json={}).status_code == 409
 
 
-# -- aborted-run repair -----------------------------------------------------------
+# -- aborted runs: kept in memory ---------------------------------------------------
 
 
 class ExplodingAgent(FakeAgent):
@@ -3082,10 +3089,11 @@ class ExplodingAgent(FakeAgent):
         raise RuntimeError("credit balance too low")
 
 
-def test_aborted_run_is_repaired_into_memory(studio):
+def test_aborted_run_is_kept_in_memory_and_not_resumed(studio):
     """A turn killed mid-flight must not vanish from the agent's
     memory: the stored run flips error -> completed with a closing
-    note (agno's history builder skips error runs)."""
+    note (agno's history builder skips error runs). An exception out of
+    the run loop is not a provider hiccup, so nothing resumes it."""
     from agno.run.base import RunStatus
 
     client, registry = studio
@@ -3103,6 +3111,7 @@ def test_aborted_run_is_repaired_into_memory(studio):
     client.post("/api/sessions/s1/chat", json={"message": "build it"})
     events = _collect_until_done(client, "s1")
     assert any(e["type"] == "error" for e in events)  # failure surfaced
+    assert not any(e["type"] == "notice" for e in events)  # no resume
 
     run = chat_db.record.runs[0]
     assert run.status == RunStatus.completed  # memory retained
@@ -3112,8 +3121,13 @@ def test_aborted_run_is_repaired_into_memory(studio):
 
 class RunErrorAgent(FakeAgent):
     """Streams some real work, then reports a provider failure as a
-    RunError EVENT and ends cleanly — agno's post-retry behavior. No
-    exception ever raises, so only the event flags the death."""
+    RunError EVENT and ends cleanly — agno's behavior once the model
+    call's retries are spent. No exception ever raises, so only the
+    event flags the death. The resume fails the same way."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.continued: list[dict] = []
 
     async def arun(self, message, stream=True, stream_events=True):
         self.seen.append(message)
@@ -3123,13 +3137,22 @@ class RunErrorAgent(FakeAgent):
             event="RunError", content="Provider returned error", run_id=run_id
         )
 
+    async def acontinue_run(self, **kwargs):
+        self.continued.append(kwargs)
+        yield SimpleNamespace(event="RunContinued", run_id=kwargs["run_id"])
+        yield SimpleNamespace(
+            event="RunError",
+            content="Provider still returning error",
+            run_id=kwargs["run_id"],
+        )
 
-def test_provider_error_event_is_repaired_into_memory(studio):
+
+def test_a_provider_error_the_resume_cannot_clear_is_kept_in_memory(studio):
     """The equal-grouse amnesia: a provider error arrives as a RunError
-    STREAM EVENT (agno's retries exhausted), the stream ends cleanly,
-    and without repair the stored status=error run vanishes from the
-    agent's memory — 'please continue' then replans from scratch while
-    the workspace holds all the work."""
+    STREAM EVENT, the stream ends cleanly, and the turn resumes the run
+    once. When the resume fails too, the stored status=error run would
+    vanish from the agent's memory without keeping — 'please continue'
+    then replans from scratch while the workspace holds all the work."""
     from agno.run.base import RunStatus
 
     client, registry = studio
@@ -3145,94 +3168,21 @@ def test_provider_error_event_is_repaired_into_memory(studio):
 
     client.post("/api/sessions/s1/chat", json={"message": "build it"})
     events = _collect_until_done(client, "s1")
-    assert any(e["type"] == "error" for e in events)  # failure surfaced
+
+    # resumed once, in place, and only then given up on
+    assert erroring.continued == [
+        {"run_id": "run-1", "session_id": "s1", "stream": True, "stream_events": True}
+    ]
+    notices = [e["text"] for e in events if e["type"] == "notice"]
+    assert notices == ["provider error — resuming the turn where it stopped"]
+    # one error, the latest one
+    errors = [e["message"] for e in events if e["type"] == "error"]
+    assert errors == ["Provider still returning error"]
 
     run = chat_db.record.runs[0]
     assert run.status == RunStatus.completed  # memory retained
     assert "turn aborted early" in run.messages[-1].content
-    assert "Provider returned error" in run.messages[-1].content
-
-
-class RestartingAgent:
-    """agno's whole-run retry, as the stream shows it: RunStarted is
-    yielded once PER ATTEMPT, so a restarted run replays the opening
-    event with the turn's earlier tool calls already dropped from the
-    model's memory."""
-
-    async def arun(self, message: str, stream: bool = True, stream_events: bool = True):
-        yield SimpleNamespace(event="RunStarted", run_id="run-1")
-        yield SimpleNamespace(
-            event="ToolCallStarted",
-            tool=SimpleNamespace(tool_name="file_write", tool_args={"path": "/a"}),
-        )
-        # provider drops the stream here; agno sleeps and re-enters the
-        # attempt loop, rebuilding messages from history + the prompt
-        yield SimpleNamespace(event="RunStarted", run_id="run-1")
-        yield SimpleNamespace(
-            event="RunContent", content="starting over", run_id="run-1"
-        )
-        yield SimpleNamespace(event="RunCompleted")
-
-
-def test_retry_rewind_hook_keeps_files_in_step_with_memory(studio):
-    """agno's whole-run retry rebuilds the agent's memory from history +
-    the prompt, dropping the failed attempt's tool calls. The files those
-    calls wrote must go with them, or the model builds a second version
-    beside work it can't remember doing. pre_hooks run per ATTEMPT under a
-    stable run_id, which is what makes the rewind placeable at all.
-
-    A rewind is a checkout, and a checkout APPENDS: the head moves
-    forward onto a commit holding the pre-turn content rather than back
-    onto the pre-turn commit itself. So the assertion is about content
-    — the file is gone and nothing differs from the anchor — and the
-    anchor is still in the log, which is what keeps it a usable anchor
-    for the next retry and for the human's own undo."""
-    import asyncio
-
-    client, registry = studio
-    client.post("/api/sessions", json={"name": "s1"})
-    ws = registry.get("s1").ws
-    hook = sessions_mod.Registry._retry_rewind_hook(ws)
-    ctx = SimpleNamespace(run_id="run-1")
-
-    asyncio.run(hook(ctx))  # attempt 1: records the pre-turn head
-    start = ws.head
-    ws.files.write("/workspace/app/index.html", "half an app")
-    assert ws.head != start, "the write should have moved the head"
-
-    asyncio.run(hook(ctx))  # attempt 2 under the same run: a retry
-    assert not ws.files.fs.isfile("/workspace/app/index.html")
-    assert not ws.changed_since(start).paths, "the content is back at the anchor"
-    assert ws.head != start, "the rewind landed a commit rather than dropping one"
-    assert start in {c.id for c in ws.log()}, "the anchor is still reachable"
-    rewound = ws.head
-
-    # a NEW run is a new turn, not a retry — it re-anchors and rewinds
-    # nothing, or the next turn would undo the previous one's work
-    ws.files.write("/workspace/keep.txt", "second turn")
-    after_write = ws.head
-    asyncio.run(hook(SimpleNamespace(run_id="run-2")))
-    assert ws.head == after_write
-    assert ws.files.fs.isfile("/workspace/keep.txt")
-    assert rewound != after_write
-
-
-def test_run_restart_is_surfaced_as_a_notice(studio):
-    """A silent restart reads as the model losing the plot: the human
-    watches the turn redo itself with no explanation. The second
-    RunStarted is the only signal agno gives, so the turn names it."""
-    client, registry = studio
-    client.post("/api/sessions", json={"name": "s1"})
-    registry.get("s1").agent = RestartingAgent()
-
-    client.post("/api/sessions/s1/chat", json={"message": "build it"})
-    events = _collect_until_done(client, "s1")
-
-    notices = [e["text"] for e in events if e["type"] == "notice"]
-    assert any("restarted" in n for n in notices), notices
-    assert any("attempt 2" in n for n in notices), notices
-    # the FIRST RunStarted must stay quiet — every turn has one
-    assert len([n for n in notices if "restarted" in n]) == 1
+    assert "Provider still returning error" in run.messages[-1].content
 
 
 def test_arrow_pool_is_fork_safe_from_first_import():
@@ -3264,7 +3214,7 @@ def test_arrow_pool_is_fork_safe_from_first_import():
     assert out.stdout.strip() == "system"
 
 
-def test_repair_leaves_healthy_runs_alone(studio):
+def test_keeping_leaves_healthy_runs_alone(studio):
     from agno.run.base import RunStatus
 
     client, registry = studio
@@ -3276,8 +3226,25 @@ def test_repair_leaves_healthy_runs_alone(studio):
     )
     session.agent.db = chat_db
 
-    sessions_mod.repair_aborted_run(session, "run-1", "whatever")
+    server._keep_aborted_run(session, "run-1", "whatever")
     assert chat_db.record.runs[0].messages == []  # untouched
+
+
+def test_keeping_an_aborted_run_never_raises(studio, caplog):
+    """It runs on every failing ending of a turn, some of them already
+    unwinding; a db that fails must cost the note, not the turn."""
+
+    class BrokenDb:
+        def get_session(self, **kw):
+            raise OSError("disk gone")
+
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    session.agent.db = BrokenDb()
+
+    server._keep_aborted_run(session, "run-1", "whatever")
+    assert "could not keep aborted run run-1" in caplog.text
 
 
 def test_published_urls_survive_restart(studio, tmp_path):
@@ -6457,6 +6424,270 @@ def test_a_stop_settles_what_was_delivered_and_keeps_what_was_not(tmp_path):
         assert [e["type"] for e in events].count("user") == 1
         assert [e["type"] for e in events].count("done") == 1
     registry.close()
+
+
+# -- provider errors: the turn resumes where it stopped ------------------------
+
+
+RESUMING = "provider error — resuming the turn where it stopped"
+
+WRITE_FAIL_ANSWER = (
+    '!tool file_write {"path": "/workspace/a.txt", "content": "A"}\n'
+    "!fail provider overloaded\n"
+    "!text wrote a"
+)
+
+SLOW_FAIL_ANSWER = (
+    '!tool run_python {"code": "import time; time.sleep(2)"}\n'
+    "!fail provider overloaded\n"
+    "!text all set"
+)
+
+
+def _stored_runs(registry, name: str) -> list:
+    record = registry.db.get_session(name)
+    return list(record.runs or []) if record is not None else []
+
+
+def _notices(events: list[dict]) -> list[str]:
+    return [e["text"] for e in events if e["type"] == "notice"]
+
+
+def _prose(events: list[dict]) -> str:
+    return "".join(e["delta"] for e in events if e["type"] == "text")
+
+
+def test_the_dummy_spends_one_fail_per_call_and_only_on_the_reply():
+    """The scripted failure the tests below lean on: the call that would
+    emit the tool calls proceeds, each ``!fail`` costs the reply call
+    one attempt, and a model offered no tools never fails."""
+    from agno.exceptions import ModelProviderError
+    from agno.models.message import Message
+
+    from nontainer_studio.dummy import DummyModel
+
+    model = DummyModel()
+    script = Message(
+        role="user",
+        content='!tool file_write {"path": "/a", "content": "A"}\n'
+        "!fail one\n!fail two\n!text done",
+    )
+    offered = {"tools": [{"type": "function"}]}
+    assert model.invoke([script], **offered).tool_calls
+    after_tools = [script, Message(role="tool", content="wrote /a")]
+    for expected in ("one", "two"):
+        with pytest.raises(ModelProviderError, match=expected):
+            model.invoke(after_tools, **offered)
+    assert model.invoke(after_tools, **offered).content == "done"
+    # the naming pass: a tool-less agent reading the transcript
+    fresh = Message(role="user", content="!fail one\n!text done")
+    assert DummyModel().invoke([fresh]).content == "done"
+
+
+def test_a_provider_error_resumes_the_run_where_it_stopped(scripted, caplog):
+    """A failure after the tools ran does not restart the turn: the SAME
+    run resumes, holding the tool call it already made, and answers. The
+    file is written once and stays; memory holds one run with both
+    halves; the human reads one notice and no error.
+
+    agno runs no pre hook on a continued run, so nontainer's
+    ``begin_turn`` never sees the run id twice and never warns that the
+    run was restarted — because it was not."""
+    from agno.run.base import RunStatus
+
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    events = _run(client, "s1", WRITE_FAIL_ANSWER)
+    kinds = [e["type"] for e in events]
+
+    assert _notices(events) == [RESUMING]
+    assert "error" not in kinds
+    assert kinds.count("tool_start") == 1  # the write was not redone
+    assert _prose(events) == "wrote a"
+    assert session.ws.files.fs.read("/workspace/a.txt") == b"A"
+
+    runs = _stored_runs(registry, "s1")
+    assert [r.run_id for r in runs] == [events[-1]["run_id"]]
+    run = runs[0]
+    assert run.status == RunStatus.completed
+    roles = [m.role for m in run.messages]
+    assert roles.count("user") == 1 and roles.count("tool") == 1
+    assert "wrote /workspace/a.txt" in str(
+        next(m for m in run.messages if m.role == "tool").content
+    )
+    assert run.messages[-1].role == "assistant"
+    assert run.messages[-1].content == "wrote a"
+    assert not any("turn aborted early" in str(m.content) for m in run.messages)
+    assert "agno restarted run" not in caplog.text
+
+
+def test_a_resume_that_fails_too_ends_the_turn_and_keeps_the_run(scripted, monkeypatch):
+    """One resume, no more. When it fails the same way the turn ends in
+    an error, the file stays, and the run is kept: the next turn's model
+    reads the tool call it made and the note that the turn was cut
+    short."""
+    from nontainer_studio.dummy import DummyModel
+
+    seen: list[list] = []
+    plain = DummyModel.ainvoke_stream
+
+    async def spy(self, messages, **kwargs):
+        seen.append(list(messages))
+        async for chunk in plain(self, messages, **kwargs):
+            yield chunk
+
+    monkeypatch.setattr(DummyModel, "ainvoke_stream", spy)
+
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    script = WRITE_FAIL_ANSWER.replace(
+        "!fail provider overloaded", "!fail provider overloaded\n!fail still down"
+    )
+    events = _run(client, "s1", script)
+
+    assert _notices(events) == [RESUMING]
+    assert [e["message"] for e in events if e["type"] == "error"] == ["still down"]
+    assert _prose(events) == ""
+    assert session.ws.files.fs.read("/workspace/a.txt") == b"A"
+    assert len(_stored_runs(registry, "s1")) == 1
+
+    _run(client, "s1", "!text ok")
+    history = seen[-1]
+    assert any(
+        m.role == "tool" and "wrote /workspace/a.txt" in str(m.content) for m in history
+    )
+    assert any(
+        m.role == "assistant"
+        and str(m.content).startswith("[turn aborted early: still down")
+        for m in history
+    )
+
+
+def test_a_stopped_turn_is_kept_and_not_resumed(scripted):
+    """A stop stays a stop: the run is cancelled at the tool it was
+    running, nothing resumes it, and it is kept as stopped by the
+    user."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    started = client.post("/api/sessions/s1/chat", json={"message": SLOW_FAIL_ANSWER})
+    _await(lambda: session.run_id is not None)
+    assert client.post("/api/sessions/s1/cancel", json={}).status_code == 200
+    events = _collect_until_done(client, "s1", since=started.json()["since"])
+
+    assert _notices(events) == ["turn stopped"]
+    assert _prose(events) == ""
+    runs = _stored_runs(registry, "s1")
+    assert len(runs) == 1
+    assert "stopped by the user" in str(runs[0].messages[-1].content)
+
+
+def test_a_stop_during_the_wait_is_not_resumed(scripted, monkeypatch):
+    """The wait before a resume is part of the turn, and the stop button
+    reaches it: the run is kept as stopped by the user instead of being
+    resumed, and the turn does not sit out the rest of the wait."""
+    monkeypatch.setattr(server, "RESUME_BACKOFF", 30)
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    started = client.post("/api/sessions/s1/chat", json={"message": WRITE_FAIL_ANSWER})
+    since = started.json()["since"]
+    _await(
+        lambda: (
+            RESUMING
+            in _notices(
+                client.get(f"/api/sessions/s1/events?since={since}&wait=0").json()[
+                    "events"
+                ]
+            )
+        )
+    )
+    t0 = time.monotonic()
+    assert client.post("/api/sessions/s1/cancel", json={}).status_code == 200
+    events = _collect_until_done(client, "s1", since=since)
+    assert time.monotonic() - t0 < 5
+
+    assert _notices(events) == [RESUMING, "turn stopped"]
+    assert "error" not in [e["type"] for e in events]
+    assert _prose(events) == ""
+    runs = _stored_runs(registry, "s1")
+    assert len(runs) == 1
+    assert "stopped by the user" in str(runs[0].messages[-1].content)
+    assert session.ws.files.fs.read("/workspace/a.txt") == b"A"
+
+
+def test_a_host_write_during_the_turn_survives_a_provider_error(scripted):
+    """A file the human adds while the agent works — an upload, say — is
+    not the agent's to undo. A provider error mid-turn leaves it where
+    it is, alongside everything the turn wrote."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    script = (
+        '!tool file_write {"path": "/workspace/a.txt", "content": "A"}\n'
+        '!tool run_python {"code": "import time; time.sleep(2)"}\n'
+        "!fail provider overloaded\n"
+        "!text all set"
+    )
+    started = client.post("/api/sessions/s1/chat", json={"message": script})
+    since = started.json()["since"]
+    _await(
+        lambda: any(
+            e["type"] == "tool_start" and e["name"] == "run_python"
+            for e in client.get(f"/api/sessions/s1/events?since={since}&wait=0").json()[
+                "events"
+            ]
+        )
+    )
+    session.ws.files.write("/workspace/upload.txt", "from the human")
+    events = _collect_until_done(client, "s1", since=since)
+
+    assert _notices(events) == [RESUMING]
+    assert _prose(events) == "all set"
+    assert session.ws.files.fs.read("/workspace/upload.txt") == b"from the human"
+    assert session.ws.files.fs.read("/workspace/a.txt") == b"A"
+
+
+def test_a_note_delivered_before_a_provider_error_is_not_delivered_again(
+    scripted,
+):
+    """The resumed run keeps the tool result the note rode out on, so
+    the model read it once and is not handed it again — not on the
+    resume, and not as a follow-up turn."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    started = client.post("/api/sessions/s1/chat", json={"message": SLOW_FAIL_ANSWER})
+    _await(lambda: session.busy)
+    time.sleep(0.5)
+    queued = client.post(
+        "/api/sessions/s1/chat", json={"message": "switch the chart to a log scale"}
+    )
+    assert queued.status_code == 202
+
+    events = _collect_until_done(client, "s1", since=started.json()["since"])
+    kinds = [e["type"] for e in events]
+    assert _notices(events) == [RESUMING]
+    assert _prose(events) == "all set"
+    assert kinds.count("interject") == 1
+    assert kinds.count("user") == 1  # no follow-up turn carried it again
+
+    carried = [
+        m
+        for m in _stored_messages(registry, "s1")
+        if "switch the chart to a log scale" in str(m.content)
+    ]
+    assert len(carried) == 1 and carried[0].role == "tool"
+    assert session.inbox.pending() == []
+    assert session.inbox.delivered() == []
 
 
 # -- compression: the tool's output coarsens, the human's words do not --------

@@ -14,12 +14,34 @@ test process and the server. Directive lines:
     !tool file_write {"path": "/notes.md", "content": "hi"}
     !tool run_python {"code": "print(1)"}
     !text Here is your reply.
+    !fail provider overloaded
 
 One model "turn": if the message has ``!tool`` directives and they
 haven't run yet, emit the tool calls (the real loop executes them and
 reinvokes); otherwise emit the ``!text`` reply (streamed in two deltas
 to exercise the streaming path). A message with no directives echoes
 back — handy for smoke.
+
+``!fail`` makes a model call raise agno's ``ModelProviderError`` with
+the rest of the line as its message, which is how a provider failure
+reaches the run. Failures stand in for the reply call — the first call
+after the tools ran, or the first call at all in a script without
+tools — and each ``!fail`` line is spent on one call, in order; the
+call after the last one proceeds with the ``!text`` reply. So a script
+that writes a file, fails once, and then answers reads::
+
+    !tool file_write {"path": "/notes.md", "content": "hi"}
+    !fail provider overloaded
+    !text Wrote the notes.
+
+A failure is counted per user message, on the model instance, so a
+resumed run (which keeps the message) sees the failure as spent while a
+new turn with the same text fails afresh. Model-level retries count as
+calls: under the server's model, which retries a failed call twice,
+three ``!fail`` lines are what reach the run; the tests build the model
+without retries, where one does. A model offered no tools never fails,
+for the reason it never calls one: the naming pass hands a tool-less
+agent the whole transcript, directives and all.
 
 Select it with ``NONTAINER_STUDIO_MODEL=dummy``.
 """
@@ -29,6 +51,7 @@ from __future__ import annotations
 import json
 from typing import Any, AsyncIterator, Iterator, List
 
+from agno.exceptions import ModelProviderError
 from agno.models.base import Model
 from agno.models.message import Message
 from agno.models.response import ModelResponse
@@ -37,6 +60,8 @@ from agno.models.response import ModelResponse
 class DummyModel(Model):
     def __init__(self) -> None:
         super().__init__(id="dummy", name="Dummy", provider="dummy")
+        # ``!fail`` lines already spent, per user message id
+        self._failed: dict[str, int] = {}
 
     # -- script interpretation ---------------------------------------------
 
@@ -88,27 +113,53 @@ class DummyModel(Model):
             response.content = "\n".join(reply) or f"dummy: {text[:200]}"
         return response
 
+    def _maybe_fail(self, messages: List[Message], offered: bool) -> None:
+        """Raise the next unspent ``!fail`` of the script, when this
+        call is the reply call; do nothing otherwise."""
+        if not offered:
+            return
+        last_user = next((m for m in reversed(messages) if m.role == "user"), None)
+        if last_user is None:
+            return
+        text = str(getattr(last_user, "content", "") or "")
+        fails = [
+            line[len("!fail ") :]
+            for line in text.splitlines()
+            if line.startswith("!fail ")
+        ]
+        if not fails or self._plan(messages, offered=offered).tool_calls:
+            return
+        spent = self._failed.get(last_user.id, 0)
+        if spent >= len(fails):
+            return
+        self._failed[last_user.id] = spent + 1
+        raise ModelProviderError(fails[spent], model_name=self.name, model_id=self.id)
+
     # -- Model surface -------------------------------------------------------
 
     def invoke(self, messages: List[Message], **kwargs: Any) -> ModelResponse:
-        return self._plan(messages, offered=bool(kwargs.get("tools")))
+        offered = bool(kwargs.get("tools"))
+        self._maybe_fail(messages, offered)
+        return self._plan(messages, offered=offered)
 
     async def ainvoke(self, messages: List[Message], **kwargs: Any) -> ModelResponse:
-        return self._plan(messages, offered=bool(kwargs.get("tools")))
+        offered = bool(kwargs.get("tools"))
+        self._maybe_fail(messages, offered)
+        return self._plan(messages, offered=offered)
 
     def invoke_stream(
         self, messages: List[Message], **kwargs: Any
     ) -> Iterator[ModelResponse]:
-        yield from self._stream_chunks(
-            self._plan(messages, offered=bool(kwargs.get("tools")))
-        )
+        offered = bool(kwargs.get("tools"))
+        self._maybe_fail(messages, offered)
+        yield from self._stream_chunks(self._plan(messages, offered=offered))
 
     async def ainvoke_stream(
         self, messages: List[Message], **kwargs: Any
     ) -> AsyncIterator[ModelResponse]:
-        for chunk in self._stream_chunks(
-            self._plan(messages, offered=bool(kwargs.get("tools")))
-        ):
+        offered = bool(kwargs.get("tools"))
+        self._maybe_fail(messages, offered)
+        for chunk in self._stream_chunks(self._plan(messages, offered=offered)):
             yield chunk
 
     @staticmethod

@@ -46,6 +46,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A provider error resumes the turn where it stopped instead of
+  restarting it.** A turn had three retry layers: the provider SDK's
+  own, agno's model-call retry (which retries one call and keeps the
+  turn's tool results), and agno's run-level retry, which restarted
+  the whole run from the user message. The restart forgot every tool
+  call the failed attempt made while the files those calls wrote
+  stayed, so the studio rewound the workspace to the start of the turn
+  to match — which threw away the attempt's work and, with it, anything
+  else written during the turn, such as a file uploaded mid-turn. The
+  run-level retry and the rewind are gone. A run that still ends in a
+  provider error after the model call's retries is resumed in place,
+  under the same run id, from its last tool result, after a short wait
+  and a `notice` saying so. Once: if the resume fails too, the turn
+  ends in an `error` and the run is kept in the agent's memory as an
+  interrupted turn. A stop is never resumed, including one pressed
+  during the wait, and an exception out of the run loop is not a
+  provider hiccup and ends the turn as before. The dummy model gains a
+  `!fail` directive so a script can make a model call fail.
+
+- **agno 3 is a stated dependency.** The resume is agno 3's continue of
+  an errored run, which agno 2 does not have; nontainer's `agno` extra
+  guarantees only 2.1, so the studio now requires `agno>=3.0` itself.
+  Every install already resolved agno 3.
+
+- **An aborted run is kept by nontainer's `keep_aborted_run`, and the
+  nontainer floor is 0.7.10.** The studio's own repair of an errored or
+  cancelled run moved into nontainer as `keep_aborted_run`, which also
+  writes agno 3's separate runs table. The studio calls it on every
+  failing ending — stop, a failed resume, an exception, shutdown —
+  through a wrapper that logs and never raises, and the notes it closes
+  the run with are unchanged.
+
 - **The nontainer floor is 0.7.9.** A minted app token can no longer
   begin with a dash, which is what made `ws-git worktree add`, `diff`
   and `checkout` refuse an origin tag about one time in 64: the token
@@ -502,6 +534,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   instead of waiting to be noticed on somebody's laptop.
 
 ### Fixed
+
+- **The fork route's docstring said the app db is copied.** It is
+  named: the child writes to the parent's db file, as `Registry.fork`
+  says.
 
 - **A publish in flight disables the publish buttons.** A version takes
   a moment to land now that publishing also describes the app, and a
