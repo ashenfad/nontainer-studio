@@ -111,8 +111,8 @@ the note brings it back and a second restart does not repeat it.
 
 Shutting the studio down does not wait for a delegate. Each delegate turn
 runs on a loop the registry can reach, and closing asks every turn in
-flight to stop before it joins the workers. A stopped turn is repaired
-like any other cut turn — the child's memory keeps what it did — and the
+flight to stop before it joins the workers. A stopped turn is kept like
+any other cut turn — the child's memory keeps what it did — and the
 job resolves as `failed` saying the studio shut down mid-run.
 
 ## Budget and caps

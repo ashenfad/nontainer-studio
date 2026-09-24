@@ -142,6 +142,25 @@ at the context watermark, a message that rode out in one is cut off
 before the summariser sees it and re-appended byte for byte, so the agent
 never acts on a paraphrase of something you said exactly once.
 
+## When the provider fails
+
+A provider error is an interruption, not a restart. The model call
+retries a transient failure itself, keeping every tool result the turn
+has produced. Past that, the turn says so — "provider error — resuming
+the turn where it stopped" — waits a few seconds, and resumes the same
+run from its last tool result: the model remembers what it already did,
+and nothing is redone.
+
+It resumes once. If the resume fails too, the turn ends with the error,
+and the run stays in the agent's memory closed with a note that it was
+cut short, so "please continue" picks up from the work rather than
+replanning it. A stop is never resumed, including one pressed while the
+turn waits to resume.
+
+Nothing is rewound. The workspace keeps every file the turn wrote, and
+every file anyone else wrote while it ran — an upload you added mid-turn
+is yours, not the failed turn's to take back.
+
 ## Rich replies
 
 The agent can drop plots, tables, images and HTML into its answers with a

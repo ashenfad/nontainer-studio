@@ -12,7 +12,11 @@ dependencies = [
     # Floors on nontainer are hard: the studio speaks the current
     # surface with no compatibility layer. What each release changed
     # is in nontainer's changelog.
-    "nontainer[agno,apps]>=0.7.9",
+    "nontainer[agno,apps]>=0.7.10",
+    # A turn that hits a provider error resumes in place through agno
+    # 3's continue of an errored run; agno 2 has no such path, and the
+    # nontainer extra alone only guarantees agno 2.1.
+    "agno>=3.0",
     # session ids are minted slugs; the label a human reads is the title
     "petname>=2.6",
     "uvicorn>=0.30",
