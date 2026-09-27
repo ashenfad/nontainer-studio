@@ -1461,6 +1461,37 @@ def test_changed_since_answers_content_and_writes_apart(studio):
     assert status() == {**clean, "since": "v2"}
 
 
+def test_changed_since_ignores_what_a_publish_leaves_out(studio):
+    """app/logs/ and app/screenshots/ are the authoring loop's: a
+    publish never carries them, so a request logged or a page captured
+    is not an unpublished change. Counting them would show every
+    ws-curl and test_app run as app work waiting to be saved. The
+    exclusion is by directory, so a file whose name merely starts with
+    `logs` still counts."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    _seed_app(session.ws)
+    _publish(client, "s1")
+
+    def status() -> dict:
+        return client.get("/api/sessions/s1/apps").json()["apps"][0]["changed_since"]
+
+    fs = session.ws.files.fs
+    fs.makedirs("/workspace/app/logs", exist_ok=True)
+    fs.makedirs("/workspace/app/screenshots", exist_ok=True)
+    fs.write("/workspace/app/logs/api.log", b"GET /api/x -> 200\n")
+    fs.write("/workspace/app/screenshots/shot-1.png", b"\x89PNG")
+    session.ws.commit()
+    quiet = status()
+    assert (quiet["count"], quiet["paths"], quiet["files"]) == (0, [], [])
+
+    session.ws.files.write("/workspace/app/logsheet.html", "<h1>mine</h1>")
+    counted = status()
+    assert counted["paths"] == ["/workspace/app/logsheet.html"]
+    assert [f["path"] for f in counted["files"]] == counted["paths"]
+
+
 def _change(client, session: str, token: str, path: str, **params):
     return client.get(
         f"/api/sessions/{session}/apps/{token}/changes/file",
