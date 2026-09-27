@@ -14,7 +14,9 @@ have made. To see a file's bytes, request it:
 
 | file | size | version | what it is |
 |---|---|---|---|
-| `README.md` | 9 KB | ours | the vendoring record: sources, checksums, and why each pin |
+| `README.md` | 10 KB | ours | the vendoring record: sources, checksums, and why each pin |
+| `arrow.min.js` | 189 KB | 21.2.0 | apache-arrow, the UMD build: `<script src>` gives `window.Arrow` (`Arrow.tableFromIPC`) |
+| `arrow.mjs` | 4 KB | 21.2.0 | apache-arrow as a module, for `import { tableFromIPC } from 'apache-arrow'`; loads arrow.min.js |
 | `icons.min.js` | 15 KB | @mui/icons-material 6.x | a curated subset of @mui/icons-material (the names listed below) |
 | `jsx-loader.js` | 7 KB | ours | the loader: declares the import map, compiles the file named by data-app |
 | `mui-utils.js` | 1 KB | ours | the @mui/material/utils subpath the icon bundle imports (createSvgIcon) |
@@ -43,6 +45,7 @@ per-file path (`@mui/icons-material/Delete`) or a vendor path
 | `@mui/icons-material` | `icons.min.js` |
 | `@mui/material/utils` | `mui-utils.js` |
 | `house/theme` | `theme.js` |
+| `apache-arrow` | `arrow.mjs` |
 
 ## Icons (66 names)
 
