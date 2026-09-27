@@ -17,12 +17,19 @@ internet can still write an app that renders.
 | `mui.min.js` | npm `@mui/material@6` + `@mui/x-data-grid@7` + emotion, bundled | `393f0429fb93ffbdd11009286e9e5402769aec92927a70847cd3b89bc98a9683` |
 | `icons.min.js` | npm `@mui/icons-material@6`, 66 icons, bundled | `9d090df59d2bae4fc88afe29ed6c701fe1246d4ddf60875781aff991c217ec43` |
 | `sucrase.min.js` | npm `sucrase@3`, bundled | `8bbf28da8aedb231f4315800f6b0d7310706ae4f1e6e4cdbca2311bbfb7a2913` |
-| `jsx-loader.js` | **ours** — hand-written, not generated | `12463452f042d1b365030dd20da68bc798c5bc17df8fe04baeafee72120b1f40` |
+| `arrow.min.js` | npm `apache-arrow@21.2.0`, `Arrow.es2015.min.js` as published | `4bb22da0967f403eea39bc51820552e729ed1ad3e50c2568fb43d818bc1ca4d0` |
+| `arrow.mjs` | generated from `arrow.min.js`'s exports — a module face over it | `fd6f20fe66b2d2696cfdaf5d60e97d9afa8b715110d49b2cc512d5f9b0b687a6` |
+| `jsx-loader.js` | **ours** — hand-written, not generated | `d411a706fa7f225db507370c659b43f9b60cee5af8170763acd4d028f8d51159` |
 | `mui-utils.js` | **ours** — subpath shim for the icon bundle | `752c227b022b40b2de39d925f56b32f9264dd964a7bd0399e54ca175114c21f9` |
 | `theme.css` | **ours** — the shell's palette, app-facing | `46abd6279d31325886178ead73abce4d0c2ce39edbaa46fa6c8828ba0aa8361e` |
 | `theme.js` | **ours** — that palette as a MUI theme | `09d0ff29e9a032e84dd4412d141fe8554f89e17248d36afed5bf3ae86bbb8e7d` |
 
-All MIT licensed. ~6.8 MB total, of which plotly is 4.7 MB.
+MIT licensed, except apache-arrow (`arrow.min.js`, and `arrow.mjs`
+generated from it), which is Apache-2.0: its license header is kept at
+the top of the file, and its NOTICE reads *Apache Arrow JavaScript,
+Copyright 2017-2025 The Apache Software Foundation. This product
+includes software developed at The Apache Software Foundation.* ~6.8 MB
+total, of which plotly is 4.9 MB.
 
 ## Regenerating
 
@@ -31,8 +38,21 @@ All MIT licensed. ~6.8 MB total, of which plotly is 4.7 MB.
 ```
 
 Users never need node — these outputs are committed, like `frontend/`'s
-build. The script carries the reasoning for each pin; the four decisions
+build. The script carries the reasoning for each pin; the decisions
 below are the ones that will look arbitrary later.
+
+**apache-arrow as published, plus a generated module face.** A handler
+that returns a table answers as an Arrow IPC stream when the request's
+`Accept` asks for one, and a page needs a decoder for it. The UMD build
+is copied byte for byte (so its checksum is npm's) and gives
+`window.Arrow` to a plain `<script src="vendor/arrow.min.js">`. It
+cannot be `import`ed, though: its wrapper assigns `this.Arrow`, and
+`this` is undefined at a module's top level. `arrow.mjs` is what the
+loader maps `apache-arrow` to; it loads the UMD file as a classic
+script, once and only if the page has not, and re-exports the global,
+so a page gets one Arrow and the bytes ship once. Its export list is
+read from the build, for the reason the React list is (below). Pinned
+exactly, unlike the MUI majors, because nothing is rebuilt.
 
 **Plotly 3.7.0, not 4.x.** 4.0.0 removed the `scattermapbox` /
 `choroplethmapbox` trace names. Those are what a model writes from

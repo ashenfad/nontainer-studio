@@ -67,6 +67,10 @@ const VENDOR_IMPORTS = {
   // than bare so it reads as house-supplied at the import site, and so
   // the namespace has room for whatever else the house ships later.
   "house/theme": "./vendor/theme.js",
+  // The decoder for a handler's Arrow response. A module face over the
+  // UMD build, which a <script src="vendor/arrow.min.js"> page loads
+  // directly; importing the UMD file itself throws.
+  "apache-arrow": "./vendor/arrow.mjs",
 };
 
 // Defer to a map the page already declares: an agent extending the set

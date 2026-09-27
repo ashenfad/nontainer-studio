@@ -39,6 +39,8 @@ DESCRIPTIONS = {
     "jsx-loader.js": "the loader: declares the import map, compiles the file named by data-app",
     "theme.css": "the shell's palette as CSS custom properties (listed below)",
     "theme.js": "that palette as a MUI theme: `import theme from 'house/theme'`",
+    "arrow.min.js": "apache-arrow, the UMD build: `<script src>` gives `window.Arrow` (`Arrow.tableFromIPC`)",
+    "arrow.mjs": "apache-arrow as a module, for `import { tableFromIPC } from 'apache-arrow'`; loads arrow.min.js",
     "README.md": "the vendoring record: sources, checksums, and why each pin",
 }
 
@@ -68,6 +70,9 @@ def _version(name: str, text: str, fetch: str) -> str:
     if name == "sucrase.min.js":
         m = re.search(r'SUCRASE_VERSION="([^"]+)"', fetch)
         return f"{m.group(1) if m else '?'}.x"
+    if name in ("arrow.min.js", "arrow.mjs"):
+        m = re.search(r'ARROW_VERSION="([^"]+)"', fetch)
+        return m.group(1) if m else "?"
     return "ours"
 
 

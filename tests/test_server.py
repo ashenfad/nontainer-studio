@@ -2,6 +2,7 @@
 lifecycle, preview/publish, time travel — exercised with a fake agent
 (no LLM, no key)."""
 
+import ast
 import asyncio
 import json
 import re
@@ -5020,6 +5021,215 @@ Plotly.react('chart', [{x:[1,2,3], y:[2,4,8], type:'scatter'}], {})
     assert result.results[1].value == "plotly 3.7.0"  # the pinned version
     assert "249, 250, 251" in result.results[2].value  # tailwind compiled it
     assert not result.rejected  # nothing tried to reach a CDN
+
+
+def test_vendored_arrow_serves_to_preview_and_publish(studio):
+    """Both faces of apache-arrow are real on both lifecycles: the UMD
+    file a plain page loads with a script tag, and the module the
+    loader maps `apache-arrow` to."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+
+    for path in ("vendor/arrow.min.js", "vendor/arrow.mjs"):
+        r = client.get(f"/preview/s1/{path}")
+        assert r.status_code == 200, path
+        assert r.headers["content-type"].startswith("text/javascript"), path
+    umd = client.get("/preview/s1/vendor/arrow.min.js").content
+    assert len(umd) > 100_000  # the real build, not a stub
+    assert b"tableFromIPC" in umd
+
+    pub = client.post("/api/sessions/s1/publish").json()
+    for path in ("vendor/arrow.min.js", "vendor/arrow.mjs"):
+        assert client.get(f"{pub['url']}{path}").status_code == 200, path
+
+    loader = (sessions_mod.app_assets_dir() / "jsx-loader.js").read_text()
+    assert '"apache-arrow": "./vendor/arrow.mjs"' in loader
+
+
+ARROW_HANDLER = b"""
+import pandas as pd
+
+def get(req):
+    df = pd.DataFrame({
+        "year": [2023, 2023, 2024],
+        "region": ["north", None, "north"],
+        "revenue": [1.5, 2.0, None],
+        "when": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
+    })
+    if req.params.get("by") == "year":
+        return df.groupby("year")["revenue"].sum()
+    return df
+"""
+
+# The helpers references/returns.md teaches, verbatim, so a change that
+# breaks them breaks this test rather than an agent's app.
+ARROW_JSX = b"""
+import { useEffect, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import * as ArrowModule from 'apache-arrow';
+import { tableFromIPC } from 'apache-arrow';
+
+const ARROW = 'application/vnd.apache.arrow.stream';
+
+async function fetchTable(url) {
+  const res = await fetch(url, { headers: { Accept: `${ARROW}, application/json;q=0.9` } });
+  if (!res.ok) throw new Error((await res.json()).error);
+  if ((res.headers.get('content-type') || '').startsWith(ARROW)) {
+    return tableFromIPC(await res.arrayBuffer());
+  }
+  return res.json(); // JSON rows
+}
+
+const plain = (v) => (typeof v === 'bigint' ? Number(v) : v);
+const column = (table, name) => Array.from(table.getChild(name), plain);
+const rows = (table) =>
+  table.toArray().map((r) =>
+    Object.fromEntries(Object.entries(r.toJSON()).map(([k, v]) => [k, plain(v)])));
+
+window.arrowExports = Object.keys(ArrowModule).filter((k) => k !== 'default').sort();
+
+function App() {
+  const [out, setOut] = useState(null);
+  useEffect(() => {
+    (async () => {
+      const byYear = await fetchTable('api/sales?by=year');
+      const all = await fetchTable('api/sales');
+      setOut({
+        years: column(byYear, 'year'),
+        revenue: column(byYear, 'revenue'),
+        columns: all.schema.fields.map((f) => f.name),
+        when: column(all, 'when'),
+        first: rows(all)[0],
+        region: column(all, 'region'),
+      });
+    })().catch((e) => setOut({ error: e.message }));
+  }, []);
+  return <pre id="out">{out ? JSON.stringify(out) : 'loading'}</pre>;
+}
+
+createRoot(document.getElementById('root')).render(<App />);
+"""
+
+ARROW_PLAIN_PAGE = b"""<!doctype html>
+<html><head><script src="vendor/arrow.min.js"></script></head><body>
+<div id="v">init</div>
+<script>
+fetch('api/sales?by=year', { headers: { Accept: 'application/vnd.apache.arrow.stream' } })
+  .then((res) => res.arrayBuffer())
+  .then((buf) => {
+    const t = Arrow.tableFromIPC(buf);
+    document.getElementById('v').textContent =
+      t.numRows + ' rows, ' + t.getChild('revenue').get(0);
+  });
+</script>
+</body></html>"""
+
+
+def test_preview_and_publish_answer_a_table_as_arrow_when_asked(studio):
+    """The preview pane and a published link both carry the negotiated
+    response through: an Arrow stream with its media type and `Vary:
+    Accept` for a request that asks, JSON rows for one that does not.
+    The preview adds its CORS header on top, since its frame is an
+    opaque origin."""
+    pa = pytest.importorskip("pyarrow")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    _seed_app(ws)
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write("/workspace/app/api/sales.py", ARROW_HANDLER)
+    ws.commit()
+    pub = client.post("/api/sessions/s1/publish").json()
+
+    arrow = "application/vnd.apache.arrow.stream"
+    for base in ("/preview/s1/", pub["url"]):
+        r = client.get(f"{base}api/sales?by=year", headers={"accept": arrow})
+        assert r.status_code == 200, (base, r.text)
+        assert r.headers["content-type"].startswith(arrow), base
+        assert "accept" in r.headers["vary"].lower(), base
+        table = pa.ipc.open_stream(r.content).read_all()
+        assert table.to_pylist() == [
+            {"year": 2023, "revenue": 3.5},
+            {"year": 2024, "revenue": 0.0},
+        ]
+        r = client.get(f"{base}api/sales?by=year")
+        assert r.json() == [
+            {"year": 2023, "revenue": 3.5},
+            {"year": 2024, "revenue": 0.0},
+        ]
+    r = client.get("/preview/s1/api/sales", headers={"accept": arrow})
+    assert r.headers["access-control-allow-origin"] == "*"
+
+
+def test_a_table_handler_reaches_the_page_as_arrow(studio):
+    """The whole chain, end to end: a handler returns a DataFrame, the
+    page asks for Arrow with its Accept header, the vendored library
+    decodes the stream, and the value renders. Both spellings: the
+    bare `apache-arrow` import in JSX (through the loader's map and the
+    module face over the UMD file) and a plain `<script src>` page.
+
+    The column values pin what returns.md tells an agent: int64 arrives
+    as BigInt and the helper makes it a number, a timestamp iterates as
+    epoch milliseconds, a null is null, and groupby's named index is a
+    column."""
+    pytest.importorskip("playwright")
+
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    fs = session.ws.files.fs
+    fs.makedirs("/workspace/app/api", exist_ok=True)
+    fs.write("/workspace/app/api/sales.py", ARROW_HANDLER)
+    fs.write(
+        "/workspace/app/index.html",
+        b'<!doctype html><html><body><div id="root"></div>'
+        b'<script type="module" src="vendor/jsx-loader.js" data-app="app.jsx">'
+        b"</script></body></html>",
+    )
+    fs.write("/workspace/app/app.jsx", ARROW_JSX)
+    fs.write("/workspace/app/plain.html", ARROW_PLAIN_PAGE)
+    session.ws.commit()
+
+    result = session.runtime.test_app(
+        [
+            {"assert": "document.querySelector('#out').textContent !== 'loading'"},
+            {"read": "#out"},
+            {
+                "eval": "JSON.stringify([window.arrowExports, "
+                "Object.keys(window.Arrow).sort()])"
+            },
+            {"goto": "plain.html"},
+            {"assert": "document.querySelector('#v').textContent !== 'init'"},
+            {"read": "#v"},
+        ]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)  # no chromium
+
+    assert result.ok, result
+    out = json.loads(result.results[1].value)
+    assert "error" not in out, out
+    assert out["years"] == [2023, 2024]  # BigInt made plain
+    assert out["revenue"] == [3.5, 0.0]
+    assert out["columns"] == ["year", "region", "revenue", "when"]
+    assert out["when"][0] == 1704067200000  # epoch ms for 2024-01-01
+    assert out["first"] == {
+        "year": 2023,
+        "region": "north",
+        "revenue": 1.5,
+        "when": 1704067200000,
+    }
+    assert out["region"] == ["north", None, "north"]
+
+    # The module face exports every name the UMD build defines: a name
+    # it missed would fail at module instantiation in someone's app.
+    # eval answers with the value's repr, a quoted string here
+    module_names, global_names = json.loads(ast.literal_eval(result.results[2].value))
+    assert module_names == global_names
+
+    assert result.results[5].value == "2 rows, 3.5"
+    assert not result.rejected
 
 
 def test_a_custom_csp_reaches_verification_not_just_serving(tmp_path, monkeypatch):
