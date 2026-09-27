@@ -5632,14 +5632,13 @@ def test_the_notes_name_both_theme_spellings(studio):
 
 
 def test_the_reference_handler_survives_nulls(studio):
-    """api-handler.py is a working file too, and its own subject is data
-    that breaks JSON. Nothing enforces this: a bare NaN goes out as a
-    200 and only fails in the browser, so the reference shipping one
-    would look fine from every angle except a rendered page.
+    """api-handler.py is a working file too, and it returns its data
+    as pandas hands it over, with no casts: nulls in a string column,
+    a numeric one, and an all-null mean all go out as null.
 
-    The frame below is the shape that catches it — a null in a STRING
-    column, not just the numeric one. That is what the first draft of
-    the rows block got wrong."""
+    The check is kept because the browser, not Python, is the judge: a
+    bare NaN in the body would be a 200 that only fails in res.json(),
+    looking fine from every angle except a rendered page."""
     pytest.importorskip("pandas")
     refs = Path(__file__).parent.parent / "skills" / "building-apps" / "references"
     client, registry = studio
@@ -5673,6 +5672,17 @@ def test_the_reference_handler_survives_nulls(studio):
     assert body["rows"][2]["category"] is None
     assert body["rows"][1]["region"] is None
     assert body["rows"][1]["value"] is None
+    # the named index is the rows' stable key
+    assert [row["id"] for row in body["rows"]] == [0, 1, 2]
+
+    # Rows exist but every value is null, so the mean is NaN: an
+    # `if df.empty` guard does not see this case, and it goes out as
+    # null by itself, the same "nothing to average" as an empty result.
+    response = session.runtime.dispatch(nt_request("GET", "/api/summary?region=south"))
+    assert response.status == 200, response.text
+    body = json.loads(response.text, parse_constant=reject)
+    assert body["total"] == 1
+    assert body["mean_value"] is None
 
 
 # -- the MUI bundle's declared surface ----------------------------------------
@@ -5783,13 +5793,9 @@ createRoot(document.getElementById('root')).render(
 
 def test_the_reference_handler_survives_a_null_year(studio):
     """`year` looks like a safe int right up until a sampled row is
-    missing one, and then int(NaN) raises and the whole summary 500s on
-    data that is merely incomplete.
-
-    The aggregate never showed it: groupby drops null keys silently, so
-    the chart renders fine while the table request dies. Worth its own
-    test because it fails DIFFERENTLY from the string columns — those
-    ship a bare NaN and blank the page; this one is a 500."""
+    missing one. groupby drops the null key silently, so the chart
+    never shows it, while the table's rows carry it. The row goes out
+    with year null and the rest of the sample still reads as years."""
     pytest.importorskip("pandas")
     refs = Path(__file__).parent.parent / "skills" / "building-apps" / "references"
     client, registry = studio
@@ -5861,9 +5867,8 @@ def test_the_reference_tests_pass_against_the_reference_app(scripted):
     pytest_out = _terminal(client, "s1", "ws-pytest -v")
     assert "7 passed" in pytest_out, pytest_out
     assert "failed" not in pytest_out, pytest_out
-    # A bare run walks the whole tree but app/, so the seeded skill's own
-    # copy is in scope. It is spelled with a hyphen precisely so nothing
-    # collects it where it sits — a reference that ran itself would seed
+    # A bare run collects tests/ only, so the seeded skill's own copy is
+    # never run where it sits — a reference that ran itself would seed
     # its fixture parquet over whatever app the session is building.
     assert "references/" not in pytest_out, pytest_out
 
@@ -6395,6 +6400,18 @@ def test_the_vendor_inventory_matches_the_served_assets():
         assert name in committed
     assert "## Icons (66 names)" in committed
     assert "--app-primary" in committed
+
+
+def test_the_skill_says_when_to_read_the_returns_reference():
+    """A bare "see returns.md" gets skipped, so the pointer names the
+    cases that need it, and the file it names is really there."""
+    root = Path(__file__).parent.parent / "skills" / "building-apps"
+    skill = (root / "SKILL.md").read_text()
+    assert "more than a few thousand rows" in skill
+    assert "`references/returns.md`" in skill
+    assert (root / "references" / "returns.md").is_file()
+    assert "references/returns.md" in sessions_mod.FRONTEND_NOTES
+    assert "'apache-arrow'" in sessions_mod.FRONTEND_NOTES
 
 
 def test_the_skill_points_at_the_vendor_inventory():
