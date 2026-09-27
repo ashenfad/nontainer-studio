@@ -54,6 +54,7 @@ from nontainer.adapters.agno import WorkspaceTools
 from nontainer.adapters.agno_db import KvgitStoreDb, fork_session
 from nontainer.adapters.render import SESSIONS_DESCRIPTION
 from nontainer.apps import AppRuntime, AppsConfig, enable_apps, mint_token
+from nontainer.apps.dispatch import PUBLISH_EXCLUDE
 from nontainer.errors import (
     JobRunning,
     SessionIdError,
@@ -4576,7 +4577,10 @@ class Registry:
         ``since`` names that version (None where the app has none yet).
         ``count`` / ``paths`` / ``files`` are the CONTENT question:
         files under ``<root>/app`` whose bytes differ from it. A file
-        re-saved with the bytes it already had is not in them.
+        re-saved with the bytes it already had is not in them, and
+        neither is anything under the directories a publish leaves out
+        (``app/logs/``, ``app/screenshots/``): those are the authoring
+        loop's, so an edit there is never an unpublished change.
         ``files`` carries the same paths in the same order with a
         ``status`` (``added`` / ``modified`` / ``removed``) and a
         ``size`` each, so a reader can render the list without asking
@@ -4606,10 +4610,13 @@ class Registry:
         # nothing to chase.
         diff = session.ws.changed_since(newest["commit"])
         prefix = f"{session.ws.root}/app/"
+        # nontainer's own list, so the count excludes exactly what a
+        # publish leaves out.
+        unpublished = tuple(f"{session.ws.root}/{p}" for p in PUBLISH_EXCLUDE)
         paths = sorted(
             p
             for p in (diff.added | diff.removed | diff.modified)
-            if p.startswith(prefix)
+            if p.startswith(prefix) and not p.startswith(unpublished)
         )
         return {
             "since": newest["name"],
