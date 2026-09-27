@@ -8,6 +8,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **apache-arrow is vendored for pages.** nontainer 0.7.11 lets a
+  handler return a DataFrame, Series or pyarrow Table and answers with
+  an Arrow IPC stream when the request's `Accept` asks for one. A page
+  needs a decoder for that, and the studio's apps have no network. So
+  `apache-arrow@21.2.0` ships as `vendor/arrow.min.js`, the upstream
+  UMD build byte for byte (`window.Arrow`). `vendor/arrow.mjs` is a
+  module face over it, which `jsx-loader.js` maps `apache-arrow` to,
+  so `import { tableFromIPC } from 'apache-arrow'` works in `app.jsx`.
+  Its export list is generated from the build, and a browser test
+  checks the two agree. Apache-2.0, recorded in the appassets README.
+  A browser test covers the whole chain: a DataFrame handler, an
+  `Accept` header, the vendored decoder, a rendered value.
+
+- **`references/returns.md` in the building-apps skill.** Everything
+  about returns and requests that SKILL.md does not need for the
+  common case: tables and Arrow on both sides of the wire, the index
+  rule, downloads, the response caps and what to do instead, the
+  request side in full, and how to test each. SKILL.md points at it
+  with the cases that need it, and the primer does too. Its
+  examples were run against 0.7.11, and the page-side helpers are
+  the ones the browser test runs.
+
 - **A message typed while the agent works is queued, not refused.**
   The composer used to lock for the length of a turn and `POST /chat`
   answered 409, so a correction that arrived one second late waited
@@ -45,6 +67,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tool's own half, and re-appends the block byte for byte.
 
 ### Changed
+
+- **nontainer 0.7.11, and a skill that no longer casts.** Handler
+  returns encode numpy values, dates and NaN by themselves now, inside
+  the handler's sandbox, and an unencodable value's `BAD RETURN` line
+  names its path. SKILL.md drops the `int()`/`float()` casts and the
+  "NaN is not JSON, nothing stops you" guidance for a short returns
+  table, and the reference handler drops `_cell()` and its casts. It
+  sends its row sample as a frame whose named index is the `id`
+  column, and its chart arrays with `.tolist()`, because a Series in a
+  dict goes out as rows and a bare Index is refused. What stays is
+  what is still true: `dropna()` before sorting a mixed column, the
+  same shape for an empty result, and `None` for "no data" (a NaN mean
+  now arrives as null by itself). SKILL.md is shorter than before.
 
 - **A provider error resumes the turn where it stopped instead of
   restarting it.** A turn had three retry layers: the provider SDK's
@@ -534,6 +569,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   instead of waiting to be noticed on somebody's laptop.
 
 ### Fixed
+
+- **Logs and screenshots no longer count as unpublished changes.**
+  nontainer 0.7.11 leaves `app/logs/` and `app/screenshots/` out of a
+  publish, but the publish button's count and the `changes` tab still
+  compared them against the newest version. Every `ws-curl` or
+  `test_app` run then showed up as app work waiting to be saved. Both
+  now skip what a publish leaves out, a list read from nontainer
+  (`nontainer.apps.dispatch.PUBLISH_EXCLUDE`) rather than restated.
 
 - **The fork route's docstring said the app db is copied.** It is
   named: the child writes to the parent's db file, as `Registry.fork`

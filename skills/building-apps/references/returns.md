@@ -231,14 +231,15 @@ In order of preference:
 3. **Return the table and request Arrow**, which has the 32 MB cap and
    is smaller for the same rows.
 
-`ws-curl` prints large and binary bodies badly. Write them to a file
+Don't print a large or binary body with `ws-curl`: write it to a file
 with `-o`, then check the size or read the file from `run_python`.
 
 ## The request side
 
 - `req.params` is `dict[str, str]`, the query string. A repeated key
   keeps only its LAST value: `?tag=a&tag=b` gives `{"tag": "b"}`. For a
-  list, take one comma-separated param: `req.params.get("tags", "").split(",")`.
+  list, take one comma-separated param:
+  `[t for t in req.params.get("tags", "").split(",") if t]`.
 - `req.require("n", int)` reads `n` from the JSON body first, then the
   query string, coerces it, and raises a 400 when it is missing or does
   not parse. Types: `str`, `int`, `float`, `bool` (`true/1/false/0`).
