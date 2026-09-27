@@ -121,10 +121,15 @@ async function fetchTable(url) {
 Arrow values are not always plain JS values. An integer column
 (`int64`, which is what pandas makes) comes back as **BigInt**:
 `2023n`, which Plotly cannot plot and `JSON.stringify` throws on. Read
-columns through a helper that converts:
+columns through a helper that converts. A JS number holds integers
+exactly only up to 2^53, so a BigInt beyond that (a 64-bit id, say)
+becomes a string instead, exactly, rather than a nearby number that
+could merge two distinct ids:
 
 ```jsx
-const plain = (v) => (typeof v === 'bigint' ? Number(v) : v);
+const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+const plain = (v) =>
+  typeof v === 'bigint' ? (v <= SAFE && v >= -SAFE ? Number(v) : String(v)) : v;
 
 // one column as a JS array: Plotly's x or y
 const column = (table, name) => Array.from(table.getChild(name), plain);
@@ -140,6 +145,10 @@ const rows = (table) =>
   `col.toArray()` does NOT: for timestamps and int64 it returns the raw
   `BigInt64Array`, in the unit the column was stored in.
 - Nulls come back as `null`.
+- JSON has the same 2^53 limit and no helper to save it: `JSON.parse`
+  reads every number as a double, so an id past 2^53 arrives already
+  rounded. Send such ids as strings from the handler
+  (`df["id"] = df["id"].astype(str)`).
 - `table.numRows` is the row count; `table.schema.fields.map(f => f.name)`
   lists the columns.
 
