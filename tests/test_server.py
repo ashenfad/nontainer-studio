@@ -5090,6 +5090,8 @@ def get(req):
     })
     if req.params.get("by") == "year":
         return df.groupby("year")["revenue"].sum()
+    if req.params.get("ids"):
+        return pd.DataFrame({"id": [9007199254740993, 7]})
     return df
 """
 
@@ -5112,7 +5114,9 @@ async function fetchTable(url) {
   return res.json(); // JSON rows
 }
 
-const plain = (v) => (typeof v === 'bigint' ? Number(v) : v);
+const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+const plain = (v) =>
+  typeof v === 'bigint' ? (v <= SAFE && v >= -SAFE ? Number(v) : String(v)) : v;
 const column = (table, name) => Array.from(table.getChild(name), plain);
 const rows = (table) =>
   table.toArray().map((r) =>
@@ -5126,6 +5130,7 @@ function App() {
     (async () => {
       const byYear = await fetchTable('api/sales?by=year');
       const all = await fetchTable('api/sales');
+      const ids = await fetchTable('api/sales?ids=1');
       setOut({
         years: column(byYear, 'year'),
         revenue: column(byYear, 'revenue'),
@@ -5133,6 +5138,7 @@ function App() {
         when: column(all, 'when'),
         first: rows(all)[0],
         region: column(all, 'region'),
+        ids: column(ids, 'id'),
       });
     })().catch((e) => setOut({ error: e.message }));
   }, []);
@@ -5252,6 +5258,8 @@ def test_a_table_handler_reaches_the_page_as_arrow(studio):
         "when": 1704067200000,
     }
     assert out["region"] == ["north", None, "north"]
+    # past 2^53 a number would round (…993 to …992); the helper keeps it exact
+    assert out["ids"] == ["9007199254740993", 7]
 
     # The module face exports every name the UMD build defines: a name
     # it missed would fail at module instantiation in someone's app.
