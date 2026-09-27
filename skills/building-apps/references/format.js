@@ -34,8 +34,9 @@ export function formatLabel(value) {
 export function formatValue(value, { digits } = {}) {
   if (value === null || value === undefined) return "—";
   if (typeof value !== "number") return String(value);
-  // NaN and Infinity have no rendering that is not a lie. A handler
-  // should not send either, but nothing stops one.
+  // NaN and Infinity have no rendering that is not a lie. JSON cannot
+  // carry either (a handler's NaN arrives as null), but a value
+  // computed on the page can be one.
   if (!Number.isFinite(value)) return "—";
   if (digits !== undefined) {
     return value.toLocaleString(undefined, {

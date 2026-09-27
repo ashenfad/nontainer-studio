@@ -71,7 +71,7 @@ cp /workspace/skills/building-apps/references/test-scores.py /workspace/tests/te
 Then **cut it down to your data** — rename the columns, delete the
 pieces you don't need. Starting from the set and cutting is consistently
 faster than building up from nothing, and it is where the non-obvious
-parts already live: empty results, null aggregates, numpy casts,
+parts already live: empty results, null aggregates, stable row keys,
 relative urls, stable selectors, a themed chart, a testable dropdown.
 
 There is one frontend stack here — MUI with React and JSX, compiled in
@@ -167,12 +167,12 @@ def get(req):
     if region:
         df = df[df["region"] == region]
     if df.empty:                                  # NOT an error
-        return {"total": 0, "chart": {"x": [], "y": []}}
+        return {"total": 0, "mean": None, "chart": {"x": [], "y": []}}
     by_year = df.groupby("year")["value"].sum().sort_index()
     return {
-        "total": int(len(df)),                    # int(): numpy won't
-        "chart": {"x": [int(v) for v in by_year.index],
-                  "y": [float(v) for v in by_year.values]},
+        "total": len(df),
+        "mean": df["value"].mean(),               # all-null -> NaN -> null
+        "chart": {"x": by_year.index.tolist(), "y": by_year.tolist()},
     }
 ```
 
@@ -181,14 +181,30 @@ def get(req):
   put `.py` in a url. Its verb functions are the methods, and a second
   endpoint is a SECOND FILE, not another branch inside this one.
 - `Request`, `Response`, `HttpError` are already in scope — no import.
-  `raise HttpError(400, "why")` for a bad request; return a dict/list
-  for JSON, a str for text, bytes for a blob, None for 204.
 - `req.params` is `dict[str, str]` — use `.get()` for OPTIONAL filters.
   For a REQUIRED one, `req.require("n", int)` coerces and raises a
   clean 400 when it is missing or unparseable.
-- Return CHART-READY data. Aggregate server-side into parallel arrays
-  the frontend can hand straight to plotly; don't ship raw rows and
-  reshape them in JS.
+- Return CHART-READY data: parallel arrays aggregated server-side,
+  handed straight to plotly, not raw rows reshaped in JS.
+
+| return | response |
+|---|---|
+| `dict` / `list` | JSON; numpy values, dates (ISO 8601), NaN (`null`) need no casting |
+| a DataFrame / Series | JSON rows, `[{"year": 2023, "value": 1.5}, ...]`; nested in a dict too |
+| `str` | text |
+| `Response(body=bytes, headers={"content-type": ...})` | a file or image |
+| `None` | 204 |
+| `raise HttpError(404, "why")` | `{"error": "why"}`; 4xx/5xx only |
+
+A Series in a dict goes out as ROWS and a bare `Index` is refused, so
+chart arrays are `.tolist()`. An unencodable value (a `set`) is a 500,
+and `api.log`'s `BAD RETURN` line names its path: `$.rows[3].tags`.
+
+**If an endpoint returns more than a few thousand rows, a file
+download, or anything that isn't JSON, read `references/returns.md`
+first.** It covers Arrow for big tables (and decoding it on the page),
+which index becomes a column, downloads, the 10 MB / 32 MB response
+caps, and the request side in full.
 
 ## Architecture that works
 
@@ -237,23 +253,11 @@ def get(req):
 
 - NaN in object columns: `sorted(df[col].unique())` dies comparing
   float NaN with str. Use `sorted(df[col].dropna().unique())`.
-- Numpy types don't JSON-serialize: wrap with int()/float() or use
-  `df.to_dict(orient="records")` after `.astype(object)` care.
-- NaN is not JSON, and NOTHING STOPS YOU SENDING ONE. The response goes
-  out as a 200 with a bare `NaN` in the body; the browser's `res.json()`
-  then throws on the whole body and the page goes blank. There is no
-  500, no traceback, and nothing in api.log — it reads as a frontend
-  bug, and you will debug the wrong half. Guard it yourself, per FIELD:
-  `float(x) if pd.notna(x) else None`.
-  - An aggregate over an empty or all-null selection is the usual
-    source: `mean()` of nothing is NaN. This bites a NON-empty
-    selection too — rows exist, the aggregated column is all null — so
-    an `if df.empty` guard alone does NOT cover it.
-  - String columns need the same guard. A null in an object column is
-    also a float NaN, so `{"name": row.name}` ships one just as easily
-    as a numeric mean does.
-  - Then render the null frontend-side as a dash;
-    `null.toLocaleString()` throws and takes the render down with it.
+- "No data" is `None`, not `0.0`: a mean of nothing is not a mean of
+  zero, and a real 0.0 would be indistinguishable from it. A NaN mean
+  (rows exist, the column is all null) goes out as null by itself;
+  render null frontend-side as a dash, since `null.toLocaleString()`
+  throws and takes the render down with it.
 - Error responses are JSON: `{"error": ...}` — your frontend's
   res.json() will parse them; check `res.ok` and show `data.error`.
 - A filter combination matching NO rows is a normal outcome, not an
@@ -355,10 +359,7 @@ than changing it.
   run_python is slower, and unlike file_edit it will happily match the
   wrong occurrence and tell you it worked.
 
-The libraries you have are served from `vendor/` and listed in the
-terminal tool's description — that list is the authority, not this
-file. External scripts are limited to an allowlist and may not resolve
-at all; test_app names anything it blocked in its [rejected requests]
+test_app names any script it blocked in its [rejected requests]
 section.
 
 ## Debugging loop
@@ -374,18 +375,13 @@ section.
    dispatcher directly, so it isolates backend from frontend in one
    call. The verb is `ws-curl`, never plain `curl`: real curl may be on
    the PATH, and it would reach the NETWORK instead of your app.
-3. `ws-pytest` when the failing piece is one Python function,
-   `ws-vitest` when it is a frontend module — plain `assert` tests in
-   `tests/`, and a handler reached with `call('x', params={...})` from
-   `from host import call`. A
-   failing assertion names the function; a blank page names nothing.
-   **Tests** below has the rest.
+3. `ws-pytest` / `ws-vitest` for one function or module (**Tests**
+   below).
 4. test_app for the page: errors carry file:line for runtime errors;
    parse errors mean bisecting your <script> blocks.
 
 ## Tests
 
-The ladder above ends in two verbs, and they are the cheap end of it:
 `ws-pytest` when the failing piece is one Python function, `ws-vitest`
 when it is a frontend module, `test_app` when it is the page. A failing
 assertion names the function; a blank page names nothing.
@@ -414,20 +410,15 @@ your own is not a way out. `testdb` is the store that needs neither.
 
 `ws-pytest --help` is the authority on the Python side; the part worth
 knowing before you read it: `from host import call`, and
-`call('summary', params={...})` runs a
-handler the way a request does and returns a response with `.status`,
-`.json` (a property, not a method), `.text` and `.ok`, so a
+`call('summary', params={...})` runs a handler the way a request does
+and returns a response with `.status`, `.json` (a property, not a
+method), `.text`, `.content` (bytes), `.headers` and `.ok`, so a
 `raise HttpError(400, ...)` arrives as `.status == 400` rather than as
 an exception; `Request`, `Response` and `HttpError` are in scope, so a
 helper you call directly and that raises one is tested with
 `except HttpError`; and a keyword argument (`db=fake`) substitutes what
 the handler reads when a test wants isolation. There are no fixtures and
 no conftest — setup is the test's own code, written in the test.
-
-Pure functions are what this tier is cheap for, which is the second
-reason to split formatting and query-building out of `app.jsx` into
-`format.js`: `ws-vitest` answers a question about them in a second,
-where the same question asked through `test_app` needs the whole page.
 
 ## Done
 

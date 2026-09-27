@@ -268,6 +268,11 @@ which defines --app-primary, --app-surface, --app-text and friends.
 Charts: <script src="vendor/plotly.min.js"></script>, then Plotly.react(
 el, data, layout). Plotly 3.x, the full build — every trace type,
 including tile-free scattergeo/choropleth for maps.
+Big tables: a handler returning a DataFrame answers as Arrow when the
+fetch sends `Accept: application/vnd.apache.arrow.stream`; decode it
+with `import { tableFromIPC } from 'apache-arrow'` (plain pages:
+<script src="vendor/arrow.min.js">, window.Arrow). Past a few thousand
+rows, or for a download, read the skill's references/returns.md first.
 CSS: <script src="vendor/tailwind.js"></script> for tailwind utility
 classes (it compiles them in the browser; no build, no config file).
 Everything above is served WITH your app from its own origin, so it works

@@ -5,10 +5,11 @@ app/api/summary.py. Copy to /workspace/tests/test_summary.py and run
 tests/, NEVER under app/: app/ is what publishes, so a test file under
 it ships with the app and is fetchable from it.
 
-The hyphen in this file's own name is why a bare `ws-pytest` does not
-run it where it sits: collection is `test_*.py` anywhere outside app/,
-and a reference that ran itself would seed the parquet below into
-whatever app the session is building.
+A bare `ws-pytest` collects `test_*.py` under tests/ only, so this
+reference never runs where it sits; copied to tests/test_summary.py, it
+does. The hyphen in its name keeps it out of a run pointed at the
+skills directory too, since a reference that ran itself would seed the
+parquet below into whatever app the session is building.
 
 `call` reaches a handler the way a request does — the same envelope, so
 `raise HttpError(400, ...)` comes back as `.status == 400` instead of
@@ -41,7 +42,7 @@ from host import call
 DATA = "/workspace/app/data/records.parquet"
 
 # Small and known, and deliberately not tidy: one row has a null value,
-# which is the case the handler's _cell() exists for.
+# which has to reach the page as null.
 ROWS = [
     {"category": "a", "region": "north", "year": 2023, "value": 10.0},
     {"category": "a", "region": "south", "year": 2024, "value": 20.0},
@@ -74,10 +75,11 @@ def test_summary_returns_chart_ready_json():
     # straight to plotly — one point per year, not one per row.
     assert body["chart"] == {"x": [2023, 2024], "y": [10.0, 50.0]}
     assert len(body["rows"]) == 4
-    # The null survives as null, not as a NaN. A NaN would go out as a
-    # 200 with bare `NaN` in the body, res.json() would throw in the
-    # browser, and the page would blank with nothing in api.log.
+    # The null survives as null; JSON has no NaN, and a bare one in the
+    # body would make res.json() throw in the browser.
     assert body["rows"][3]["value"] is None
+    # The sample's named index is its `id` column: a stable row key.
+    assert [row["id"] for row in body["rows"]] == [0, 1, 2, 3]
 
 
 def test_a_filter_that_matches_nothing_is_not_an_error():

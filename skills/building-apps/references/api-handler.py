@@ -40,25 +40,6 @@ def _frame():
     return pd.read_parquet(DATA, columns=COLUMNS)
 
 
-def _cell(value, cast=None):
-    """One pandas value, made safe to put in a JSON response.
-
-    EVERY nullable field needs this, which is why it is a function
-    rather than a `pd.notna(...) else None` repeated per field — writing
-    it out four times is how you end up guarding three. A miss fails two
-    different ways, neither of them here:
-
-    - a null in a STRING column is a float NaN, and it serializes as
-      bare `NaN`. That is not JSON, so res.json() throws in the browser
-      and the page blanks with no 500 and nothing in api.log.
-    - a null under int()/float() raises instead, and the whole request
-      500s on data that is merely incomplete.
-    """
-    if pd.isna(value):
-        return None
-    return cast(value) if cast else value
-
-
 def get(req):
     df = _frame()
 
@@ -102,49 +83,28 @@ def get(req):
 
     by_year = df.groupby("year")["value"].sum().sort_index()
 
-    # NaN IS NOT JSON, and nothing stops you sending one: it goes out as
-    # a 200 with a bare `NaN` in the body, the browser's res.json()
-    # throws on the whole response, and the page blanks with no 500 and
-    # nothing in api.log to point at. A non-empty selection whose
-    # `value` column is all null still means NaN out of mean(), so this
-    # is a live path on real data, not a corner case. pd.notna() is the
-    # guard, and it belongs on every field that can be null.
-    mean = df["value"].mean()
-
+    # Numpy scalars, NaN and dates encode by themselves, so nothing here
+    # is cast. A mean over an all-null `value` column is NaN, and NaN
+    # goes out as null: the same "nothing to average" as the empty case.
     return {
         "options": options,
-        # int()/float() are not decoration: numpy scalars don't
-        # JSON-serialize, and the handler 500s on the way out.
-        "total": int(len(df)),
-        "mean_value": round(float(mean), 2) if pd.notna(mean) else None,
+        "total": len(df),
+        "mean_value": round(df["value"].mean(), 2),
         # Chart-ready: the frontend should plot what it receives, not
         # reshape it. Parallel x/y arrays drop straight into plotly.
-        "chart": {
-            "x": [int(y) for y in by_year.index],
-            "y": [float(v) for v in by_year.values],
-        },
+        # tolist() because a Series nested in a dict goes out as ROWS
+        # (a list of objects), and a bare Index is refused.
+        "chart": {"x": by_year.index.tolist(), "y": by_year.tolist()},
         # A CAPPED sample for the table. "Chart-ready" still holds:
         # aggregate what you can server-side and send what the page
         # renders. Shipping every row and reshaping in JS is slow to
         # serialize, slow to parse, and puts the aggregation somewhere
-        # you cannot test it. Cast per field — a numpy scalar does not
-        # JSON-serialize and the handler 500s on the way out.
-        "rows": [
-            {
-                # A stable key the frontend can use for React keys and
-                # for test_app selectors. Positional indices break the
-                # moment the sample is sorted or filtered differently.
-                # The index is the one field that cannot be null.
-                "id": int(row.Index),
-                # Everything else goes through _cell — including `year`,
-                # which looks like a safe int right up until a row in
-                # the sample is missing one. The aggregate above never
-                # showed it: groupby drops null keys silently.
-                "category": _cell(row.category),
-                "region": _cell(row.region),
-                "year": _cell(row.year, int),
-                "value": _cell(row.value, float),
-            }
-            for row in df.head(ROW_SAMPLE).itertuples()
-        ],
+        # you cannot test it.
+        #
+        # A frame goes out as its rows, nulls as null. Naming the index
+        # makes it a column: `id` is a stable key the frontend uses for
+        # React keys and test_app selectors, where a position would break
+        # the moment the sample is sorted or filtered differently. An
+        # unnamed index would be dropped.
+        "rows": df.head(ROW_SAMPLE).rename_axis("id"),
     }
