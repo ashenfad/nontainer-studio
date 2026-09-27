@@ -17,6 +17,26 @@ Python function or one frontend module under test, so a failing assertion
 names the broken piece where a blank page does not. The `building-apps`
 skill seeded into each session is what teaches the loop.
 
+## What a handler returns
+
+A handler returns pandas and numpy values as they are. Since nontainer
+0.7.11 the response encoder, which runs inside the handler's sandbox,
+turns numpy scalars and arrays into JSON numbers and lists, dates into
+ISO 8601 strings, and NaN, infinity and `NaT` into `null`. A value it
+cannot encode, such as a `set`, is a 500, and `app/logs/api.log` names
+the value's path (`BAD RETURN: $.rows[3].tags: ...`). So the skill
+teaches no casts and no per-field NaN guard.
+
+A DataFrame or Series can be the return itself. A plain `fetch` gets
+JSON rows. A request whose `Accept` names
+`application/vnd.apache.arrow.stream` gets an Arrow IPC stream, which
+a page decodes with the vendored apache-arrow (below). Text responses
+are capped at 10 MB and binary ones at 32 MB, so the skill steers an
+agent to aggregate on the server, paginate, or use Arrow before a
+response reaches either cap. The whole contract is in the skill's
+`references/returns.md`, and its page-side helpers are the ones a
+browser test in the suite runs.
+
 ## Publish
 
 `publish` freezes `/workspace/app` as a **version** of an **app**: a
@@ -32,6 +52,9 @@ turn is a state no commit ever held.
 What is not yet in a version is never a guess. The button counts the app
 files that differ from the app's **newest** version — `publish · 3 files`
 — and the `changes` tab lists them and diffs any one of them against it.
+`app/logs/` and `app/screenshots/` are never counted: they hold the
+agent's handler log and `test_app` captures, and a publish leaves them
+out.
 When the link is serving an older version, the tab says so and offers to
 diff against the version being served instead.
 
@@ -50,9 +73,17 @@ locally-hosted model on an air-gapped machine, where a CDN
 
 What is in there: **MUI** (Material UI with `@mui/x-data-grid` and a
 curated set of ~66 Material icons), **React**, **plotly**, **tailwind**,
-a JSX loader of ours, and this shell's palette as a MUI theme — about
-6.8 MB, of which plotly is 4.7. Every file, its source and its checksum
-are listed in `nontainer_studio/appassets/README.md`.
+**apache-arrow** (the decoder for a handler's Arrow response), a JSX
+loader of ours, and this shell's palette as a MUI theme. That comes to
+about 6.8 MB, of which plotly is 4.9. Every file, its source and its
+checksum are listed in `nontainer_studio/appassets/README.md`. All of
+it is MIT licensed except apache-arrow, which is Apache-2.0.
+
+apache-arrow ships as its upstream UMD build, `vendor/arrow.min.js`,
+which a plain page loads with a script tag to get `window.Arrow`. The
+loader maps `import { tableFromIPC } from 'apache-arrow'` to
+`vendor/arrow.mjs`, a small generated module that loads the UMD file
+once and re-exports what it defines.
 
 The served policy says the same thing the vendoring does: an app's
 scripts may load from its own origin and nowhere else, under `test_app`
