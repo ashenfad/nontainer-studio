@@ -550,7 +550,7 @@ def _bake_image(cfg: dict[str, Any]) -> None:
     """Eagerly build (only) the guest image for ``cfg`` — no VM booted.
 
     Best-effort, same posture as prewarm: a failure here surfaces
-    later, on the first real session open, with its usual error."""
+    later, on a session's first boot, with its usual error."""
     try:
         from dud.images import build as build_rootfs
 
@@ -569,13 +569,15 @@ def start_vm_prewarm() -> "threading.Thread | None":
 
     - ``>= 1`` (default 1): boot-and-park that many warm VMs; the
       first thing a boot does is build the image, so a cold cache gets
-      built at startup too. First-touch session opens skip the boot.
+      built at startup too. A session's first boot takes a parked VM
+      and skips the boot.
     - ``0``: no idle VM RAM — but still bake the image in a background
-      thread, so a first open pays boot-only, never build+boot.
+      thread, so a first boot pays boot-only, never build+boot.
 
-    Studio never closes sessions during a run, so dud's pool would
-    otherwise sit empty until shutdown — every first switch to a
-    session after a restart paid a full boot."""
+    A session boots its VM on its first turn, not when it is opened
+    (see ``server._warm``). Studio never closes sessions during a run,
+    so dud's pool would otherwise sit empty until shutdown — the first
+    turn in each session after a restart would pay a full boot."""
     if os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower() != "dud-vm":
         return None
     _ensure_vm_cap()  # before the pool exists — it reads the env once
@@ -2660,10 +2662,10 @@ class Registry:
             # dataframes()+plotting() granted that is the difference
             # between a worker costing ~233ms / 111MB and ~12ms / 29MB
             # (measured on this venv), and studio holds a session worker
-            # per open workspace for its life — so it is memory, not
-            # just latency. The safety caveat is grants whose IMPORT
-            # starts a thread, which would leave the broker
-            # multi-threaded; studio grants only nontainer's own presets,
+            # for the life of every workspace that has run a turn — so
+            # it is memory, not just latency. The safety caveat is
+            # grants whose IMPORT starts a thread, which would leave the
+            # broker multi-threaded; studio grants only nontainer's own presets,
             # and the arrow allocator they'd otherwise trip on is pinned
             # in `nontainer_studio/__init__` before anything imports
             # pandas. Process-wide, not per-workspace — the first
