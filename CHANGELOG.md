@@ -68,6 +68,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Requires nontainer 0.8.0** (kvgit 0.4.1, monkeyfs 0.2.4).
+  - **Upgrading an existing store is one-way, so back up the store
+    directory first.** kvgit 0.4 reads it unchanged, but the first commit
+    stamps it with storage version 4, and older studio releases then
+    refuse to open it.
+  - The agno db now uses the studio's own `Store` instead of a path.
+    It reads through the same kvgit repository as the workspaces:
+    one connection pool on whichever backend the store uses, closed
+    with the store at shutdown.
+  - `ws-git` status, commit, checkout and diff now read only what
+    changed, so they no longer slow down as a workspace grows.
+
 - **nontainer 0.7.11, and a skill that no longer casts.** Handler
   returns encode numpy values, dates and NaN by themselves now, inside
   the handler's sandbox, and an unencodable value's `BAD RETURN` line
