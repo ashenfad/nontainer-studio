@@ -1117,8 +1117,9 @@ def test_a_kept_grandchild_holds_a_live_parents_branch(tmp_path):
 
 
 def test_the_sweep_leaves_a_delegate_the_registry_holds_open(registry):
-    """A kvgit handle pins its branch, so the store refuses to delete
-    one that is open — and a delegate with a run in flight is open."""
+    """Deleting the branch under a live workspace would leave it unable
+    to commit, so an open delegate is spared — and a delegate with a run
+    in flight is open."""
     registry.open("boss")
     child = registry.open_delegate("boss", "boss.scout")
 
@@ -1131,8 +1132,8 @@ def test_the_sweep_leaves_a_delegate_the_registry_holds_open(registry):
 
 def test_an_open_grandchild_holds_the_subtree_it_is_in(registry):
     """A delegate's own delegates go with it, so one of them being open
-    is the parent's problem too: the store refuses to delete a pinned
-    branch, and a sweep that asked anyway would lose the whole pass."""
+    is the parent's problem too: deleting the subtree would pull an open
+    workspace's branch out from under it, so the whole subtree stays."""
     registry.open("boss")
     registry.open_delegate("boss", "boss.scout")
     registry.open_delegate("boss.scout", "boss.scout.finch")
