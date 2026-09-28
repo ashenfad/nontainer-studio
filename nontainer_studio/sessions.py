@@ -3142,10 +3142,11 @@ class Registry:
         branches are deleted through the store directly.
 
         What is spared: a kept delegate; one dealt with inside the TTL;
-        one this registry still holds open, since a workspace handle
-        pins its branch and the store refuses to delete it (a delegate
-        with a run in flight is open and its job is `running`, so it is
-        spared twice); and a subtree holding either — a delegate's own
+        one this registry still holds open, since deleting the branch
+        under a live workspace would leave it reading a head nothing
+        reaches and failing its next commit (a delegate with a run in
+        flight is open and its job is `running`, so it is spared
+        twice); and a subtree holding either — a delegate's own
         delegates are taken with it, so one of them being kept or open
         leaves the whole subtree standing rather than deleting around
         it.

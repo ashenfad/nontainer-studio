@@ -570,13 +570,11 @@ def _store_tags(store) -> dict:
     """Every tag in the kvgit store, as kvgit stores it (scope prefixes
     included) — the only way to see what a publication really left
     behind in the scope that outlives its session."""
-    import kvgit
+    from kvgit import Repo
+    from kvgit.kv.disk import Disk
 
-    handle = kvgit.store(kind="disk", path=str(Path(store) / "kvgit"), branch="probe")
-    try:
-        return handle.tags()
-    finally:
-        handle.versioned.store.close()
+    with Repo(Disk(str(Path(store) / "kvgit"))) as repo:
+        return dict(repo.tags.items())
 
 
 def _registry(store) -> dict:
