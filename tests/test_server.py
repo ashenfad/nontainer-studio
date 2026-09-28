@@ -184,6 +184,42 @@ def test_native_thinking_streams_as_thinking_events(studio):
     assert [e["delta"] for e in events if e["type"] == "text"] == ["the answer"]
 
 
+def test_a_turn_warms_the_session_runtime(studio, monkeypatch):
+    """The worker (or a dud guest) starts on the first execution, so a
+    turn starts it on a worker thread, where the model call hides it.
+    Opening a session starts nothing."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.open("s1")
+    warmed = threading.Event()
+    monkeypatch.setattr(session.ws.runtime, "warm", warmed.set)
+    assert not warmed.is_set()
+
+    client.post("/api/sessions/s1/chat", json={"message": "go"})
+    _collect_until_done(client, "s1")
+    assert warmed.wait(5)
+
+
+def test_a_failed_warm_leaves_the_turn_alone(studio, monkeypatch):
+    """Warming is best-effort: a guest that will not boot fails again,
+    and is reported, at the first execution. The turn runs regardless."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.open("s1")
+    tried = threading.Event()
+
+    def refuse() -> None:
+        tried.set()
+        raise RuntimeError("no guest today")
+
+    monkeypatch.setattr(session.ws.runtime, "warm", refuse)
+    client.post("/api/sessions/s1/chat", json={"message": "go"})
+    events = _collect_until_done(client, "s1")
+    assert tried.wait(5)
+    assert events[-1]["type"] == "done"
+    assert not any(e["type"] == "error" for e in events)
+
+
 def test_artifact_events_harvest_from_tool_result_note(studio):
     """A tool result carrying a `[ui artifacts: ...]` note yields
     first-class `artifact` events, one per pair, positioned right after

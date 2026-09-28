@@ -68,6 +68,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Requires nontainer 0.8.1, and a turn starts the session's worker.**
+  nontainer 0.8.1 starts nothing when a workspace opens: the worker
+  behind `run_python`, or the guest on a dud rung, starts on the first
+  execution. Switching to a session to read it no longer costs a worker
+  or a VM. So that the first tool call does not pay for the start
+  instead (about 1.5s on `dud-vm`), each turn starts it on a worker
+  thread while the model reads the prompt. A failure there is only
+  logged, because the first execution tries again and reports it.
+
 - **Requires nontainer 0.8.0** (kvgit 0.4.1, monkeyfs 0.2.4).
   - **Upgrading an existing store is one-way, so back up the store
     directory first.** kvgit 0.4 reads it unchanged, but the first commit

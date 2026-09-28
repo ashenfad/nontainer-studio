@@ -435,6 +435,26 @@ def _keep_aborted_run(session: Any, run_id: str | None, note: str) -> None:
         )
 
 
+def _warm(session: Any) -> None:
+    """Start the session's worker, or boot its guest on a dud rung,
+    while the model reads the prompt.
+
+    nontainer starts either on the first execution, so without this
+    the first tool call of a session pays for it: about a second and a
+    half on dud-vm, a few milliseconds for a process worker. A turn
+    starts it on a worker thread instead, where the model call hides
+    it, and a session opened only to be read never starts one.
+
+    Best-effort, so a failure is only logged. A failed start leaves
+    nothing behind, and the first execution tries again and reports
+    whatever it meets.
+    """
+    try:
+        session.ws.runtime.warm()
+    except Exception:
+        log.debug("could not warm session %s", session.name, exc_info=True)
+
+
 class _RunState:
     """What one turn's stream has revealed so far: the run id, and
     whether the run was cancelled or ended in a provider error.
@@ -520,6 +540,7 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
     # And where a tool's worker thread reaches the transcript: this
     # turn's loop owns the event buffer.
     session.loop = asyncio.get_running_loop()
+    session.loop.run_in_executor(None, _warm, session)
     from_queue: list[str] = []
     try:
         while True:
