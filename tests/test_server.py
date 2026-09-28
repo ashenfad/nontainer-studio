@@ -4651,10 +4651,10 @@ def test_agent_sandbox_is_process_isolated_and_crash_proof(studio):
     client.post("/api/sessions", json={"name": "s1"})
     ws = registry.get("s1").ws
 
+    # The worker starts on the first execution, not at open.
+    assert ws.run_python("open('/kept.txt', 'w').write('x')").error is None
     proc = ws._sandbox._process  # only exists under process isolation
     assert proc.is_alive()
-
-    assert ws.run_python("open('/kept.txt', 'w').write('x')").error is None
     os.kill(proc.pid, signal.SIGKILL)
     proc.join(timeout=5.0)
 
