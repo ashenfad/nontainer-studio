@@ -1554,13 +1554,15 @@ class Registry:
         # this, from the same thread, on the way through _build_agent.
         self._lock = threading.RLock()
         # ONE agno db for the whole store: a branch per session, so the
-        # conversation is versioned with the files it produced. The
-        # store path is the same one the workspaces are built with (the
-        # db finds the kvgit store under it); ``store/agno`` holds the
-        # cross-session tables agno keeps outside a session — memories,
-        # metrics — which must not rewind with any one branch.
+        # conversation is versioned with the files it produced. It is
+        # handed the store itself, so it reads through the repository
+        # the workspaces write through — one pool of connections, on
+        # whatever backend the store keeps its data in, closed with the
+        # store. ``store/agno`` holds the cross-session tables agno
+        # keeps outside a session — memories, metrics — which must not
+        # rewind with any one branch.
         self.db = KvgitStoreDb(
-            self._store.path,
+            self._store,
             open=self.workspace_for,
             db_path=str(self._store.path / "agno"),
         )
