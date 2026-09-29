@@ -15,6 +15,9 @@ export default defineConfig({
         emptyOutDir: true,
     },
     server: {
+        // app.css takes its fonts from the vendored set beside the Python
+        // package, which is outside this directory
+        fs: { allow: ['..'] },
         proxy: Object.fromEntries(
             ['/api', '/preview', '/apps'].map((p) => [
                 p,

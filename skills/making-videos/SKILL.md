@@ -86,9 +86,14 @@ cat /workspace/skills/making-videos/references/hyperframes/css-animations.md # C
 - **Keep 80px clear at every edge,** as the reference's padding does.
   Text against an edge reads as cut off, and headers, labels and numbers
   that share a scene need room not to run into each other.
-- **Fonts and images come from the app.** A web font is a link to the
-  internet, so use the system font stack (`system-ui, sans-serif`) or a
-  font file in the workspace, and put images under `app/`.
+- **Fonts come from `vendor/fonts.css`.** System fonts differ from
+  machine to machine, so a video set in `system-ui` lays out differently
+  for each viewer, and a web font from the internet does not load here.
+  Link `vendor/fonts.css`, as the reference does, and pick from its seven
+  families; the Fonts section of `vendor.md` says what each is for.
+  Video is watched, not read: text 32px or larger and headlines 80px or
+  larger on the 1920×1080 stage, and weights far apart (400 against 800).
+- **Images come from the app:** put them under `app/`.
 
 ## Scenes and transitions
 

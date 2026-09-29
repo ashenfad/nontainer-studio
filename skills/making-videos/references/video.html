@@ -9,11 +9,14 @@
        and there is no internet here, so it is never optional. -->
   <script src="vendor/hyperframes.runtime.js"></script>
   <script src="vendor/anime.min.js"></script>
+  <!-- Fonts served with the app, so the video looks the same on every
+       machine: vendor.md lists the families. -->
+  <link rel="stylesheet" href="vendor/fonts.css" />
   <style>
     html, body {
       margin: 0; width: 1920px; height: 1080px; overflow: hidden;
       background: #0f172a; color: #f8fafc;
-      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-family: "Inter", sans-serif;
     }
     /* A scene fills the stage. The padding is the safe margin: nothing
        sits within 80px of an edge. */
@@ -33,7 +36,7 @@
     @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
 
     /* Scene 1: CSS entrances, timed from the scene's start. */
-    .title { font-size: 120px; font-weight: 700; letter-spacing: -2px;
+    .title { font-size: 120px; font-weight: 800; letter-spacing: -3px;
              animation: rise 1.2s cubic-bezier(.2,.8,.2,1) both; }
     .subtitle { font-size: 48px; color: #94a3b8;
                 animation: rise 1.2s cubic-bezier(.2,.8,.2,1) 0.4s both; }

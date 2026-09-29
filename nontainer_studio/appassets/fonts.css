@@ -1,0 +1,94 @@
+/* Fonts served with every app, so a page looks the same on every machine
+   and needs no network. Link this file, then name a family:
+
+     <link rel="stylesheet" href="vendor/fonts.css">
+     h1 { font-family: "Fraunces", serif; font-weight: 800; }
+
+   Each family is one variable font: any weight in its range, not only the
+   hundreds. Latin characters only. SIL Open Font License 1.1; each
+   family's license is fonts/LICENSE-<family>.txt.
+
+   font-display: block, so text waits for its font rather than appearing
+   in a fallback and then jumping. The files are local, so the wait is
+   short, and a video's frames never show the swap. */
+
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/inter.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/inter-italic.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Public Sans";
+  src: url("fonts/public-sans.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Public Sans";
+  src: url("fonts/public-sans-italic.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("fonts/space-grotesk.woff2") format("woff2");
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: block;
+}
+
+/* Fraunces carries its optical-size, SOFT and WONK axes as well:
+   font-variation-settings: "opsz" 144, "SOFT" 100; */
+@font-face {
+  font-family: "Fraunces";
+  src: url("fonts/fraunces.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  src: url("fonts/source-serif-4.woff2") format("woff2");
+  font-weight: 200 900;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Source Serif 4";
+  src: url("fonts/source-serif-4-italic.woff2") format("woff2");
+  font-weight: 200 900;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/jetbrains-mono.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: block;
+}
+
+/* Archivo has a width axis: font-stretch 62% is condensed, 125% is wide. */
+@font-face {
+  font-family: "Archivo";
+  src: url("fonts/archivo.woff2") format("woff2");
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-style: normal;
+  font-display: block;
+}

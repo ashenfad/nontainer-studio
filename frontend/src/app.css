@@ -4,8 +4,32 @@
  * Typography — the agex-studio voice, carried over: Fraunces (variable
  * serif, soft axis) for display, Public Sans for body, system mono for
  * code. One visual identity across the studio portfolio.
+ *
+ * The font files are the ones vendored for apps (appassets/fonts/), which
+ * the build copies into the bundle, so the shell makes no request off its
+ * own origin: an air-gapped studio looks the same as a connected one.
  * --------------------------------------------------------------------------- */
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:wght,SOFT@300..900,0..100&family=Public+Sans:wght@300..700&display=swap');
+@font-face {
+    font-family: 'Fraunces';
+    src: url('../../nontainer_studio/appassets/fonts/fraunces.woff2') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Public Sans';
+    src: url('../../nontainer_studio/appassets/fonts/public-sans.woff2') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Public Sans';
+    src: url('../../nontainer_studio/appassets/fonts/public-sans-italic.woff2') format('woff2');
+    font-weight: 100 900;
+    font-style: italic;
+    font-display: swap;
+}
 
 :root {
     --bg: #1a1a2e;

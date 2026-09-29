@@ -276,6 +276,10 @@ with `import { tableFromIPC } from 'apache-arrow'` (plain pages:
 rows, or for a download, read the skill's references/returns.md first.
 CSS: <script src="vendor/tailwind.js"></script> for tailwind utility
 classes (it compiles them in the browser; no build, no config file).
+Fonts: <link rel="stylesheet" href="vendor/fonts.css"> gives Inter,
+Public Sans, Space Grotesk, Fraunces, Source Serif 4, JetBrains Mono and
+Archivo, every weight of each (references/vendor.md says what each is
+for). System fonts differ from machine to machine; these do not.
 Video: a video here is an app too — an HTML composition that
 vendor/hyperframes-player.js plays, with a scrubber, animated with CSS
 keyframes or Anime.js (vendor/anime.min.js). Read the making-videos
