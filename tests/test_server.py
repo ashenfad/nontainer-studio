@@ -6613,7 +6613,8 @@ def test_the_skills_check_passes_on_the_reference_video(studio):
         {"goto": "index.html"},
         {"assert": "document.querySelector('hyperframes-player').duration === 10"},
     ]
-    result = session.runtime.test_app(steps)
+    # the skill says to call it at viewport "hd"
+    result = session.runtime.test_app(steps, viewport="hd")
     if result.load_error and "unavailable" in result.load_error:
         pytest.skip(result.load_error)  # no chromium
 
@@ -6625,12 +6626,91 @@ def test_the_skills_check_passes_on_the_reference_video(studio):
     )
     assert duration == "10"  # test_app reports values as text
     shots = [s for s in _skill_check_steps() if "screenshot" in s]
-    assert len(shots) == 3  # mid-scene, a scene boundary, mid-scene
+    assert len(shots) == 4  # three mid-scene, one on a boundary
+    assert {s.get("grid") for s in shots} == {"scenes"}
+    # ...which come back as ONE image, as wide as the 1920px stage
+    (grid,) = result.screenshots
+    png = session.ws.files.fs.read(grid)
+    assert int.from_bytes(png[16:20], "big") == 1920
     crossfade = next(
         r for r in result.results if "seek(3.25);" in r.action.get("eval", "")
     )
     assert crossfade.value == "True", crossfade  # both scenes partly visible
     assert not result.rejected  # nothing reached for a CDN
+
+
+def _published_token(client, registry) -> str:
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+    return client.post("/api/sessions/s1/publish").json()["token"]
+
+
+def test_a_snapshot_dropped_while_held_closes_when_the_last_request_lets_go(
+    studio,
+):
+    """Out of routing, then closed: a snapshot a request still holds
+    when its app is unpublished (or repointed) is retired, not closed,
+    so a request that looked it up just before the drop still has a
+    snapshot that runs handlers. On a dud rung a closed one refuses
+    them. The last request out closes it."""
+    client, registry = studio
+    token = _published_token(client, registry)
+    held = registry.acquire_snapshot(token)
+    assert held is not None
+
+    assert client.delete(f"/api/apps/{token}").status_code == 200
+    assert registry.resolve(token) is None  # out of routing
+    assert not held._closed  # but not closed under the request
+    registry.release_snapshot(held)
+    assert held._closed
+    assert registry._holds == {} and registry._retired == {}
+
+
+def test_a_held_dud_snapshot_still_runs_handlers_after_its_app_is_dropped(
+    studio, monkeypatch
+):
+    """Why holding matters: on the dud rung a closed snapshot refuses
+    handlers (`DudExecutor is closed`), so a request that looked the
+    snapshot up just before an unpublish would have failed."""
+    pytest.importorskip("dud", reason="the [dud] extra is optional (3.11+)")
+    from nontainer.apps import AppRuntime
+    from nontainer.apps import request as make_request
+
+    monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "dud")
+    client, registry = studio
+    token = _published_token(client, registry)
+    held = registry.acquire_snapshot(token)
+    assert client.delete(f"/api/apps/{token}").status_code == 200
+
+    wire = AppRuntime(held, registry.apps, frozen=True).dispatch(
+        make_request("GET", "/api/count")
+    )
+    assert wire.status == 200, wire.content
+    registry.release_snapshot(held)
+    assert held._closed
+
+
+def test_a_snapshot_nothing_holds_closes_when_dropped(studio):
+    client, registry = studio
+    token = _published_token(client, registry)
+    snapshot = registry.resolve(token)
+    assert client.delete(f"/api/apps/{token}").status_code == 200
+    assert snapshot._closed
+
+
+def test_a_served_request_lets_go_of_its_snapshot(studio):
+    """The /apps mount acquires the snapshot for each request and
+    releases it once the response is sent, so a request never holds
+    one past its end."""
+    client, registry = studio
+    token = _published_token(client, registry)
+    r = client.get(f"/apps/{token}/api/count")
+    assert r.status_code == 200, r.text
+    assert registry._holds == {}
+    # and a snapshot served that way still closes at once when dropped
+    snapshot = registry.resolve(token)
+    assert client.delete(f"/api/apps/{token}").status_code == 200
+    assert snapshot._closed
 
 
 BROKEN_SCRUB = b"""<!doctype html><html><head>

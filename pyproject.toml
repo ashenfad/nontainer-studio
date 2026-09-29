@@ -12,7 +12,7 @@ dependencies = [
     # Floors on nontainer are hard: the studio speaks the current
     # surface with no compatibility layer. What each release changed
     # is in nontainer's changelog.
-    "nontainer[agno,apps]>=0.8.1",
+    "nontainer[agno,apps]>=0.8.2",
     # A turn that hits a provider error resumes in place through agno
     # 3's continue of an errored run; agno 2 has no such path, and the
     # nontainer extra alone only guarantees agno 2.1.

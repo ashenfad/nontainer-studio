@@ -41,6 +41,7 @@ Copy rather than retype; it is four calls instead of a few hundred
 lines:
 
 ```sh
+mkdir -p /workspace/app/api /workspace/tests
 cp /workspace/skills/building-apps/references/app.html       /workspace/app/index.html
 cp /workspace/skills/building-apps/references/app.jsx        /workspace/app/app.jsx
 cp /workspace/skills/building-apps/references/format.js      /workspace/app/format.js

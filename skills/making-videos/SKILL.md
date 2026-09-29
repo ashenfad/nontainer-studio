@@ -29,6 +29,7 @@ them into the app and change the content:
 ```sh
 cat /workspace/skills/making-videos/references/video.html
 cat /workspace/skills/making-videos/references/index.html
+mkdir -p /workspace/app
 cp /workspace/skills/making-videos/references/index.html /workspace/app/index.html
 cp /workspace/skills/making-videos/references/video.html /workspace/app/video.html
 ```
@@ -211,8 +212,11 @@ inside it still use the video's absolute time (3000 for a scene at 3s).
 `test_app` loads the player page by default. Go to the composition
 itself to ask it questions: `window.__player` is the runtime's handle,
 with `seek(seconds)`, `getTime()` and `getDuration()`. A seek takes
-effect at once. Seek, assert what should be on screen, and take a
-screenshot to look at the frame:
+effect at once.
+
+Call `test_app` with **`viewport: "hd"`**. The stage is 1920×1080, and at
+the default size every screenshot of it loses its right third. Then one
+call checks the whole video:
 
 ```json
 [
@@ -221,12 +225,14 @@ screenshot to look at the frame:
   {"eval": "window.__player.getDuration()"},
   {"eval": "window.__player.seek(1.5)"},
   {"assert": "getComputedStyle(document.querySelector('#scene-title')).visibility === 'visible'"},
-  {"screenshot": true},
+  {"screenshot": true, "grid": "scenes", "label": "1.5s title"},
   {"eval": "window.__player.seek(3.25)"},
-  {"screenshot": true},
+  {"screenshot": true, "grid": "scenes", "label": "3.25s crossfade"},
   {"eval": "window.__player.seek(6)"},
   {"assert": "parseFloat(getComputedStyle(document.querySelector('#q4')).height) > 500"},
-  {"screenshot": true},
+  {"screenshot": true, "grid": "scenes", "label": "6s chart"},
+  {"eval": "window.__player.seek(9.5)"},
+  {"screenshot": true, "grid": "scenes", "label": "9.5s closing"},
   {"eval": "window.__snap = () => [...document.querySelectorAll('#root *')].map(e => { const s = getComputedStyle(e); return [s.opacity, s.transform, s.width, s.height, s.visibility].join(); }).join('|'); window.__player.seek(6); window.__at6 = window.__snap(); true"},
   {"eval": "window.__player.seek(9.5)"},
   {"eval": "window.__player.seek(6)"},
@@ -234,10 +240,13 @@ screenshot to look at the frame:
 ]
 ```
 
+The screenshots that name a `grid` come back as **one** image, each frame
+captioned with its `label`, and a grid counts once against the
+screenshot limit: up to 12 frames, so a long video still fits one call.
 What to cover, with the times changed to your video's:
 
-- **The middle of each scene and the last second,** each with a
-  screenshot. Look at them, not only at the asserts: that is where text
+- **The middle of each scene and the last second,** each a frame in the
+  grid. Look at the image, not only at the asserts: that is where text
   off the stage and labels running into numbers show.
 - **A scene boundary** (3.25 above, inside the first crossfade). Both
   scenes should be partly visible; an empty frame means a cut to black.
@@ -246,15 +255,17 @@ What to cover, with the times changed to your video's:
   mismatch means something is not a function of the time; the usual
   cause is two Anime.js steps on one property.
 
-Then `{"goto": "index.html"}` once, to see the player itself load.
+A grid's frames are small. To read one frame in detail, take a plain
+`{"screenshot": true}` at that moment as well. Then `{"goto":
+"index.html"}` once, to see the player itself load.
 
 ## Done
 
 A video is done when:
 
-1. `test_app` passed seeking into every scene and onto a scene boundary,
-   with a screenshot of each, and the backwards scrub matched. Your report
-   says what you checked.
+1. `test_app` at `viewport: "hd"` passed seeking into every scene and
+   onto a scene boundary, with a grid frame of each, and the backwards
+   scrub matched. Your report says what you checked.
 2. The player page loads it with no rejected requests.
 3. Every animation is CSS, WAAPI or a registered Anime.js timeline, and
    the root's `data-duration` covers the last scene.
