@@ -1549,6 +1549,11 @@ class Registry:
         # disk on the hot path — one dict lookup per served request,
         # the manifest read only on a miss.
         self._published: dict[str, tuple[str, Workspace]] = {}
+        # Requests holding each served snapshot (by id), and snapshots
+        # dropped from `_published` while held: those close when the
+        # last request holding them lets go (see acquire_snapshot).
+        self._holds: dict[int, int] = {}
+        self._retired: dict[int, Workspace] = {}
         # store-relative db path -> the ONE open handle to that file.
         # A fork, a delegate and a published app name the db of the
         # session they came from, so several rows name one file;
@@ -4452,18 +4457,53 @@ class Registry:
             self._published[token] = (version, snapshot)
             return snapshot
 
+    def acquire_snapshot(self, token: str) -> Workspace | None:
+        """:meth:`resolve`, counting one more request as holding the
+        snapshot until it calls :meth:`release_snapshot`. The count is taken
+        under the same lock a drop takes, so no snapshot can be closed
+        between being handed out and being counted."""
+        with self._lock:
+            ws = self.resolve(token)
+            if ws is not None:
+                self._holds[id(ws)] = self._holds.get(id(ws), 0) + 1
+            return ws
+
+    def release_snapshot(self, ws: Workspace) -> None:
+        """A request is done with a snapshot it acquired. The last one
+        out of a snapshot that was dropped while held closes it, outside
+        the lock: closing a dud-backed snapshot waits for its guest."""
+        with self._lock:
+            key = id(ws)
+            left = self._holds.get(key, 0) - 1
+            if left > 0:
+                self._holds[key] = left
+                return
+            self._holds.pop(key, None)
+            retired = self._retired.pop(key, None)
+        if retired is not None:
+            retired.close()
+
     def _drop_snapshots(self, token: str, version: str | None = None) -> None:
         """Forget an app's cached snapshot — unconditionally, or only if
         it is serving ``version``. The next request rebuilds it from the
         manifest. Caller holds ``_lock``.
 
-        A request already dispatching on that workspace keeps its
-        reference; closing it under one would be the race, so this
-        drops and closes only what the router will not hand out again."""
+        Out of routing first, then closed: nontainer's order for evicting
+        a served snapshot. A closed snapshot runs no new handlers (on a
+        dud rung a request that reaches one raises), and a request can
+        look the snapshot up just before this and dispatch just after.
+        So a snapshot a request still holds is retired rather than
+        closed, and the last request out closes it (:meth:`release_snapshot`).
+        That also keeps a dud close, which waits for an in-flight
+        handler, from running under this lock."""
         served = self._published.get(token)
         if served is None or (version is not None and served[0] != version):
             return
-        self._published.pop(token)[1].close()
+        ws = self._published.pop(token)[1]
+        if self._holds.get(id(ws)):
+            self._retired[id(ws)] = ws
+        else:
+            ws.close()
 
     # -- the registry of apps ----------------------------------------------
 
@@ -5162,6 +5202,12 @@ class Registry:
             for _, snapshot in self._published.values():
                 snapshot.close()
             self._published.clear()
+            # Shutting down: a request still holding one of these is
+            # being cut off with the server anyway.
+            for snapshot in self._retired.values():
+                snapshot.close()
+            self._retired.clear()
+            self._holds.clear()
             for db in self._dbs.values():
                 db.close()
             self._dbs.clear()
