@@ -6639,6 +6639,16 @@ def test_the_skills_check_passes_on_the_reference_video(studio):
     assert not result.rejected  # nothing reached for a CDN
 
 
+def test_the_server_module_defines_everything_before_its_main_guard():
+    """`python -m nontainer_studio.server` runs main() at the guard, so
+    anything defined below it does not exist yet when build_app needs
+    it. The guard stays the module's last statement."""
+    source = Path(server.__file__).read_text()
+    body = ast.parse(source).body
+    guard = body[-1]
+    assert isinstance(guard, ast.If) and "__main__" in ast.unparse(guard.test)
+
+
 def _published_token(client, registry) -> str:
     client.post("/api/sessions", json={"name": "s1"})
     _seed_app(registry.get("s1").ws)
