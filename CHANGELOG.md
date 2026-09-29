@@ -31,8 +31,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     them): Anime.js v4 and CSS animations, with CDN tags pointed at
     `vendor/` and the CLI steps removed. A spike on a real model (18
     videos over three document sets) found these the two worth carrying:
-    the Anime.js guide cut a text-effects prompt from 568s to under
-    220s, while the craft docs were rarely read and changed nothing.
+    on a text-effects prompt, runs that read the Anime.js guide took
+    151–265s against 568s without it; the craft docs were rarely read and changed nothing.
   - **Tips for the failures that spike found in every set:** scenes cut
     to black instead of crossfading (9 of 18 videos had an empty frame
     at a scene boundary), and two Anime.js steps on one property, which
