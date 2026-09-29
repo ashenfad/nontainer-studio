@@ -14,9 +14,13 @@ have made. To see a file's bytes, request it:
 
 | file | size | version | what it is |
 |---|---|---|---|
-| `README.md` | 10 KB | ours | the vendoring record: sources, checksums, and why each pin |
+| `README.md` | 13 KB | ours | the vendoring record: sources, checksums, and why each pin |
+| `anime.min.js` | 116 KB | 4.5.0 | Anime.js v4, the UMD build: `<script src>` gives `window.anime` (`anime.createTimeline`) |
 | `arrow.min.js` | 189 KB | 21.2.0 | apache-arrow, the UMD build: `<script src>` gives `window.Arrow` (`Arrow.tableFromIPC`) |
 | `arrow.mjs` | 4 KB | 21.2.0 | apache-arrow as a module, for `import { tableFromIPC } from 'apache-arrow'`; loads arrow.min.js |
+| `hyperframes-LICENSE.txt` | 11 KB | 0.8.92 | the Apache-2.0 license HyperFrames ships under |
+| `hyperframes-player.js` | 100 KB | 0.8.92 | the `<hyperframes-player>` element: plays a composition with controls |
+| `hyperframes.runtime.js` | 464 KB | 0.8.92 | the HyperFrames runtime a video composition loads: its clock, clips and seeking (skill: making-videos) |
 | `icons.min.js` | 15 KB | @mui/icons-material 6.x | a curated subset of @mui/icons-material (the names listed below) |
 | `jsx-loader.js` | 7 KB | ours | the loader: declares the import map, compiles the file named by data-app |
 | `mui-utils.js` | 1 KB | ours | the @mui/material/utils subpath the icon bundle imports (createSvgIcon) |

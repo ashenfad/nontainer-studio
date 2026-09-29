@@ -38,6 +38,35 @@ fetch() {
 fetch "https://cdn.plot.ly/plotly-3.7.0.min.js" "plotly.min.js"
 fetch "https://cdn.tailwindcss.com/3.4.17"      "tailwind.js"
 
+# HyperFrames: video as an HTML page (a composition) with a seekable
+# timeline, played by a web component. Apache-2.0. Pinned exactly and
+# copied as published, so each checksum is one anyone can check against
+# jsDelivr; its LICENSE comes along because neither bundle carries a
+# header. The player's GLOBAL build, not dist/hyperframes-player.js:
+# that one is an ES module with a chunk import, and a classic
+# <script src> of it dies on "Cannot use import statement outside a
+# module".
+#
+# No GSAP, though every HyperFrames example uses it. GSAP ships under
+# Webflow's own license, not an OSI one, and nothing here may carry a
+# license a corporate review has to argue about. The runtime reads
+# window.gsap only when it is there; without it, CSS and WAAPI
+# animations and Anime.js timelines are seeked by the runtime's own
+# adapters, on its own clock.
+#
+# Anime.js is the timeline library in GSAP's place: MIT, and v4, which
+# is the API the HyperFrames adapter seeks (`anime.createTimeline`, not
+# v3's `anime({...})`). The UMD bundle gives window.anime.
+HYPERFRAMES_VERSION="0.8.92"
+ANIME_VERSION="4.5.0"
+JSDELIVR="https://cdn.jsdelivr.net/npm"
+fetch "$JSDELIVR/@hyperframes/core@$HYPERFRAMES_VERSION/dist/hyperframe.runtime.iife.js" \
+      "hyperframes.runtime.js"
+fetch "$JSDELIVR/@hyperframes/player@$HYPERFRAMES_VERSION/dist/hyperframes-player.global.js" \
+      "hyperframes-player.js"
+fetch "$JSDELIVR/@hyperframes/core@$HYPERFRAMES_VERSION/LICENSE" "hyperframes-LICENSE.txt"
+fetch "$JSDELIVR/animejs@$ANIME_VERSION/dist/bundles/anime.umd.min.js" "anime.min.js"
+
 # --- bundled from npm --------------------------------------------------
 #
 # React + MUI as ONE self-contained ES module. esm.sh's ?bundle does not
@@ -282,7 +311,7 @@ node gen-arrow-module.mjs > "$OLDPWD/$DEST/arrow.mjs"
 cd "$OLDPWD"
 
 echo
-for f in "$DEST"/*.js "$DEST"/*.mjs; do
+for f in "$DEST"/*.js "$DEST"/*.mjs "$DEST"/*.txt; do
   printf '  %s  %8s KB  %s\n' \
     "$(shasum -a 256 "$f" | cut -d' ' -f1)" \
     "$(( $(wc -c < "$f") / 1024 ))" "$(basename "$f")"

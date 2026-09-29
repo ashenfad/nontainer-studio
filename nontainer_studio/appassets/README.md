@@ -19,17 +19,30 @@ internet can still write an app that renders.
 | `sucrase.min.js` | npm `sucrase@3`, bundled | `8bbf28da8aedb231f4315800f6b0d7310706ae4f1e6e4cdbca2311bbfb7a2913` |
 | `arrow.min.js` | npm `apache-arrow@21.2.0`, `Arrow.es2015.min.js` as published | `4bb22da0967f403eea39bc51820552e729ed1ad3e50c2568fb43d818bc1ca4d0` |
 | `arrow.mjs` | generated from `arrow.min.js`'s exports — a module face over it | `fd6f20fe66b2d2696cfdaf5d60e97d9afa8b715110d49b2cc512d5f9b0b687a6` |
+| `hyperframes.runtime.js` | npm `@hyperframes/core@0.8.92`, `dist/hyperframe.runtime.iife.js` as published | `56b7dcafdf9042635300ca2e07ecd09279d3d2c92a5771385d5fa7016c527c60` |
+| `hyperframes-player.js` | npm `@hyperframes/player@0.8.92`, `dist/hyperframes-player.global.js` as published | `28dcf0c5bb95a256206ab5f660fba07a883a09bfb561f5f85a9c77d392544723` |
+| `hyperframes-LICENSE.txt` | npm `@hyperframes/core@0.8.92`, `LICENSE` | `4259155fb06f127687ee7b0a8a3682d45132db0f2da26cbc0b7a2d1e796436b8` |
+| `anime.min.js` | npm `animejs@4.5.0`, `dist/bundles/anime.umd.min.js` as published | `8d5b3a58a1f64023a04a4cedeef135a2263b18da04b35177ac13438a0bad033b` |
 | `jsx-loader.js` | **ours** — hand-written, not generated | `d411a706fa7f225db507370c659b43f9b60cee5af8170763acd4d028f8d51159` |
 | `mui-utils.js` | **ours** — subpath shim for the icon bundle | `752c227b022b40b2de39d925f56b32f9264dd964a7bd0399e54ca175114c21f9` |
 | `theme.css` | **ours** — the shell's palette, app-facing | `46abd6279d31325886178ead73abce4d0c2ce39edbaa46fa6c8828ba0aa8361e` |
 | `theme.js` | **ours** — that palette as a MUI theme | `09d0ff29e9a032e84dd4412d141fe8554f89e17248d36afed5bf3ae86bbb8e7d` |
 
-MIT licensed, except apache-arrow (`arrow.min.js`, and `arrow.mjs`
-generated from it), which is Apache-2.0: its license header is kept at
-the top of the file, and its NOTICE reads *Apache Arrow JavaScript,
-Copyright 2017-2025 The Apache Software Foundation. This product
-includes software developed at The Apache Software Foundation.* ~6.8 MB
-total, of which plotly is 4.9 MB.
+MIT licensed, except two Apache-2.0 libraries:
+
+- apache-arrow (`arrow.min.js`, and `arrow.mjs` generated from it). Its
+  license header is kept at the top of the file, and its NOTICE reads
+  *Apache Arrow JavaScript, Copyright 2017-2025 The Apache Software
+  Foundation. This product includes software developed at The Apache
+  Software Foundation.*
+- HyperFrames (`hyperframes.runtime.js`, `hyperframes-player.js`),
+  Copyright 2026 HeyGen, Inc. Neither bundle carries a header, so the
+  license travels beside them as `hyperframes-LICENSE.txt`, copied from
+  the same npm release. HyperFrames ships no NOTICE file.
+
+Every file here is under an OSI-approved license, and that is a rule,
+not a coincidence: see "No GSAP" below. ~7.5 MB total, of which plotly
+is 4.9 MB.
 
 ## Regenerating
 
@@ -53,6 +66,39 @@ script, once and only if the page has not, and re-exports the global,
 so a page gets one Arrow and the bytes ship once. Its export list is
 read from the build, for the reason the React list is (below). Pinned
 exactly, unlike the MUI majors, because nothing is rebuilt.
+
+**HyperFrames for video, and no GSAP.** A video here is an app: an
+HTML composition whose clips and animations the HyperFrames runtime
+seeks on its own clock, shown by the `<hyperframes-player>` element with
+play, pause and a scrubber. Nothing renders an MP4, so neither the CLI
+nor a headless browser is involved; the skill is `making-videos`.
+
+HyperFrames' own examples animate with GSAP, which it does not bundle:
+the runtime reads `window.gsap` when a page has loaded it. GSAP is
+licensed by Webflow under its own terms, which restrict the kinds of
+tools it may be used in, and a library an operator's legal review has
+to read a custom license for is one this directory does not carry. The
+runtime's other adapters need nothing from GSAP: CSS keyframes, WAAPI
+and Anime.js are all seeked on the runtime's clock. Anime.js v4 (MIT)
+takes GSAP's place for timelines, staggers and easing. One difference
+shows, and the skill teaches it: the runtime nests a GSAP timeline in
+a sub-composition at that composition's start, but Anime.js and WAAPI
+run on the video's clock, so their positions are absolute times.
+
+Three details in the choice of files:
+
+- The player's **global** build. `dist/hyperframes-player.js` is an ES
+  module with a chunk import, and a plain `<script src>` of it fails
+  with *"Cannot use import statement outside a module"*.
+- The runtime is a file of its own, loaded by the composition. The
+  player injects it from jsDelivr when a composition lacks it, which
+  offline means a video that loads and never moves. The skill makes the
+  runtime tag the first line of every composition, and the e2e test
+  asserts a video in the preview makes no request off the origin.
+- Anime.js as its UMD bundle, `window.anime`. The HyperFrames adapter
+  seeks what a composition pushes onto `window.__hfAnime`, and v4's
+  `anime.createTimeline` is the API it seeks; v3's `anime({...})`,
+  which models tend to write, does not exist in this build.
 
 **Plotly 3.7.0, not 4.x.** 4.0.0 removed the `scattermapbox` /
 `choroplethmapbox` trace names. Those are what a model writes from

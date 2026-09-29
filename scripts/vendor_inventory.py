@@ -42,6 +42,10 @@ DESCRIPTIONS = {
     "arrow.min.js": "apache-arrow, the UMD build: `<script src>` gives `window.Arrow` (`Arrow.tableFromIPC`)",
     "arrow.mjs": "apache-arrow as a module, for `import { tableFromIPC } from 'apache-arrow'`; loads arrow.min.js",
     "README.md": "the vendoring record: sources, checksums, and why each pin",
+    "hyperframes.runtime.js": "the HyperFrames runtime a video composition loads: its clock, clips and seeking (skill: making-videos)",
+    "hyperframes-player.js": "the `<hyperframes-player>` element: plays a composition with controls",
+    "hyperframes-LICENSE.txt": "the Apache-2.0 license HyperFrames ships under",
+    "anime.min.js": "Anime.js v4, the UMD build: `<script src>` gives `window.anime` (`anime.createTimeline`)",
 }
 
 
@@ -72,6 +76,12 @@ def _version(name: str, text: str, fetch: str) -> str:
         return f"{m.group(1) if m else '?'}.x"
     if name in ("arrow.min.js", "arrow.mjs"):
         m = re.search(r'ARROW_VERSION="([^"]+)"', fetch)
+        return m.group(1) if m else "?"
+    if name.startswith("hyperframes"):
+        m = re.search(r'HYPERFRAMES_VERSION="([^"]+)"', fetch)
+        return m.group(1) if m else "?"
+    if name == "anime.min.js":
+        m = re.search(r"@version v(\d+\.\d+\.\d+)", text)
         return m.group(1) if m else "?"
     return "ours"
 
