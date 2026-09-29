@@ -5040,7 +5040,8 @@ def test_shipped_skills_reference_no_cdn():
     skills = Path(__file__).parent.parent / "skills"
     offenders = []
     for path in skills.rglob("*"):
-        if not path.is_file():
+        # A license names its own URL; nothing copies it into an app.
+        if not path.is_file() or path.name == "LICENSE":
             continue
         for m in re.finditer(r"https?://[^\s\"'<>)]+", path.read_text()):
             offenders.append(f"{path.relative_to(skills)}: {m.group()}")
@@ -6594,7 +6595,13 @@ def test_the_skills_check_passes_on_the_reference_video(studio):
     session.ws.commit()
 
     steps = _skill_check_steps() + [
-        # past the skill's steps: the frame between scenes, and the end
+        # past the skill's steps: both scenes mid-crossfade, then the end
+        {
+            "eval": "window.__player.seek(3.25); "
+            "[+getComputedStyle(document.querySelector('#scene-title .scene-out')).opacity, "
+            "+getComputedStyle(document.querySelector('#scene-chart .scene-in')).opacity]"
+            ".every(o => o > 0.2 && o < 0.9)"
+        },
         {"eval": "window.__player.seek(8.5)"},
         {
             "assert": "getComputedStyle(document.querySelector('#scene-close')).visibility === 'visible'"
@@ -6617,8 +6624,82 @@ def test_the_skills_check_passes_on_the_reference_video(studio):
     )
     assert duration == "10"  # test_app reports values as text
     shots = [s for s in _skill_check_steps() if "screenshot" in s]
-    assert len(shots) == 2
+    assert len(shots) == 3  # mid-scene, a scene boundary, mid-scene
+    crossfade = next(
+        r for r in result.results if "seek(3.25);" in r.action.get("eval", "")
+    )
+    assert crossfade.value == "True", crossfade  # both scenes partly visible
     assert not result.rejected  # nothing reached for a CDN
+
+
+BROKEN_SCRUB = b"""<!doctype html><html><head>
+<script src="vendor/hyperframes.runtime.js"></script><script src="vendor/anime.min.js"></script>
+</head><body>
+<div id="root" data-composition-id="main" data-start="0" data-duration="10"
+     data-width="1920" data-height="1080">
+  <div class="clip" id="scene-title" data-start="0" data-duration="10">
+    <div id="q4" style="height: 600px"></div><div id="tag">tag</div>
+  </div>
+</div>
+<script>
+  // Two steps on one property of one element: right forwards, wrong
+  // after a backwards seek -- the mistake the skill's check exists for.
+  const tl = anime.createTimeline({ autoplay: false });
+  tl.add('#tag', { opacity: [0, 1], duration: 500 }, 1000)
+    .add('#tag', { opacity: [1, 0], duration: 500 }, 8000);
+  window.__hfAnime = [tl];
+</script></body></html>"""
+
+
+def test_the_skills_scrub_check_catches_two_steps_on_one_property(studio):
+    """The backwards-scrub steps are there to catch one mistake, seen in
+    a real model's video: two Anime.js steps on the same property. The
+    same steps pass on the reference (above) and fail on this."""
+    pytest.importorskip("playwright")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    fs = session.ws.files.fs
+    fs.makedirs("/workspace/app", exist_ok=True)
+    fs.write("/workspace/app/video.html", BROKEN_SCRUB)
+    session.ws.commit()
+
+    steps = _skill_check_steps()
+    scrub = steps[
+        steps.index(next(s for s in steps if "__snap =" in s.get("eval", ""))) :
+    ]
+    result = session.runtime.test_app(
+        [{"goto": "video.html"}, {"assert": "window.__playerReady === true"}] + scrub,
+        assert_timeout_ms=1500,
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)  # no chromium
+    assert not result.ok
+    assert not result.results[-1].ok  # the comparison is what failed
+
+
+ADAPTED = VIDEO_SKILL / "references" / "hyperframes"
+
+
+def test_the_adapted_hyperframes_guides_carry_their_license_and_fit_here():
+    """Apache-2.0 asks for the license and a note of what changed; this
+    workspace asks that a guide not send an agent at a CLI, a CDN or a
+    library that is not here."""
+    assert "Apache License" in (ADAPTED / "LICENSE").read_text()
+    guides = sorted(ADAPTED.glob("*.md"))
+    assert [g.name for g in guides] == ["animejs.md", "css-animations.md"]
+    skill = (VIDEO_SKILL / "SKILL.md").read_text()
+    for guide in guides:
+        text = guide.read_text()
+        head = text.split("\n\n", 1)[0]
+        assert "Adapted from HyperFrames v0.8.92" in head, guide.name
+        assert "Copyright 2026 HeyGen, Inc." in head, guide.name
+        assert "Changed for this workspace" in head, guide.name
+        assert "npx" not in text and "hyperframes lint" not in text, guide.name
+        assert "gsap" not in text.lower(), guide.name
+        assert f"references/hyperframes/{guide.name}" in skill, guide.name
+    anime = (ADAPTED / "animejs.md").read_text()
+    assert '<script src="vendor/anime.min.js"></script>' in anime
 
 
 def test_an_existing_session_is_topped_up_with_the_seed_files_it_lacks(studio):

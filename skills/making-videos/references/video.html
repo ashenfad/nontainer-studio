@@ -15,11 +15,24 @@
       background: #0f172a; color: #f8fafc;
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
     }
-    .scene { position: absolute; inset: 0; display: flex; flex-direction: column;
-             align-items: center; justify-content: center; gap: 32px; }
+    /* A scene fills the stage. The padding is the safe margin: nothing
+       sits within 80px of an edge. */
+    .scene { position: absolute; inset: 0; }
+    .scene-in, .scene-out { position: absolute; inset: 0; }
+    .scene-out { padding: 80px; box-sizing: border-box; display: flex;
+                 flex-direction: column; align-items: center; justify-content: center; gap: 32px; }
 
-    /* Scene 1: CSS keyframes. The runtime seeks a CSS animation
-       relative to the start of the clip it sits in. */
+    /* Crossfades. Consecutive scenes overlap by 0.5s: the outgoing one's
+       .scene-out fades out while the incoming one's .scene-in fades in.
+       Two wrappers, so each element has ONE opacity animation (two on the
+       same property fight). Both are timed from their own clip's start:
+       --out is the clip's duration minus 0.5s. */
+    .scene-in  { animation: fade-in 0.5s ease-out both; }
+    .scene-out { animation: fade-out 0.5s ease-in var(--out) both; }
+    @keyframes fade-in  { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
+
+    /* Scene 1: CSS entrances, timed from the scene's start. */
     .title { font-size: 120px; font-weight: 700; letter-spacing: -2px;
              animation: rise 1.2s cubic-bezier(.2,.8,.2,1) both; }
     .subtitle { font-size: 48px; color: #94a3b8;
@@ -36,7 +49,7 @@
     .labels div { width: 180px; text-align: center; }
 
     .closing { font-size: 96px; font-weight: 700;
-               animation: rise 1s cubic-bezier(.2,.8,.2,1) both; }
+               animation: rise 1s cubic-bezier(.2,.8,.2,1) 0.3s both; }
   </style>
 </head>
 <body>
@@ -46,32 +59,43 @@
 
     <!-- Each scene is a clip: shown from data-start for data-duration
          seconds, hidden otherwise. The runtime owns a clip's visibility,
-         so animate what is inside it, never the clip itself. -->
-    <div class="scene clip" id="scene-title" data-start="0" data-duration="3">
-      <div class="title">Quarterly revenue</div>
-      <div class="subtitle">Four quarters, one direction</div>
+         so animate what is inside it, never the clip itself. Each scene
+         starts 0.5s before the last one ends: that overlap is the
+         crossfade. -->
+    <div class="scene clip" id="scene-title" data-start="0" data-duration="3.5">
+      <div class="scene-in"><div class="scene-out" style="--out: 3s">
+        <div class="title">Quarterly revenue</div>
+        <div class="subtitle">Four quarters, one direction</div>
+      </div></div>
     </div>
 
-    <div class="scene clip" id="scene-chart" data-start="3" data-duration="4.5">
-      <div class="chart">
-        <div class="bar" id="q1"><span>$1.2M</span></div>
-        <div class="bar" id="q2"><span>$1.9M</span></div>
-        <div class="bar" id="q3"><span>$2.4M</span></div>
-        <div class="bar" id="q4"><span>$3.1M</span></div>
-      </div>
-      <div class="labels"><div>Q1</div><div>Q2</div><div>Q3</div><div>Q4</div></div>
+    <div class="scene clip" id="scene-chart" data-start="3" data-duration="5">
+      <div class="scene-in"><div class="scene-out" style="--out: 4.5s">
+        <div class="chart">
+          <div class="bar" id="q1"><span>$1.2M</span></div>
+          <div class="bar" id="q2"><span>$1.9M</span></div>
+          <div class="bar" id="q3"><span>$2.4M</span></div>
+          <div class="bar" id="q4"><span>$3.1M</span></div>
+        </div>
+        <div class="labels"><div>Q1</div><div>Q2</div><div>Q3</div><div>Q4</div></div>
+      </div></div>
     </div>
 
     <div class="scene clip" id="scene-close" data-start="7.5" data-duration="2.5">
-      <div class="closing">Up 158% on the year</div>
+      <div class="scene-in"><div class="scene-out" style="--out: 2.5s">
+        <div class="closing">Up 158% on the year</div>
+      </div></div>
     </div>
   </div>
 
   <script>
     // Anime.js runs on the VIDEO's clock, so positions are absolute
     // times in milliseconds: the chart scene starts at 3s, so its first
-    // bar starts at 3000. autoplay: false, and push the timeline onto
+    // bar starts at 3300. autoplay: false, and push the timeline onto
     // window.__hfAnime -- the runtime seeks only what is registered.
+    // One step per property per element: each bar's height is animated
+    // once and each label's opacity once. The scene's fade-out is the
+    // wrapper's, above, not a second step on these.
     const heights = { q1: 230, q2: 365, q3: 460, q4: 595 };
     const tl = anime.createTimeline({ autoplay: false });
     Object.entries(heights).forEach(([id, h], i) => {

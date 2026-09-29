@@ -21,10 +21,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     under an OSI license. CSS keyframes, WAAPI and Anime.js are seeked
     by the runtime without it.
   - **A `making-videos` skill:** a working 10-second reference (player
-    page plus composition), the composition rules, animating with CSS
-    and Anime.js, what breaks scrubbing, and a `test_app` check that
-    seeks into each scene and screenshots it. A test runs that check,
-    taken from the skill, against the reference.
+    page plus composition, crossfading between scenes), the composition
+    rules, transitions, animating with CSS and Anime.js, what breaks
+    scrubbing, and a `test_app` check that seeks into each scene and onto
+    a scene boundary, screenshots them, and scrubs backwards to compare.
+    A test runs that check, taken from the skill, against the reference,
+    and another shows it failing on two Anime.js steps on one property.
+  - **Two guides adapted from HyperFrames** (Apache-2.0, license beside
+    them): Anime.js v4 and CSS animations, with CDN tags pointed at
+    `vendor/` and the CLI steps removed. A spike on a real model (18
+    videos over three document sets) found these the two worth carrying:
+    the Anime.js guide cut a text-effects prompt from 568s to under
+    220s, while the craft docs were rarely read and changed nothing.
+  - **Tips for the failures that spike found in every set:** scenes cut
+    to black instead of crossfading (9 of 18 videos had an empty frame
+    at a scene boundary), and two Anime.js steps on one property, which
+    scrubs backwards wrong (2 of 18). With the tips and the new
+    reference, six more videos had neither.
   - The agent's app notes name the video files and point at the skill.
   - An e2e test plays the reference in the preview pane, where the
     player's own iframe nests inside the sandboxed frame, and asserts
