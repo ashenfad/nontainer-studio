@@ -448,6 +448,15 @@ def _warm(session: Any) -> None:
     Best-effort, so a failure is only logged. A failed start leaves
     nothing behind, and the first execution tries again and reports
     whatever it meets.
+
+    The turn does not wait for it. A turn with no tool call can end
+    mid-boot, and the session can then be deleted or the server shut
+    down while the warm still runs. That is safe: the executor holds
+    one lock across the whole start and across its close, and the
+    workspace closes its executor before its store. So a close waits
+    for a start in flight and then parks what it started, and a warm
+    that arrives after the close does nothing. Waiting here instead
+    would keep the session busy until a cold boot finished.
     """
     try:
         session.ws.runtime.warm()
