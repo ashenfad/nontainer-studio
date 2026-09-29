@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **An unpublish or repoint no longer fails a request mid-flight on a
+  dud rung, or stalls the studio behind one.** The published-app cache
+  closed a snapshot the moment its app was unpublished or repointed,
+  while holding the registry lock. On `dud`/`dud-vm` that went wrong
+  two ways:
+  - a request that had looked the snapshot up just before hit a closed
+    executor (`DudExecutor is closed`, a 500);
+  - the close waited for any handler still running on the guest, and
+    every registry operation waited behind it.
+
+  The `/apps` mount now counts the requests holding each snapshot. A
+  dropped snapshot leaves routing at once but closes when the last
+  request lets go, off the lock. That is nontainer 0.8.2's documented
+  eviction order: out of routing, then close.
+
+### Changed
+
+- **Requires nontainer 0.8.2.**
+  - **The video skill checks a whole video in one call.** `test_app`
+    at `viewport: "hd"` sees the 1920×1080 stage whole. Before, every
+    screenshot lost its right third. The screenshots name a `grid`, so
+    every scene and the crossfade come back as one captioned image
+    that counts once against the screenshot limit. An agent making a
+    7-scene video had needed three calls and never saw a full frame.
+  - A test runs the recipe, taken from the skill, at that viewport,
+    and checks it comes back as one 1920-wide image.
+- **The skills' copy blocks make their directories first.** A fresh
+  session has no `/workspace/app`, so the `cp` into it failed until
+  the agent made it. Both `making-videos` and `building-apps` now start
+  with `mkdir -p`.
+
 ### Added
 
 - **Fonts are vendored, for apps and for the studio itself.** System
