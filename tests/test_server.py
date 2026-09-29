@@ -6682,9 +6682,9 @@ def test_a_held_dud_snapshot_still_runs_handlers_after_its_app_is_dropped(
     held = registry.acquire_snapshot(token)
     assert client.delete(f"/api/apps/{token}").status_code == 200
 
-    wire = AppRuntime(held, registry.apps, frozen=True).dispatch(
-        make_request("GET", "/api/count")
-    )
+    wire = AppRuntime(
+        held, registry.apps, frozen=True, log_sink=lambda m: None
+    ).dispatch(make_request("GET", "/api/count"))
     assert wire.status == 200, wire.content
     registry.release_snapshot(held)
     assert held._closed
