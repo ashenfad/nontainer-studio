@@ -465,6 +465,94 @@ def test_preview_serves_the_agents_app(page, server):
     expect(frame.locator("#marker")).to_have_text("hi from the app", timeout=15000)
 
 
+SKILLS = Path(__file__).resolve().parents[1] / "skills"
+
+
+def _video_frames(page):
+    """The two frames the reference video runs in: the player page in
+    the preview's sandboxed frame, and the composition in the player's
+    own iframe inside that. Polled with page.wait_for_timeout, not
+    time.sleep: the sync API only takes in frame events while a
+    Playwright call is running, so a sleeping loop never sees the frame
+    arrive."""
+    for _ in range(200):
+        for frame in page.frames:
+            if frame.url.endswith("/video.html") and frame.parent_frame is not None:
+                return frame.parent_frame, frame
+        page.wait_for_timeout(100)
+    raise AssertionError(f"no composition frame: {[f.url for f in page.frames]}")
+
+
+def test_the_reference_video_plays_in_the_sandboxed_frame(page, server):
+    """The making-videos skill's reference, copied into an app and shown
+    where a human watches it: the preview pane. That frame is an opaque
+    origin and the player nests an iframe of its own inside it, so this
+    is the arrangement a plain browser test does not see. Nothing may
+    leave the studio's origin -- the player fetches the runtime from a
+    CDN when a composition lacks it, which is the failure this pins."""
+    refs = SKILLS / "making-videos" / "references"
+    # The app's frames only: the studio shell's own requests are not
+    # the app's to answer for.
+    outside: list[str] = []
+    page.on(
+        "request",
+        lambda r: (
+            None
+            if r.url.startswith(server) or r.frame == page.main_frame
+            else outside.append(r.url)
+        ),
+    )
+    page.goto(f"{server}/?session=e2e-video")
+    _send(
+        page,
+        "!tool file_write "
+        + json.dumps(
+            {
+                "path": "/workspace/app/index.html",
+                "content": (refs / "index.html").read_text(),
+            }
+        )
+        + "\n!tool file_write "
+        + json.dumps(
+            {
+                "path": "/workspace/app/video.html",
+                "content": (refs / "video.html").read_text(),
+            }
+        )
+        + "\n!text Video is up.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Video is up.", timeout=15000
+    )
+    host, video = _video_frames(page)
+    video.wait_for_function("window.__playerReady === true", timeout=15000)
+    assert video.evaluate("window.__player.getDuration()") == 10
+
+    # Seek through the player element's own API, as its controls do.
+    player = "document.querySelector('hyperframes-player')"
+    host.wait_for_function(f"{player}.duration === 10", timeout=15000)
+    host.evaluate(f"{player}.seek(1.5)")
+    video.wait_for_function(
+        "getComputedStyle(document.querySelector('#scene-title')).visibility === 'visible'"
+    )
+    host.evaluate(f"{player}.seek(5)")
+    video.wait_for_function(
+        "getComputedStyle(document.querySelector('#scene-chart')).visibility === 'visible'"
+        " && parseFloat(getComputedStyle(document.querySelector('#q4')).height) > 500"
+    )
+    assert (
+        video.evaluate(
+            "getComputedStyle(document.querySelector('#scene-title')).visibility"
+        )
+        == "hidden"
+    )
+
+    # And it plays: the clock moves on its own.
+    host.evaluate(f"{player}.seek(0); {player}.play()")
+    video.wait_for_function("window.__player.getTime() > 0.5", timeout=10000)
+    assert not outside, outside
+
+
 def test_publish_a_version_and_toggle_between_live_and_published(page, server):
     """The whole publish loop through the browser: publish names a
     version, the transcript gets its marker, and the toggle puts the

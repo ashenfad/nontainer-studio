@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Video</title>
+  <!-- The player: a <hyperframes-player> element with play, pause, a
+       scrubber and speed controls. It plays video.html. -->
+  <script src="vendor/hyperframes-player.js"></script>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; }
+    body { display: grid; place-items: center; }
+    /* Fit a 16:9 frame inside the window, whichever side runs out first. */
+    hyperframes-player { display: block; width: min(100vw, calc(100vh * 16 / 9)); aspect-ratio: 16 / 9; }
+  </style>
+</head>
+<body>
+  <!-- width and height are the composition's own size, for the aspect
+       ratio; the CSS above sets how big it shows. -->
+  <hyperframes-player src="video.html" width="1920" height="1080" controls></hyperframes-player>
+</body>
+</html>

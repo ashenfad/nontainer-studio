@@ -8,6 +8,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Agents can make videos, offline.** A video is an app: an HTML
+  composition of timed scenes that the HyperFrames runtime plays on its
+  own clock, shown by a `<hyperframes-player>` page with play, pause and
+  a scrubber. It previews and publishes like any other app; nothing
+  renders an MP4.
+  - **Vendored:** the HyperFrames 0.8.92 runtime and player
+    (Apache-2.0, license file beside them) and Anime.js 4.5.0 (MIT),
+    about 700 KB.
+  - **No GSAP.** HyperFrames' examples animate with it, but it is
+    licensed under Webflow's own terms, and every vendored file stays
+    under an OSI license. CSS keyframes, WAAPI and Anime.js are seeked
+    by the runtime without it.
+  - **A `making-videos` skill:** a working 10-second reference (player
+    page plus composition), the composition rules, animating with CSS
+    and Anime.js, what breaks scrubbing, and a `test_app` check that
+    seeks into each scene and screenshots it. A test runs that check,
+    taken from the skill, against the reference.
+  - The agent's app notes name the video files and point at the skill.
+  - An e2e test plays the reference in the preview pane, where the
+    player's own iframe nests inside the sandboxed frame, and asserts
+    no request leaves the studio's origin.
+
 - **apache-arrow is vendored for pages.** nontainer 0.7.11 lets a
   handler return a DataFrame, Series or pyarrow Table and answers with
   an Arrow IPC stream when the request's `Accept` asks for one. A page

@@ -6496,6 +6496,131 @@ def test_the_skill_points_at_the_vendor_inventory():
     assert "references/vendor.md" in sessions_mod.FRONTEND_NOTES
 
 
+VIDEO_SKILL = Path(__file__).parent.parent / "skills" / "making-videos"
+VIDEO_ASSETS = (
+    "vendor/hyperframes.runtime.js",
+    "vendor/hyperframes-player.js",
+    "vendor/anime.min.js",
+)
+
+
+def test_the_video_stack_serves_to_preview_and_publish(studio):
+    """The runtime, the player and Anime.js come from the app's own
+    origin on both lifecycles, and they are the real builds."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+
+    markers = {
+        "vendor/hyperframes.runtime.js": b"__hfAnime",
+        "vendor/hyperframes-player.js": b"hyperframes-player",
+        "vendor/anime.min.js": b"createTimeline",
+    }
+    for path, marker in markers.items():
+        r = client.get(f"/preview/s1/{path}")
+        assert r.status_code == 200, path
+        assert r.headers["content-type"].startswith("text/javascript"), path
+        assert marker in r.content, path
+    pub = client.post("/api/sessions/s1/publish").json()
+    for path in VIDEO_ASSETS:
+        assert client.get(f"{pub['url']}{path}").status_code == 200, path
+
+
+def test_every_vendor_file_a_skill_names_is_served():
+    """A skill that tells an agent to load vendor/x.js when x.js is not
+    in appassets sends it at a 404 with the skill's authority behind
+    it."""
+    skills = Path(__file__).parent.parent / "skills"
+    assets = sessions_mod.app_assets_dir()
+    missing = []
+    for path in skills.rglob("*"):
+        if path.is_file() and path.suffix in (".md", ".html", ".jsx", ".js"):
+            for name in set(
+                re.findall(r"vendor/([\w.-]+\.(?:js|mjs|css))", path.read_text())
+            ):
+                if not (assets / name).is_file():
+                    missing.append(f"{path.relative_to(skills)}: vendor/{name}")
+    assert not missing, missing
+
+
+def test_the_video_reference_loads_the_runtime_first_and_no_gsap():
+    """The two rules the skill leans on hardest. Without the runtime tag
+    the player fetches it from a CDN, which offline is a video that
+    never moves; and GSAP is not here, so the file an agent copies must
+    not reach for it."""
+    video = (VIDEO_SKILL / "references" / "video.html").read_text()
+    scripts = re.findall(r'<script src="([^"]+)"', video)
+    assert scripts[0] == "vendor/hyperframes.runtime.js", scripts
+    assert "gsap" not in video.lower()
+    assert "window.__hfAnime.push" in video
+    assert "autoplay: false" in video
+    page = (VIDEO_SKILL / "references" / "index.html").read_text()
+    assert '<script src="vendor/hyperframes-player.js">' in page
+    assert 'src="video.html"' in page
+
+
+def test_the_agent_is_pointed_at_the_video_skill():
+    notes = sessions_mod.FRONTEND_NOTES
+    assert "making-videos" in notes
+    assert "vendor/hyperframes-player.js" in notes
+    assert "GSAP" in notes
+    assert (VIDEO_SKILL / "SKILL.md").is_file()
+
+
+def _skill_check_steps() -> list:
+    """The test_app steps the skill's "Checking it" section prints."""
+    skill = (VIDEO_SKILL / "SKILL.md").read_text()
+    section = skill.split("## Checking it", 1)[1]
+    block = re.search(r"```json\n(.*?)```", section, re.S).group(1)
+    return json.loads(block)
+
+
+def test_the_skills_check_passes_on_the_reference_video(studio):
+    """The check the skill tells an agent to run, taken from the skill
+    itself and run against the reference it tells the agent to copy. If
+    either drifts -- a selector renamed, a scene retimed, a runtime API
+    that answers differently -- this fails, rather than an agent's first
+    video failing for a reason the skill cannot explain."""
+    pytest.importorskip("playwright")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    fs = session.ws.files.fs
+    fs.makedirs("/workspace/app", exist_ok=True)
+    for name in ("index.html", "video.html"):
+        fs.write(
+            f"/workspace/app/{name}", (VIDEO_SKILL / "references" / name).read_bytes()
+        )
+    session.ws.commit()
+
+    steps = _skill_check_steps() + [
+        # past the skill's steps: the frame between scenes, and the end
+        {"eval": "window.__player.seek(8.5)"},
+        {
+            "assert": "getComputedStyle(document.querySelector('#scene-close')).visibility === 'visible'"
+        },
+        {
+            "assert": "getComputedStyle(document.querySelector('#scene-chart')).visibility === 'hidden'"
+        },
+        {"goto": "index.html"},
+        {"assert": "document.querySelector('hyperframes-player').duration === 10"},
+    ]
+    result = session.runtime.test_app(steps)
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)  # no chromium
+
+    assert result.ok, result
+    duration = next(
+        r.value
+        for r in result.results
+        if r.action.get("eval") == "window.__player.getDuration()"
+    )
+    assert duration == "10"  # test_app reports values as text
+    shots = [s for s in _skill_check_steps() if "screenshot" in s]
+    assert len(shots) == 2
+    assert not result.rejected  # nothing reached for a CDN
+
+
 def test_an_existing_session_is_topped_up_with_the_seed_files_it_lacks(studio):
     """The notes a session receives are the current ones and name files
     the current seed carries, so a session created before a reference

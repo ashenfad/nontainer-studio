@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=1920, height=1080" />
+  <title>Video composition</title>
+  <!-- The runtime first: it owns the clock and seeks everything below.
+       The player loads it from the internet when a composition lacks it,
+       and there is no internet here, so it is never optional. -->
+  <script src="vendor/hyperframes.runtime.js"></script>
+  <script src="vendor/anime.min.js"></script>
+  <style>
+    html, body {
+      margin: 0; width: 1920px; height: 1080px; overflow: hidden;
+      background: #0f172a; color: #f8fafc;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    .scene { position: absolute; inset: 0; display: flex; flex-direction: column;
+             align-items: center; justify-content: center; gap: 32px; }
+
+    /* Scene 1: CSS keyframes. The runtime seeks a CSS animation
+       relative to the start of the clip it sits in. */
+    .title { font-size: 120px; font-weight: 700; letter-spacing: -2px;
+             animation: rise 1.2s cubic-bezier(.2,.8,.2,1) both; }
+    .subtitle { font-size: 48px; color: #94a3b8;
+                animation: rise 1.2s cubic-bezier(.2,.8,.2,1) 0.4s both; }
+    @keyframes rise { from { opacity: 0; transform: translateY(40px); }
+                      to   { opacity: 1; transform: none; } }
+
+    /* Scene 2: bars that Anime.js grows; heights start at 0. */
+    .chart { display: flex; align-items: flex-end; gap: 64px; height: 600px; }
+    .bar { width: 180px; height: 0; border-radius: 12px 12px 0 0; background: #38bdf8;
+           display: flex; align-items: flex-start; justify-content: center; }
+    .bar span { margin-top: -64px; font-size: 44px; font-weight: 600; opacity: 0; }
+    .labels { display: flex; gap: 64px; font-size: 36px; color: #94a3b8; }
+    .labels div { width: 180px; text-align: center; }
+
+    .closing { font-size: 96px; font-weight: 700;
+               animation: rise 1s cubic-bezier(.2,.8,.2,1) both; }
+  </style>
+</head>
+<body>
+  <!-- The root: its data-duration is the video's length in seconds. -->
+  <div id="root" data-composition-id="main" data-start="0" data-duration="10"
+       data-width="1920" data-height="1080">
+
+    <!-- Each scene is a clip: shown from data-start for data-duration
+         seconds, hidden otherwise. The runtime owns a clip's visibility,
+         so animate what is inside it, never the clip itself. -->
+    <div class="scene clip" id="scene-title" data-start="0" data-duration="3">
+      <div class="title">Quarterly revenue</div>
+      <div class="subtitle">Four quarters, one direction</div>
+    </div>
+
+    <div class="scene clip" id="scene-chart" data-start="3" data-duration="4.5">
+      <div class="chart">
+        <div class="bar" id="q1"><span>$1.2M</span></div>
+        <div class="bar" id="q2"><span>$1.9M</span></div>
+        <div class="bar" id="q3"><span>$2.4M</span></div>
+        <div class="bar" id="q4"><span>$3.1M</span></div>
+      </div>
+      <div class="labels"><div>Q1</div><div>Q2</div><div>Q3</div><div>Q4</div></div>
+    </div>
+
+    <div class="scene clip" id="scene-close" data-start="7.5" data-duration="2.5">
+      <div class="closing">Up 158% on the year</div>
+    </div>
+  </div>
+
+  <script>
+    // Anime.js runs on the VIDEO's clock, so positions are absolute
+    // times in milliseconds: the chart scene starts at 3s, so its first
+    // bar starts at 3000. autoplay: false, and push the timeline onto
+    // window.__hfAnime -- the runtime seeks only what is registered.
+    const heights = { q1: 230, q2: 365, q3: 460, q4: 595 };
+    const tl = anime.createTimeline({ autoplay: false });
+    Object.entries(heights).forEach(([id, h], i) => {
+      const at = 3300 + i * 250;
+      tl.add('#' + id, { height: [0, h], duration: 1200, ease: 'outCubic' }, at)
+        .add('#' + id + ' span', { opacity: [0, 1], duration: 400, ease: 'linear' }, at + 900);
+    });
+    window.__hfAnime = window.__hfAnime || [];
+    window.__hfAnime.push(tl);
+  </script>
+</body>
+</html>

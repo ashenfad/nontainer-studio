@@ -276,6 +276,10 @@ with `import { tableFromIPC } from 'apache-arrow'` (plain pages:
 rows, or for a download, read the skill's references/returns.md first.
 CSS: <script src="vendor/tailwind.js"></script> for tailwind utility
 classes (it compiles them in the browser; no build, no config file).
+Video: a video here is an app too — an HTML composition that
+vendor/hyperframes-player.js plays, with a scrubber, animated with CSS
+keyframes or Anime.js (vendor/anime.min.js). Read the making-videos
+skill before making one: there is no GSAP, and nothing renders an MP4.
 Everything above is served WITH your app from its own origin, so it works
 with no network at all. Do not load any of it from a CDN.
 """
