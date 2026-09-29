@@ -35,11 +35,19 @@ cp /workspace/skills/making-videos/references/video.html /workspace/app/video.ht
 
 `index.html` is the player page and rarely needs more than a title.
 `video.html` is the composition, and it is where the work is: a title
-scene in CSS, a bar chart that Anime.js grows, and a closing card.
+scene in CSS, a bar chart that Anime.js grows, and a closing card, with
+a crossfade between each. Keep its scene structure when you change the
+content; it already does the things below that are easy to get wrong.
 
 What `vendor/` holds is listed in
 `/workspace/skills/building-apps/references/vendor.md`. For video:
 `hyperframes.runtime.js`, `hyperframes-player.js` and `anime.min.js`.
+Two guides adapted from HyperFrames go deeper than this page:
+
+```sh
+cat /workspace/skills/making-videos/references/hyperframes/animejs.md        # before writing Anime.js: v4 API, splitText, seeded random
+cat /workspace/skills/making-videos/references/hyperframes/css-animations.md # CSS keyframes: fill, delays, staggers, loops
+```
 
 ## The composition
 
@@ -49,8 +57,8 @@ What `vendor/` holds is listed in
 
 <div id="root" data-composition-id="main" data-start="0" data-duration="10"
      data-width="1920" data-height="1080">
-  <div class="scene clip" data-start="0" data-duration="3">…</div>
-  <div class="scene clip" data-start="3" data-duration="4">…</div>
+  <div class="scene clip" data-start="0" data-duration="3.5">…</div>
+  <div class="scene clip" data-start="3" data-duration="4">…</div>   <!-- overlaps by 0.5s -->
 </div>
 ```
 
@@ -75,9 +83,31 @@ What `vendor/` holds is listed in
   `data-height` pixels with `overflow: hidden`, and scenes are
   `position: absolute; inset: 0`. The player scales the whole stage to
   fit, so size text in px for 1920×1080, not in vw or %.
+- **Keep 80px clear at every edge,** as the reference's padding does.
+  Text against an edge reads as cut off, and headers, labels and numbers
+  that share a scene need room not to run into each other.
 - **Fonts and images come from the app.** A web font is a link to the
   internet, so use the system font stack (`system-ui, sans-serif`) or a
   font file in the workspace, and put images under `app/`.
+
+## Scenes and transitions
+
+Cut from one scene straight to the next and the frame between them is
+empty: the old scene is gone and the new one's content has not faded in
+yet. Crossfade instead, as the reference does:
+
+- **Overlap consecutive clips by about 0.5s:** the next scene's
+  `data-start` is 0.5s before the previous one ends.
+- **Fade the whole scene with two wrappers:** `.scene-in` fades in over
+  the first 0.5s of the clip, and `.scene-out` inside it fades out over
+  the last 0.5s (`--out` is the clip's duration minus 0.5). Two
+  wrappers, not two animations on one element: opacities multiply, and
+  one element with two opacity animations gets one of them wrong.
+- The last scene holds to the end: its `--out` is its whole duration.
+
+Slides, wipes and zooms work the same way on the wrappers: animate
+`transform` or `clip-path` on `.scene-in` and `.scene-out` instead of,
+or as well as, `opacity`.
 
 ## Animating
 
@@ -105,6 +135,16 @@ numbers that count. Two rules the runtime depends on:
 2. **Positions are the video's time, in milliseconds.** Unlike CSS,
    Anime.js does not know which scene it is in: a step for the scene that
    starts at 3s goes at `3000` or later.
+3. **One step per property per element.** A second step that animates
+   the same property of the same element (a fade in, then a fade out; a
+   caret blinking as eight opacity steps) plays forwards and then scrubs
+   backwards wrong. Use one step with keyframes, `opacity: [0, 1, 1, 0]`,
+   or put the second motion on a wrapper.
+4. **Start every animated element in CSS where its step starts.** Before
+   a step begins, the element shows its CSS value the first time through
+   but the step's first value once the scrubber has been past it. The
+   reference's bars are `height: 0` and its labels `opacity: 0` in CSS
+   for that reason.
 
 ```js
 const tl = anime.createTimeline({ autoplay: false });
@@ -136,6 +176,11 @@ and then scrubs wrong:
   seeded generator written out in the page.
 - Anime.js animations with `autoplay` left on or not pushed onto
   `window.__hfAnime`.
+- Two Anime.js steps on the same property of the same element. Forwards
+  looks right; seek back and the element keeps a value from later.
+- An element whose CSS disagrees with its Anime.js step's first value.
+  Before the step, it shows one or the other depending on where the
+  scrubber has been.
 - Loops that never end: CSS `animation-iteration-count: infinite`,
   Anime.js `loop: true`. Give a pulse a finite count that fits its scene.
 - `<video>` and `<audio>` are timed by the runtime when they are clips
@@ -160,8 +205,9 @@ inside it still use the video's absolute time (3000 for a scene at 3s).
 
 `test_app` loads the player page by default. Go to the composition
 itself to ask it questions: `window.__player` is the runtime's handle,
-with `seek(seconds)`, `getTime()` and `getDuration()`. Seek, then assert
-what should be on screen and take a screenshot to look at the frame:
+with `seek(seconds)`, `getTime()` and `getDuration()`. A seek takes
+effect at once. Seek, assert what should be on screen, and take a
+screenshot to look at the frame:
 
 ```json
 [
@@ -171,24 +217,39 @@ what should be on screen and take a screenshot to look at the frame:
   {"eval": "window.__player.seek(1.5)"},
   {"assert": "getComputedStyle(document.querySelector('#scene-title')).visibility === 'visible'"},
   {"screenshot": true},
+  {"eval": "window.__player.seek(3.25)"},
+  {"screenshot": true},
   {"eval": "window.__player.seek(6)"},
   {"assert": "parseFloat(getComputedStyle(document.querySelector('#q4')).height) > 500"},
-  {"screenshot": true}
+  {"screenshot": true},
+  {"eval": "window.__snap = () => [...document.querySelectorAll('#root *')].map(e => { const s = getComputedStyle(e); return [s.opacity, s.transform, s.width, s.height, s.visibility].join(); }).join('|'); window.__player.seek(6); window.__at6 = window.__snap(); true"},
+  {"eval": "window.__player.seek(9.5)"},
+  {"eval": "window.__player.seek(6)"},
+  {"assert": "window.__snap() === window.__at6"}
 ]
 ```
 
-Check at least the middle of each scene and the last second. A
-screenshot is where layout problems show — text off the stage, a scene
-still visible under the next one — so look at them, not only at the
-asserts. Then `{"goto": "index.html"}` once, to see the player itself
-load.
+What to cover, with the times changed to your video's:
+
+- **The middle of each scene and the last second,** each with a
+  screenshot. Look at them, not only at the asserts: that is where text
+  off the stage and labels running into numbers show.
+- **A scene boundary** (3.25 above, inside the first crossfade). Both
+  scenes should be partly visible; an empty frame means a cut to black.
+- **Scrubbing backwards,** the last four steps: record every element's
+  state at a time, visit a later time, come back, and compare. A
+  mismatch means something is not a function of the time; the usual
+  cause is two Anime.js steps on one property.
+
+Then `{"goto": "index.html"}` once, to see the player itself load.
 
 ## Done
 
 A video is done when:
 
-1. `test_app` passed seeking into every scene, with a screenshot of each,
-   and your report says what you checked.
+1. `test_app` passed seeking into every scene and onto a scene boundary,
+   with a screenshot of each, and the backwards scrub matched. Your report
+   says what you checked.
 2. The player page loads it with no rejected requests.
 3. Every animation is CSS, WAAPI or a registered Anime.js timeline, and
    the root's `data-duration` covers the last scene.
