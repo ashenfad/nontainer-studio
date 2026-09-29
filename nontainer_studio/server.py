@@ -102,6 +102,55 @@ async def _sweep_delegates_forever(
             log.warning("delegate sweep failed: %s", e)
 
 
+#: The snapshots the request being served has acquired, so the wrapper
+#: around the router can release them once the response is sent. Set per
+#: request by :func:`holding_snapshots`; the router's resolve hook runs in
+#: the same task, so it sees the list.
+_HELD: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "held_snapshots", default=None
+)
+
+
+def _resolve_held(registry: Any) -> Callable[[str], Any]:
+    """The router's resolve hook: acquire the snapshot for this request,
+    so it is not closed under it (see ``Registry.acquire_snapshot``). Outside a
+    request :func:`holding_snapshots` wraps, it is plain ``resolve``,
+    since nothing would release what it acquired."""
+
+    def resolve(token: str) -> Any:
+        held = _HELD.get()
+        if held is None:
+            return registry.resolve(token)
+        ws = registry.acquire_snapshot(token)
+        if ws is not None:
+            held.append(ws)
+        return ws
+
+    return resolve
+
+
+def holding_snapshots(app: Any, registry: Any) -> Any:
+    """Release, once the response is sent, every snapshot the request
+    acquired. Releasing can close a snapshot that was retired while the
+    request held it, and closing a dud-backed one waits for its guest,
+    so it runs off the event loop."""
+
+    async def wrapped(scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await app(scope, receive, send)
+            return
+        held: list = []
+        reset = _HELD.set(held)
+        try:
+            await app(scope, receive, send)
+        finally:
+            _HELD.reset(reset)
+            for ws in held:
+                await anyio.to_thread.run_sync(registry.release_snapshot, ws)
+
+    return wrapped
+
+
 def cors_for_apps(app: Any) -> Any:
     """Wrap the published-app router so a sandboxed iframe can read it.
 
@@ -1775,50 +1824,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()  #: The snapshots the request being served has acquired, so the wrapper
-#: around the router can release them once the response is sent. Set per
-#: request by :func:`holding_snapshots`; the router's resolve hook runs in
-#: the same task, so it sees the list.
-_HELD: contextvars.ContextVar[list | None] = contextvars.ContextVar(
-    "held_snapshots", default=None
-)
-
-
-def _resolve_held(registry: Any) -> Callable[[str], Any]:
-    """The router's resolve hook: acquire the snapshot for this request,
-    so it is not closed under it (see ``Registry.acquire_snapshot``). Outside a
-    request :func:`holding_snapshots` wraps, it is plain ``resolve``,
-    since nothing would release what it acquired."""
-
-    def resolve(token: str) -> Any:
-        held = _HELD.get()
-        if held is None:
-            return registry.resolve(token)
-        ws = registry.acquire_snapshot(token)
-        if ws is not None:
-            held.append(ws)
-        return ws
-
-    return resolve
-
-
-def holding_snapshots(app: Any, registry: Any) -> Any:
-    """Release, once the response is sent, every snapshot the request
-    acquired. Releasing can close a snapshot that was retired while the
-    request held it, and closing a dud-backed one waits for its guest,
-    so it runs off the event loop."""
-
-    async def wrapped(scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] != "http":
-            await app(scope, receive, send)
-            return
-        held: list = []
-        reset = _HELD.set(held)
-        try:
-            await app(scope, receive, send)
-        finally:
-            _HELD.reset(reset)
-            for ws in held:
-                await anyio.to_thread.run_sync(registry.release_snapshot, ws)
-
-    return wrapped
+    main()
