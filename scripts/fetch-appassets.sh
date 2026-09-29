@@ -67,6 +67,41 @@ fetch "$JSDELIVR/@hyperframes/player@$HYPERFRAMES_VERSION/dist/hyperframes-playe
 fetch "$JSDELIVR/@hyperframes/core@$HYPERFRAMES_VERSION/LICENSE" "hyperframes-LICENSE.txt"
 fetch "$JSDELIVR/animejs@$ANIME_VERSION/dist/bundles/anime.umd.min.js" "anime.min.js"
 
+# Fonts, so a page renders the same on every machine with no network.
+# System fonts are whatever the viewer's OS has (San Francisco, Segoe UI,
+# DejaVu), and a video tuned frame by frame on one looks different on the
+# next. Every family here is SIL Open Font License 1.1, from fontsource's
+# variable builds: one file per family and style carries every weight,
+# latin subset only. fonts.css (ours) declares them; each family's
+# license lands beside its files. The shell's own Fraunces and Public
+# Sans are these files too: frontend/src/app.css points its @font-face
+# rules here, and the build copies them into the bundle.
+#
+# The set is one family per register a page reaches for: a neutral sans
+# (Inter), the shell's sans (Public Sans), a sans with character (Space
+# Grotesk), a display serif (Fraunces, with its opsz/SOFT/WONK axes -- the
+# shell uses SOFT), a text serif (Source Serif 4), a mono (JetBrains
+# Mono), and a display face with a width axis for condensed and heavy
+# (Archivo). Italics only where body text uses them.
+FONTSOURCE_VERSION="5.3.0"
+mkdir -p "$DEST/fonts"
+font() {  # family, fontsource file suffix, our file name
+  fetch "$JSDELIVR/@fontsource-variable/$1@$FONTSOURCE_VERSION/files/$1-latin-$2.woff2" "fonts/$3"
+}
+font inter          wght-normal inter.woff2
+font inter          wght-italic inter-italic.woff2
+font public-sans    wght-normal public-sans.woff2
+font public-sans    wght-italic public-sans-italic.woff2
+font space-grotesk  wght-normal space-grotesk.woff2
+font fraunces       full-normal fraunces.woff2
+font source-serif-4 wght-normal source-serif-4.woff2
+font source-serif-4 wght-italic source-serif-4-italic.woff2
+font jetbrains-mono wght-normal jetbrains-mono.woff2
+font archivo        wdth-normal archivo.woff2
+for family in inter public-sans space-grotesk fraunces source-serif-4 jetbrains-mono archivo; do
+  fetch "$JSDELIVR/@fontsource-variable/$family@$FONTSOURCE_VERSION/LICENSE" "fonts/LICENSE-$family.txt"
+done
+
 # --- bundled from npm --------------------------------------------------
 #
 # React + MUI as ONE self-contained ES module. esm.sh's ?bundle does not
@@ -311,7 +346,7 @@ node gen-arrow-module.mjs > "$OLDPWD/$DEST/arrow.mjs"
 cd "$OLDPWD"
 
 echo
-for f in "$DEST"/*.js "$DEST"/*.mjs "$DEST"/*.txt; do
+for f in "$DEST"/*.js "$DEST"/*.mjs "$DEST"/*.txt "$DEST"/fonts/*.woff2; do
   printf '  %s  %8s KB  %s\n' \
     "$(shasum -a 256 "$f" | cut -d' ' -f1)" \
     "$(( $(wc -c < "$f") / 1024 ))" "$(basename "$f")"

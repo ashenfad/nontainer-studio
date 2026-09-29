@@ -23,6 +23,17 @@ internet can still write an app that renders.
 | `hyperframes-player.js` | npm `@hyperframes/player@0.8.92`, `dist/hyperframes-player.global.js` as published | `28dcf0c5bb95a256206ab5f660fba07a883a09bfb561f5f85a9c77d392544723` |
 | `hyperframes-LICENSE.txt` | npm `@hyperframes/core@0.8.92`, `LICENSE` | `4259155fb06f127687ee7b0a8a3682d45132db0f2da26cbc0b7a2d1e796436b8` |
 | `anime.min.js` | npm `animejs@4.5.0`, `dist/bundles/anime.umd.min.js` as published | `8d5b3a58a1f64023a04a4cedeef135a2263b18da04b35177ac13438a0bad033b` |
+| `fonts.css` | **ours** — the `@font-face` rules for `fonts/` | `900d587559950fe20519733e11db2d9ece664cfabe6dd6eec77d9deb70b05f8f` |
+| `fonts/inter.woff2` | npm `@fontsource-variable/inter@5.3.0`, `files/inter-latin-wght-normal.woff2` | `3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62` |
+| `fonts/inter-italic.woff2` | npm `@fontsource-variable/inter@5.3.0`, `files/inter-latin-wght-italic.woff2` | `7291b5970da2237441273c03b424a504b70b18f09791473fab99687dcc314720` |
+| `fonts/public-sans.woff2` | npm `@fontsource-variable/public-sans@5.3.0`, `files/public-sans-latin-wght-normal.woff2` | `5ed4d31c988e73b258894244f209069ebe77dc7e564861954b21198b6de90d68` |
+| `fonts/public-sans-italic.woff2` | npm `@fontsource-variable/public-sans@5.3.0`, `files/public-sans-latin-wght-italic.woff2` | `16dc93252adb78785ae56a6465494f73b604b39817760ea92bd4046521bb5a35` |
+| `fonts/space-grotesk.woff2` | npm `@fontsource-variable/space-grotesk@5.3.0`, `files/space-grotesk-latin-wght-normal.woff2` | `0640890476fc1198ab4de571fb658de443c4d85b66466ec09534a8737ab1ce9d` |
+| `fonts/fraunces.woff2` | npm `@fontsource-variable/fraunces@5.3.0`, `files/fraunces-latin-full-normal.woff2` | `7e744849028e2219e2aa1bc467dc4032980dc4487c9c3da3010081cd72d3b103` |
+| `fonts/source-serif-4.woff2` | npm `@fontsource-variable/source-serif-4@5.3.0`, `files/source-serif-4-latin-wght-normal.woff2` | `c1df4596be5029233ed2afbb8b2f6ea20784b3fb1aa5d6b5c6519ccd85eb3dfb` |
+| `fonts/source-serif-4-italic.woff2` | npm `@fontsource-variable/source-serif-4@5.3.0`, `files/source-serif-4-latin-wght-italic.woff2` | `663e7ef3037a56dce81dfc33f68c1e6445995ffd8887991b3c0b68a7689c9da5` |
+| `fonts/jetbrains-mono.woff2` | npm `@fontsource-variable/jetbrains-mono@5.3.0`, `files/jetbrains-mono-latin-wght-normal.woff2` | `18be452724bfdc236c074ca94a249a7f41a86752c7d04ab258ce9ed5651f6a7e` |
+| `fonts/archivo.woff2` | npm `@fontsource-variable/archivo@5.3.0`, `files/archivo-latin-wdth-normal.woff2` | `e3a28eade21a900c7155a247757f4b2834c07bb7ef07ad7efa55cebaac1e8f5e` |
 | `jsx-loader.js` | **ours** — hand-written, not generated | `d411a706fa7f225db507370c659b43f9b60cee5af8170763acd4d028f8d51159` |
 | `mui-utils.js` | **ours** — subpath shim for the icon bundle | `752c227b022b40b2de39d925f56b32f9264dd964a7bd0399e54ca175114c21f9` |
 | `theme.css` | **ours** — the shell's palette, app-facing | `46abd6279d31325886178ead73abce4d0c2ce39edbaa46fa6c8828ba0aa8361e` |
@@ -40,9 +51,13 @@ MIT licensed, except two Apache-2.0 libraries:
   license travels beside them as `hyperframes-LICENSE.txt`, copied from
   the same npm release. HyperFrames ships no NOTICE file.
 
+The fonts in `fonts/` are under the SIL Open Font License 1.1, each
+family's license beside its files as `fonts/LICENSE-<family>.txt`,
+copied from the same npm release.
+
 Every file here is under an OSI-approved license, and that is a rule,
-not a coincidence: see "No GSAP" below. ~7.5 MB total, of which plotly
-is 4.9 MB.
+not a coincidence: see "No GSAP" below. ~8 MB total, of which plotly
+is 4.9 MB and the fonts 0.5 MB.
 
 ## Regenerating
 
@@ -99,6 +114,33 @@ Three details in the choice of files:
   seeks what a composition pushes onto `window.__hfAnime`, and v4's
   `anime.createTimeline` is the API it seeks; v3's `anime({...})`,
   which models tend to write, does not exist in this build.
+
+**Fonts, vendored.** System fonts are whatever the viewer's machine has
+(San Francisco on a Mac, Segoe UI on Windows, DejaVu on a lot of Linux),
+so the same page lays out differently on each. For a dashboard that is
+cosmetic; for a video tuned frame by frame it moves text into places
+the author never checked. And a system stack leaves an agent nothing to
+choose with. Seven families, one per register a page reaches for:
+
+| family | register | axes |
+|---|---|---|
+| Inter | neutral sans for text and UI; italic too | wght 100–900 |
+| Public Sans | the shell's sans; italic too | wght 100–900 |
+| Space Grotesk | sans with character, for headlines | wght 300–700 |
+| Fraunces | display serif, the shell's headings | wght, opsz, SOFT, WONK |
+| Source Serif 4 | text serif; italic too | wght 200–900 |
+| JetBrains Mono | code and tabular numbers | wght 100–800 |
+| Archivo | display sans with a width axis: condensed to wide, up to black | wght 100–900, wdth 62–125 |
+
+Each is fontsource's variable build, latin subset: one file carries every
+weight, so a family costs 20–120 KB. `fonts.css` is ours and declares
+them with `font-display: block`, so text waits for its font rather than
+flashing in a fallback. The files are local; the wait is short.
+
+The shell takes its Fraunces and Public Sans from these same files:
+`frontend/src/app.css` points its `@font-face` rules here and the build
+copies them into `static/`. Before, it loaded both from Google Fonts,
+the one request the studio made off its own origin.
 
 **Plotly 3.7.0, not 4.x.** 4.0.0 removed the `scattermapbox` /
 `choroplethmapbox` trace names. Those are what a model writes from

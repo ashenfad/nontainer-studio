@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Fonts are vendored, for apps and for the studio itself.** System
+  fonts differ from machine to machine, so a page (and a video tuned
+  frame by frame) laid out differently for each viewer, and an agent had
+  nothing to choose from. `vendor/fonts.css` now serves seven families,
+  each one variable font with every weight: Inter, Public Sans, Space
+  Grotesk, Fraunces, Source Serif 4, JetBrains Mono and Archivo (with a
+  width axis). Italics for the three text families. About 530 KB, all
+  SIL Open Font License 1.1 with each family's license beside it.
+  - `vendor.md` lists the families with what each is for, generated from
+    `fonts.css`. The app notes name them, and the video skill's
+    reference now sets its type in Inter from them.
+  - **The studio's own page no longer calls Google Fonts.** Its Fraunces
+    and Public Sans come from the same files, copied into the build, so
+    an air-gapped studio looks the same as a connected one and makes no
+    request off its own origin. The e2e video test now asserts that for
+    the whole page, not only the app's frames. Public Sans italic is
+    real now, where the browser used to slant the upright.
+
 - **Agents can make videos, offline.** A video is an app: an HTML
   composition of timed scenes that the HyperFrames runtime plays on its
   own clock, shown by a `<hyperframes-player>` page with play, pause and

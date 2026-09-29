@@ -14,10 +14,11 @@ have made. To see a file's bytes, request it:
 
 | file | size | version | what it is |
 |---|---|---|---|
-| `README.md` | 13 KB | ours | the vendoring record: sources, checksums, and why each pin |
+| `README.md` | 17 KB | ours | the vendoring record: sources, checksums, and why each pin |
 | `anime.min.js` | 116 KB | 4.5.0 | Anime.js v4, the UMD build: `<script src>` gives `window.anime` (`anime.createTimeline`) |
 | `arrow.min.js` | 189 KB | 21.2.0 | apache-arrow, the UMD build: `<script src>` gives `window.Arrow` (`Arrow.tableFromIPC`) |
 | `arrow.mjs` | 4 KB | 21.2.0 | apache-arrow as a module, for `import { tableFromIPC } from 'apache-arrow'`; loads arrow.min.js |
+| `fonts.css` | 3 KB | ours | the `@font-face` rules for the fonts in `fonts/` (listed below): link it, then name a family |
 | `hyperframes-LICENSE.txt` | 11 KB | 0.8.92 | the Apache-2.0 license HyperFrames ships under |
 | `hyperframes-player.js` | 100 KB | 0.8.92 | the `<hyperframes-player>` element: plays a composition with controls |
 | `hyperframes.runtime.js` | 464 KB | 0.8.92 | the HyperFrames runtime a video composition loads: its clock, clips and seeking (skill: making-videos) |
@@ -68,6 +69,23 @@ Print Refresh Save Schedule Search Settings Share ShowChart SkipNext
 SkipPrevious Sort Star StarBorder Stop TableChart Terminal Timeline
 TrendingDown TrendingUp Upload Visibility VisibilityOff Warning
 ```
+
+## Fonts
+
+`<link rel="stylesheet" href="vendor/fonts.css">`, then name a family
+in `font-family`. Each is one variable font, so any weight in its range
+works, not only the hundreds. Latin characters only. System fonts differ
+from machine to machine; these look the same everywhere.
+
+| family | for | weights | styles | size |
+|---|---|---|---|---|
+| Inter | neutral sans for text and UI | 100–900 | normal, italic | 98 KB |
+| Public Sans | the studio shell's own sans | 100–900 | normal, italic | 54 KB |
+| Space Grotesk | sans with character, for headlines | 300–700 | normal | 22 KB |
+| Fraunces | display serif, the shell's headings; opsz, SOFT and WONK axes too | 100–900 | normal | 119 KB |
+| Source Serif 4 | text serif | 200–900 | normal, italic | 100 KB |
+| JetBrains Mono | code and tabular numbers | 100–800 | normal | 40 KB |
+| Archivo | display sans with a width axis: condensed (62%) to wide (125%), up to black | 100–900, width 62%–125% | normal | 88 KB |
 
 ## Theme
 

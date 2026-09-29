@@ -6476,6 +6476,7 @@ def test_the_vendor_inventory_matches_the_served_assets():
         assert name in committed
     assert "## Icons (66 names)" in committed
     assert "--app-primary" in committed
+    assert "## Fonts" in committed and "| Fraunces |" in committed
 
 
 def test_the_skill_says_when_to_read_the_returns_reference():
@@ -6700,6 +6701,107 @@ def test_the_adapted_hyperframes_guides_carry_their_license_and_fit_here():
         assert f"references/hyperframes/{guide.name}" in skill, guide.name
     anime = (ADAPTED / "animejs.md").read_text()
     assert '<script src="vendor/anime.min.js"></script>' in anime
+
+
+APP_ASSETS = Path(__file__).parent.parent / "nontainer_studio" / "appassets"
+FONT_FAMILIES = (
+    "Inter",
+    "Public Sans",
+    "Space Grotesk",
+    "Fraunces",
+    "Source Serif 4",
+    "JetBrains Mono",
+    "Archivo",
+)
+
+
+def test_fonts_css_and_the_font_files_agree():
+    """Every file fonts.css names is there, every font file there is
+    named, each family carries its license, and the fetch script is
+    what produced them -- so none of the three can drift alone."""
+    css = (APP_ASSETS / "fonts.css").read_text()
+    named = set(re.findall(r'url\("fonts/([^"]+)"\)', css))
+    present = {p.name for p in (APP_ASSETS / "fonts").glob("*.woff2")}
+    assert named == present
+    assert set(re.findall(r'font-family:\s*"([^"]+)"', css)) == set(FONT_FAMILIES)
+    fetch = (
+        Path(__file__).parent.parent / "scripts" / "fetch-appassets.sh"
+    ).read_text()
+    for name in present:
+        assert f" {name}" in fetch, name
+    for family in {n.removesuffix(".woff2").removesuffix("-italic") for n in present}:
+        license = APP_ASSETS / "fonts" / f"LICENSE-{family}.txt"
+        assert "SIL OPEN FONT LICENSE" in license.read_text(), family
+
+
+def test_the_fonts_serve_to_preview_and_publish(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    _seed_app(registry.get("s1").ws)
+    pub = client.post("/api/sessions/s1/publish").json()
+    for base in ("/preview/s1/", pub["url"]):
+        r = client.get(f"{base}vendor/fonts.css")
+        assert r.status_code == 200, base
+        assert r.headers["content-type"].startswith("text/css"), base
+        r = client.get(f"{base}vendor/fonts/inter.woff2")
+        assert r.status_code == 200, base
+        assert r.headers["content-type"] == "font/woff2", base
+        assert r.content[:4] == b"wOF2", base
+
+
+FONTS_PAGE = b"""<!doctype html><html><head>
+<link rel="stylesheet" href="vendor/fonts.css"></head><body><p id="t">Aa</p>
+<script>
+  window.loaded = Promise.all(%s.map(async (family) => {
+    const faces = await document.fonts.load('600 40px "' + family + '"', 'Aa');
+    return [family, faces.length];
+  }));
+</script></body></html>"""
+
+
+def test_every_vendored_font_loads_in_a_browser(studio):
+    """Declared is not loaded: each family resolves to a face the
+    browser fetched from vendor/, with nothing asked of the network."""
+    pytest.importorskip("playwright")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    session.ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    session.ws.files.fs.write(
+        "/workspace/app/index.html", FONTS_PAGE % json.dumps(FONT_FAMILIES).encode()
+    )
+    session.ws.commit()
+    result = session.runtime.test_app(
+        [{"eval": "window.loaded.then((r) => JSON.stringify(r))"}]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)  # no chromium
+    assert result.ok, result
+    # test_app reports a string value as its repr
+    loaded = dict(json.loads(ast.literal_eval(result.results[0].value)))
+    assert loaded == {family: 1 for family in FONT_FAMILIES}
+    assert not result.rejected
+
+
+def test_the_shell_serves_its_fonts_itself():
+    """The studio's own page loaded Fraunces and Public Sans from Google
+    Fonts, its one request off its own origin. It now takes the vendored
+    files, which the build copies into static/ unchanged."""
+    root = Path(__file__).parent.parent
+    app_css = (root / "frontend" / "src" / "app.css").read_text()
+    assert "googleapis" not in app_css and "gstatic" not in app_css
+    static = root / "nontainer_studio" / "static"
+    for path in static.rglob("*"):
+        if path.suffix in (".css", ".js", ".html"):
+            text = path.read_text()
+            assert "fonts.googleapis" not in text, path
+            assert "fonts.gstatic" not in text, path
+    built = {p.name.rsplit("-", 1)[0]: p for p in (static / "assets").glob("*.woff2")}
+    assert set(built) == {"fraunces", "public-sans", "public-sans-italic"}
+    for stem, path in built.items():
+        assert (
+            path.read_bytes() == (APP_ASSETS / "fonts" / f"{stem}.woff2").read_bytes()
+        )
 
 
 def test_an_existing_session_is_topped_up_with_the_seed_files_it_lacks(studio):

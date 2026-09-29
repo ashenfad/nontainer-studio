@@ -491,16 +491,12 @@ def test_the_reference_video_plays_in_the_sandboxed_frame(page, server):
     leave the studio's origin -- the player fetches the runtime from a
     CDN when a composition lacks it, which is the failure this pins."""
     refs = SKILLS / "making-videos" / "references"
-    # The app's frames only: the studio shell's own requests are not
-    # the app's to answer for.
+    # Every frame, the studio's own page included: the shell serves its
+    # fonts itself, so nothing here has a reason to leave the origin.
     outside: list[str] = []
     page.on(
         "request",
-        lambda r: (
-            None
-            if r.url.startswith(server) or r.frame == page.main_frame
-            else outside.append(r.url)
-        ),
+        lambda r: None if r.url.startswith(server) else outside.append(r.url),
     )
     page.goto(f"{server}/?session=e2e-video")
     _send(

@@ -46,6 +46,19 @@ DESCRIPTIONS = {
     "hyperframes-player.js": "the `<hyperframes-player>` element: plays a composition with controls",
     "hyperframes-LICENSE.txt": "the Apache-2.0 license HyperFrames ships under",
     "anime.min.js": "Anime.js v4, the UMD build: `<script src>` gives `window.anime` (`anime.createTimeline`)",
+    "fonts.css": "the `@font-face` rules for the fonts in `fonts/` (listed below): link it, then name a family",
+}
+
+# What each vendored font family is for; the rest of its row is read
+# from fonts.css and the files.
+FONT_REGISTERS = {
+    "Inter": "neutral sans for text and UI",
+    "Public Sans": "the studio shell's own sans",
+    "Space Grotesk": "sans with character, for headlines",
+    "Fraunces": "display serif, the shell's headings; opsz, SOFT and WONK axes too",
+    "Source Serif 4": "text serif",
+    "JetBrains Mono": "code and tabular numbers",
+    "Archivo": "display sans with a width axis: condensed (62%) to wide (125%), up to black",
 }
 
 
@@ -92,6 +105,44 @@ def _exports(text: str) -> list[str]:
         for part in group.split(","):
             names.add(part.split(" as ")[-1].strip())
     return sorted(names)
+
+
+def _fonts() -> list[str]:
+    """The families fonts.css declares, one row each, with what the
+    files make of them: weights, styles, width, and size on the wire."""
+    css = (ASSETS / "fonts.css").read_text()
+    families: dict[str, dict] = {}
+    for block in re.findall(r"@font-face\s*\{(.*?)\}", css, re.S):
+        name = re.search(r'font-family:\s*"([^"]+)"', block).group(1)
+        fam = families.setdefault(name, {"styles": [], "size": 0})
+        fam["weights"] = re.search(r"font-weight:\s*([\d ]+);", block).group(1).strip()
+        stretch = re.search(r"font-stretch:\s*([^;]+);", block)
+        if stretch:
+            fam["stretch"] = stretch.group(1).strip()
+        fam["styles"].append(re.search(r"font-style:\s*(\w+);", block).group(1))
+        src = re.search(r'url\("([^"]+)"\)', block).group(1)
+        fam["size"] += (ASSETS / src).stat().st_size
+    lines = [
+        "",
+        "## Fonts",
+        "",
+        '`<link rel="stylesheet" href="vendor/fonts.css">`, then name a family',
+        "in `font-family`. Each is one variable font, so any weight in its range",
+        "works, not only the hundreds. Latin characters only. System fonts differ",
+        "from machine to machine; these look the same everywhere.",
+        "",
+        "| family | for | weights | styles | size |",
+        "|---|---|---|---|---|",
+    ]
+    for name, fam in families.items():
+        weights = fam["weights"].replace(" ", "–")
+        if "stretch" in fam:
+            weights += f", width {fam['stretch'].replace(' ', '–')}"
+        lines.append(
+            f"| {name} | {FONT_REGISTERS.get(name, '')} | {weights} | "
+            f"{', '.join(fam['styles'])} | {-(-fam['size'] // 1024)} KB |"
+        )
+    return lines
 
 
 def render() -> str:
@@ -163,6 +214,7 @@ def render() -> str:
     if row:
         lines.append(" ".join(row))
     lines.append("```")
+    lines += _fonts()
     tokens = sorted(
         set(re.findall(r"--app-[a-z-]+", (ASSETS / "theme.css").read_text()))
     )
