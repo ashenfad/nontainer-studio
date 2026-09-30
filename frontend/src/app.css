@@ -223,11 +223,12 @@ button {
 }
 
 /* ---------------------------------------------------------------------------
- * The agent's work, quietly: "Worked for 3s ⌄", "Ran 2 commands ⌄",
- * "Thought for 12s ⌄". Text rather than chrome — no pill, no dot — with
- * the verb a step brighter than what it acted on, and a chevron that
- * turns when the line is open. Shared by the turn summary, work groups,
- * tool steps and thinking (see lib/activity.js for the wording).
+ * The agent's work, quietly: "Ran 2 commands ⌄", "Thought for 12s ⌄",
+ * each a line in place between the agent's prose. Text rather than
+ * chrome — no pill, no dot — with the verb a step brighter than what it
+ * acted on, and a chevron that turns when the line is open. Shared by
+ * work groups, tool steps and thinking (see lib/activity.js for the
+ * wording).
  * --------------------------------------------------------------------------- */
 .act-line {
     display: inline-flex;

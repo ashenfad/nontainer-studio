@@ -1262,8 +1262,8 @@ class Session:
     async def emit(self, event: dict) -> None:
         async with self.new_event:
             # ts: when it happened, in epoch seconds. The transcript
-            # reads durations off it ("Thought for 12s", "Worked for
-            # 3m"); a merged delta run keeps its first chunk's.
+            # reads durations off it ("Thought for 12s"); a merged delta
+            # run keeps its first chunk's.
             event = {**event, "seq": self.next_seq, "ts": round(time.time(), 3)}
             self.next_seq += 1
             self.events.append(event)

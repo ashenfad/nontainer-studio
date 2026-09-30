@@ -1,7 +1,7 @@
 // How the transcript names the agent's work, in plain words: "Ran 2
-// commands, edited 1 file", "Thought for 12s", "Worked for 3m". The
-// components only lay these out; the wording lives here so the group
-// line, the step lines and the turn summary say one thing the same way.
+// commands, edited 1 file", "Thought for 12s". The components only lay
+// these out; the wording lives here so the group lines and the step
+// lines say one thing the same way.
 
 const plural = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`
 

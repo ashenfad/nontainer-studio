@@ -122,15 +122,11 @@ def _send(page, message: str) -> None:
 
 
 def _open_work(page, group: str):
-    """Open a finished turn's work down to its steps: every folded
-    "Worked" line on the page, the work group whose line names
+    """Open a work group down to its steps: the group whose line names
     ``group`` (its plain-words summary, e.g. "Wrote" or "Ran"), and
-    every step in that group. Returns the group's timeline."""
-    expect(page.locator(".worked").last).to_be_visible(timeout=15000)
-    folded = page.locator(".worked:not(.open)")
-    for _ in range(folded.count()):
-        folded.first.click()
+    every step in it. Returns the group's timeline."""
     line = page.locator(".group-line", has_text=group).last
+    expect(line).to_be_visible(timeout=15000)
     line.click()
     timeline = line.locator("xpath=..").locator(".timeline")
     closed = timeline.locator(".step-line:not(.open)")
@@ -366,7 +362,7 @@ def test_thinking_interleaves_into_the_work_group(page, server):
     """Thinking around tool calls folds INTO the work group (the
     think -> act narrative lives in the drill-down, as "Thought …"
     lines between the steps); a tool-free thought is a line of its
-    own. A finished turn folds both under "Worked"."""
+    own."""
     page.goto(f"{server}/?session=e2e-think")
     _send(
         page,
@@ -385,23 +381,22 @@ def test_thinking_interleaves_into_the_work_group(page, server):
     thought.click()
     expect(timeline).to_contain_text("Considering the request carefully.")
 
-    # a pure thought (no tools) is a line of its own, under "Worked"
+    # a pure thought (no tools) is a line of its own
     _send(page, "!think Just musing, no tools.\n!text Mused.")
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "Mused.", timeout=15000
     )
-    page.locator(".worked").last.click()
     toggle = page.locator(".agent-msg").last.locator(".think-toggle")
     expect(toggle).to_be_visible()
     toggle.click()
     expect(page.locator(".think-text").last).to_contain_text("Just musing")
 
 
-def test_a_finished_turn_folds_its_work_and_keeps_its_prose(page, server):
-    """The Cursor-style transcript: once a turn is done its tool runs
-    and thinking fold under one quiet "Worked …" line, timed from the
-    events, while what the agent SAID stays in view."""
-    page.goto(f"{server}/?session=e2e-fold")
+def test_a_finished_turn_keeps_its_work_lines_in_place(page, server):
+    """No wrapper around a finished turn: each run of work stays the
+    one quiet line it already is, in place beside the agent's prose,
+    so the transcript reads prose, work, prose, work."""
+    page.goto(f"{server}/?session=e2e-inplace")
     _send(
         page,
         "!think Planning.\n"
@@ -412,16 +407,13 @@ def test_a_finished_turn_folds_its_work_and_keeps_its_prose(page, server):
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "All set.", timeout=15000
     )
-    worked = page.locator(".worked").last
-    expect(worked).to_be_visible(timeout=15000)
-    # timed from the events' ts: a scripted turn is quick
-    expect(worked).to_contain_text(re.compile(r"Worked (briefly|for \d+s)"))
-    expect(page.locator(".group-line")).to_have_count(0)  # folded
-    expect(page.locator(".agent-msg .bubble").last).to_be_visible()  # prose stays
-    worked.click()
-    line = page.locator(".group-line").last
+    msg = page.locator(".agent-msg").last
+    expect(msg.locator(".worked")).to_have_count(0)
+    line = msg.locator(".group-line")
+    expect(line).to_have_count(1)  # the work, one line, already visible
     expect(line).to_contain_text("Ran 1 command")
     expect(line).to_contain_text("wrote 1 file")
+    expect(msg.locator(".step-line")).to_have_count(0)  # its steps folded
 
 
 def test_a_message_typed_while_the_agent_works_waits_then_lands(page, server):
@@ -456,10 +448,6 @@ def test_a_message_typed_while_the_agent_works_waits_then_lands(page, server):
     # call it landed inside opened in the first half: its result must
     # still pair with THAT call, not open a second work group and
     # leave the first running forever
-    expect(page.locator(".worked").last).to_be_visible(timeout=15000)
-    folded = page.locator(".worked:not(.open)")
-    for _ in range(folded.count()):
-        folded.first.click()
     expect(page.locator(".group-line")).to_have_count(1)
     expect(page.locator(".group-line.act-live")).to_have_count(0)
 
@@ -942,7 +930,6 @@ def test_tool_steps_render_by_type(page, server):
         "edited", timeout=15000
     )
     # the group says what the run did, in plain words
-    expect(page.locator(".worked").last).to_be_visible(timeout=15000)
     timeline = _open_work(page, "Ran")
     expect(page.locator(".group-line").last).to_contain_text("Ran 1 command")
     expect(page.locator(".group-line").last).to_contain_text("edited 1 file")
@@ -991,8 +978,6 @@ def test_tool_result_images_stay_in_the_timeline(page, server):
     # nothing rendered inline in the transcript...
     expect(page.locator(".agent-msg .artifact-img")).to_have_count(0)
     # ...but the step carries it, and its line says so while folded
-    expect(page.locator(".worked").last).to_be_visible(timeout=15000)
-    page.locator(".worked").last.click()
     page.locator(".group-line", has_text="Wrote").last.click()
     expect(page.locator(".step-line").last).to_contain_text("1 image")
     page.locator(".step-line").last.click()
