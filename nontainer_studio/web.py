@@ -119,9 +119,19 @@ class Web:
                         },
                     }
                 ],
+                # The model may not skip the read and answer from memory.
+                "tool_choice": "required",
             },
             FETCH_TIMEOUT,
         )
+        # The answer is credited to the page, so the page must have been
+        # read. OpenRouter counts the server tool calls it ran.
+        used = (data.get("usage") or {}).get("server_tool_use_details") or {}
+        if not used.get("tool_calls_executed"):
+            raise RuntimeError(
+                f"web.fetch: the page was not read, so there is no answer from "
+                f"it: {url}"
+            )
         return f"{_content('web.fetch', data)}\n\nSource: {url}"
 
     def _search_or_error(self, query: str, deep: bool) -> str:

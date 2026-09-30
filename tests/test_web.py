@@ -9,11 +9,12 @@ from nontainer_studio import web as web_mod
 from nontainer_studio.web import Web, web_enabled
 
 
-def _chat(content, annotations=None):
+def _chat(content, annotations=None, fetched=1):
     message = {"role": "assistant", "content": content}
     if annotations is not None:
         message["annotations"] = annotations
-    return {"choices": [{"message": message}]}
+    usage = {"server_tool_use_details": {"tool_calls_executed": fetched}}
+    return {"choices": [{"message": message}], "usage": usage}
 
 
 def _cite(url, title=""):
@@ -90,7 +91,20 @@ def test_fetch_asks_a_small_model_to_read_the_page():
             },
         }
     ]
+    assert body["tool_choice"] == "required"
     assert "https://docs.example/page" in body["messages"][-1]["content"]
+
+
+def test_fetch_never_credits_a_page_it_did_not_read():
+    """An answer from the model's memory must not come back as the
+    page's: without an executed fetch there is no answer to give."""
+    for payload in (
+        _chat("From memory.", fetched=0),
+        {"choices": _chat("x")["choices"]},
+    ):
+        w, _ = _web(lambda body, payload=payload: (200, payload))
+        with pytest.raises(RuntimeError, match="the page was not read"):
+            w.fetch("https://docs.example/page", "what is the default?")
 
 
 def test_fetch_refuses_what_it_cannot_do():
