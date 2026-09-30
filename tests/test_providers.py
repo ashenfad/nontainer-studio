@@ -107,6 +107,32 @@ def test_gemma_routes_around_broken_tool_call_parsers():
     assert _shape("openrouter:qwen/qwen3.6-35b-a3b").extra_body is None
 
 
+def test_claude_asks_for_prompt_caching_on_both_paths(monkeypatch):
+    """Claude caches only when asked, unlike the other providers studio
+    drives, so an agent loop re-sent its whole prompt at full price on
+    every turn. Both Claude paths now send Anthropic's top-level
+    cache_control; nothing else does."""
+    from nontainer_studio import providers
+
+    ephemeral = {"type": "ephemeral"}
+    via_openrouter = _shape("openrouter:anthropic/claude-sonnet-5")
+    assert via_openrouter.extra_body["cache_control"] == ephemeral
+    assert via_openrouter.extra_body["reasoning"] == {"max_tokens": 4096}
+    # and it survives an @provider pin
+    pinned = _shape("openrouter:anthropic/claude-sonnet-5@anthropic")
+    assert pinned.extra_body["cache_control"] == ephemeral
+
+    # the direct API: no capability lookup over the network in a test
+    monkeypatch.setattr(providers, "_anthropic_thinking", lambda model: {})
+    direct = providers._construct_model("anthropic:claude-sonnet-5")
+    assert direct.request_params["extra_body"]["cache_control"] == ephemeral
+    # agno puts request_params into the call, extra_body included
+    assert direct.get_request_params()["extra_body"]["cache_control"] == ephemeral
+
+    # providers that cache on their own are left alone
+    assert _shape("openrouter:qwen/qwen3.6-35b-a3b").extra_body is None
+
+
 def test_openrouter_at_tag_pins_the_upstream_provider():
     """`model@slug[/quant]` pins OpenRouter's provider routing: order
     without fallbacks (an explicit pin means THAT provider), plus a

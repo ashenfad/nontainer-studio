@@ -501,6 +501,19 @@ def _with_retries(model: Any) -> Any:
     return model
 
 
+#: Claude caches a prompt only when asked; the other providers studio
+#: drives (OpenAI, DeepSeek, Gemini, and most of what OpenRouter routes
+#: to) cache on their own. A top-level ``cache_control`` is Anthropic's
+#: automatic mode: each request caches its whole prefix (tools, system
+#: prompt, conversation so far), and the next turn of an agent loop
+#: reads it back at a tenth of the input price, after paying 1.25x once
+#: to write it. The same field works on the direct API and through
+#: OpenRouter. Measured 2026-09-30 with sonnet-5 on a ~22.5k-token
+#: prompt: with it, the second call read all of it from cache; without
+#: it, nothing ever was.
+_CLAUDE_CACHE: dict[str, Any] = {"cache_control": {"type": "ephemeral"}}
+
+
 def _construct_model(spec: str | None = None) -> Any:
     """spec -> a constructed agno Model (None = server default)."""
     provider, model = parse_spec(spec or default_spec())
@@ -515,7 +528,12 @@ def _construct_model(spec: str | None = None) -> Any:
         # thinking blocks. The parameter SHAPE is per-model and looked
         # up, not assumed (see _anthropic_thinking); with the legacy
         # shape the budget must stay under max_tokens.
-        return Claude(id=model, max_tokens=16384, **_anthropic_thinking(model))
+        return Claude(
+            id=model,
+            max_tokens=16384,
+            request_params={"extra_body": dict(_CLAUDE_CACHE)},
+            **_anthropic_thinking(model),
+        )
     if provider == "openai":
         # gpt-5.6 rejects tools + reasoning on chat-completions (same
         # restriction we hit via OpenRouter) — ride the Responses API,
@@ -551,7 +569,7 @@ def _construct_model(spec: str | None = None) -> Any:
             # signed thinking blocks survive tool round-trips only
             # because SafeOpenRouter re-merges the streamed
             # reasoning_details fragments (see _merge_reasoning_details).
-            extra_body = {"reasoning": {"max_tokens": 4096}}
+            extra_body = {"reasoning": {"max_tokens": 4096}, **_CLAUDE_CACHE}
         if model.startswith("google/gemma"):
             # gemma-4's native tool-call format (token-level, not JSON)
             # needs a provider-side parser, and quality varies wildly

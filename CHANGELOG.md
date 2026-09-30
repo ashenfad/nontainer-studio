@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Claude now caches its prompt, directly and through OpenRouter.**
+  Anthropic models cache only when a request asks. Most other providers,
+  including OpenAI, DeepSeek, Gemini and much of what OpenRouter routes
+  to, cache on their own, which is why other models showed cache hits
+  and Claude never did.
+  - **The effect:** every turn of an agent loop re-sent the whole
+    prompt at full price. Both Claude paths now send Anthropic's
+    top-level `cache_control`, so each request caches its prefix (tools,
+    system prompt, conversation so far) and the next turn reads it back
+    at a tenth of the input price, after paying 1.25x once to write it.
+  - **Measured end to end with sonnet-5:** a second run on a
+    ~20.7k-token prompt read all of it from cache; before, neither path
+    ever did.
+
+### Fixed
+
 - **Video checks no longer log a sandbox warning.** The video skill's
   reference player page framed the composition on its own origin (the
   HyperFrames player's default, `allow-scripts allow-same-origin`), so
