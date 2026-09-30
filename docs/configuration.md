@@ -215,7 +215,8 @@ OpenRouter, on the operator's key:
   with Parallel. It returns an extract, never the page itself: OpenRouter
   hands fetched content only to a model, and a model asked to relay a page
   verbatim abridges it. The fetch happens at OpenRouter, so it cannot
-  reach this machine or its network.
+  reach this machine or its network. A list of URLs is read concurrently,
+  with one question for every page or one per page.
 
 Only agent sessions get it. A published app serves anyone holding its
 link, so its snapshot is built without `web`, and app code in the

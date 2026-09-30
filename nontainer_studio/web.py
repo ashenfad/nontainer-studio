@@ -92,10 +92,41 @@ class Web:
                 return list(pool.map(lambda q: self._search_or_error(q, deep), queries))
         return self._search(str(query), deep)
 
-    def fetch(self, url: str, question: str) -> str:
+    def fetch(self, url: str | list[str], question: str | list[str]) -> str | list[str]:
         """Read the page at ``url`` and answer ``question`` from it. An
         extract, not the page's text: ask for the part you need, and ask
-        for it quoted when the exact wording matters."""
+        for it quoted when the exact wording matters.
+
+        A list of URLs reads the pages concurrently and returns a list
+        of answers in the same order; one that fails holds its error in
+        place of an answer. ``question`` is then one question for every
+        page, or a list pairing a question with each URL."""
+        if isinstance(url, (list, tuple)):
+            urls = list(url)
+            if isinstance(question, (list, tuple)):
+                questions = list(question)
+                if len(questions) != len(urls):
+                    raise ValueError(
+                        f"web.fetch: {len(urls)} URLs but {len(questions)} "
+                        "questions; pass one question for all, or one per URL"
+                    )
+            else:
+                questions = [question] * len(urls)
+            if not urls:
+                return []
+            with ThreadPoolExecutor(min(MAX_CONCURRENT, len(urls))) as pool:
+                return list(pool.map(self._fetch_or_error, urls, questions))
+        if isinstance(question, (list, tuple)):
+            raise ValueError("web.fetch: a list of questions needs a list of URLs")
+        return self._fetch(url, question)
+
+    def _fetch_or_error(self, url: Any, question: Any) -> str:
+        try:
+            return self._fetch(url, question)
+        except Exception as e:
+            return f"web.fetch failed for {url!r}: {e}"
+
+    def _fetch(self, url: Any, question: Any) -> str:
         url, question = str(url).strip(), str(question).strip()
         if not url.startswith(("http://", "https://")):
             raise ValueError(f"web.fetch: not an http(s) URL: {url!r}")

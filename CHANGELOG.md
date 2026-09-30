@@ -16,7 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     search, and a list of queries runs concurrently.
   - **`web.fetch(url, question)`** answers a question from one page. A
     small model reads the page through OpenRouter's `web_fetch` tool,
-    with Parallel extracting its main content. Parallel was chosen by
+    with Parallel extracting its main content. A list of URLs is read
+    concurrently, with one question for every page or one per page.
+    Parallel was chosen by
     measurement: Exa served a days-old copy of a GitHub README, and the
     raw fetch drowned the model in 124k tokens of HTML.
   - **It returns an extract, not the page.** OpenRouter gives fetched
