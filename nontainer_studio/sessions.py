@@ -1180,13 +1180,15 @@ MEDIA_PRIMER = (
     "Paths are relative to /workspace (not your cwd). "
     '`media.image(prompt, path, transparent=False, aspect="1:1", '
     'quality="low", references=None)` writes a PNG and returns '
-    '{"path", "width", "height", "cost"}. `transparent=True` gives a '
-    "real alpha channel, for sprites, icons and overlays. aspect is "
+    '{"path", "width", "height", "alpha", "cost"}. `transparent=True` '
+    "gives a real alpha channel, for sprites, icons and overlays. aspect is "
     "1:1, 3:2, 2:3, 4:3, 3:4, 16:9, 9:16 or 21:9; quality runs low, "
     "medium, high, xhigh, max (low is about 11s and $0.006). "
     "`references` are workspace images to work from: pass earlier "
     "images to keep a character or style consistent, or one image to "
-    "edit it. Look at what you made with view_image before using it. "
+    "edit it. Once the call has returned (not alongside it: the file "
+    "does not exist until then), look at the image with view_image on "
+    'the returned "path" before using it. '
     '`media.speech(text, path, voice="Kore")` writes a WAV and returns '
     '{"path", "seconds"}; time scenes to those seconds. Bracketed '
     "direction in the text steers the delivery and is not spoken: "
@@ -1195,7 +1197,9 @@ MEDIA_PRIMER = (
     "default), Puck (upbeat), Charon (informative), Zephyr (bright), "
     "Fenrir (excitable), Leda (youthful), Aoede (breezy), Sulafat "
     "(warm), Achernar (soft), Algenib (gravelly), among 30. WAV is "
-    "about 48KB a second, so keep clips to what is used. Each takes a "
+    "about 48KB a second, so keep clips to what is used. What comes "
+    "back is read from the file written, so there is nothing to "
+    "re-check. Each takes a "
     "list of dicts of its arguments by name and makes them all at once, "
     "returning a list in order; a failed item holds its error. Batch "
     "whenever you have several: one call, not a loop. `media` is "
