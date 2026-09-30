@@ -7,20 +7,9 @@
     import Artifact from './Artifact.svelte'
     import ToolGroup from './ToolGroup.svelte'
     import ThinkingBlock from './ThinkingBlock.svelte'
-    import { duration } from './activity.js'
 
     let { msg, session } = $props()
 
-    // A finished turn folds its work -- tool runs and thinking -- under
-    // one line, "Worked for 3m", and keeps its prose and artifacts in
-    // view: the prose is the agent talking to the human, the work is
-    // how it got there. A turn still running shows everything.
-    let showWork = $state(false)
-    const hasWork = $derived(
-        msg.items.some((i) => i.kind === 'tool' || i.kind === 'thinking'),
-    )
-    const folded = $derived(!msg.streaming && hasWork && !showWork)
-    const worked = $derived(duration(msg.startTs, msg.endTs))
     // the live tail already says it is working when it is a running
     // tool or streaming thinking; otherwise one quiet line does
     const liveTail = $derived.by(() => {
@@ -72,17 +61,8 @@
 </script>
 
 <div class="agent-msg">
-    {#if !msg.streaming && hasWork}
-        <button class="act-line worked" class:open={showWork} onclick={() => (showWork = !showWork)}>
-            <span class="act-verb">Worked</span>
-            {#if worked}<span class="act-rest">{worked}</span>{/if}
-            <span class="act-chev">⌄</span>
-        </button>
-    {/if}
     {#each groups as g, i (i)}
-        {#if folded && (g.kind === 'tools' || g.kind === 'thinking')}
-            <!-- folded under "Worked" -->
-        {:else if g.kind === 'tools'}
+        {#if g.kind === 'tools'}
             <ToolGroup entries={g.entries} {session} />
         {:else if g.kind === 'thinking'}
             <ThinkingBlock item={g} live={msg.streaming && g === msg.items.at(-1)} />
@@ -116,9 +96,6 @@
         margin: 0.35rem 0;
         font-size: 0.88rem;
         line-height: 1.55;
-    }
-    .worked {
-        display: flex;
     }
     .working {
         cursor: default;

@@ -18,16 +18,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     ("Ran `cat app.py`", "Edited app/app.jsx", "Tested the app ·
     failed · 6 steps · 1 screenshot"), then the step's output, with the
     same per-tool renderers as before.
-  - **A finished turn folds** its tool runs and thinking under one
-    line, "Worked for 3m 10s". What the agent said, and any artifacts,
-    stay in view.
+  - **Each line sits where the work happened,** between the agent's
+    prose: prose, "Ran 3 commands", prose, "Edited 1 file, tested the
+    app". The prose and any artifacts are never folded.
   - **Work in progress** shimmers ("Running", "Thinking…",
     "Working…") instead of pulsing a dot.
   - **Screenshots** stay in their step. The step's line says it has
     them.
 - **Every transcript event carries `ts`,** when it happened. The
-  durations above are read off it; a transcript from before this
-  change says "Worked" and "Thought" without a time.
+  thinking durations are read off it; a transcript from before this
+  change says "Thought" without a time.
 
 ### Fixed
 
