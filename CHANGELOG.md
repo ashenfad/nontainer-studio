@@ -17,9 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     installed here, so they match the versions the server runs. A
     package that is not installed, such as dud without its extra, is
     skipped.
-  - **Existing sessions get it too.** The top-up pass that adds new
-    seed files to older sessions writes the READMEs as well, and leaves
-    alone any the agent has edited.
+  - **Existing sessions get it too, and stay current.** The top-up pass
+    that adds new seed files to older sessions writes the READMEs as
+    well. On each open, a README the agent hasn't edited is replaced
+    when its package was upgraded and removed when it was uninstalled.
+    A hash in each README's first line tells an unedited one apart; one
+    the agent edited is left alone.
 
 ### Changed
 

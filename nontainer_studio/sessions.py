@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -495,9 +496,9 @@ _ECOSYSTEM_PACKAGES = (
 )
 
 
-def _ecosystem_readmes() -> dict[str, bytes]:
+def _ecosystem_readmes() -> dict[str, tuple[str, bytes]]:
     """``references/<package>.md`` for each installed package: the README
-    its distribution metadata carries, headed with the version.
+    its distribution metadata carries, labelled with the version.
 
     Read from what is installed rather than copied into the repo, so the
     text describes the versions this server actually runs and never goes
@@ -514,16 +515,35 @@ def _ecosystem_readmes() -> dict[str, bytes]:
         body = (meta.get_payload() or meta.get("Description") or "").strip()
         if not body:
             continue
-        head = f"<!-- {name} {meta['Version']}: the README of the installed package -->"
-        files[f"references/{name}.md"] = f"{head}\n\n{body}\n".encode()
+        label = f"{name} {meta['Version']}: the README of the installed package"
+        files[f"references/{name}.md"] = (label, f"\n{body}\n".encode())
     return files
 
 
 #: Skill files built when a session is seeded rather than kept in the
-#: skill's directory, keyed by that directory's name.
-_GENERATED_SKILL_FILES: dict[str, Callable[[], dict[str, bytes]]] = {
+#: skill's directory, keyed by that directory's name. Each builder maps a
+#: path inside the skill to a label and a markdown body.
+_GENERATED_SKILL_FILES: dict[str, Callable[[], dict[str, tuple[str, bytes]]]] = {
     "nontainer-ecosystem": _ecosystem_readmes,
 }
+
+#: The first line of a generated skill file: its label and a hash of the
+#: rest. A file whose rest still matches is pristine, so it may be
+#: refreshed or removed; one that doesn't was edited, and is the
+#: session's own.
+_GENERATED_STAMP = re.compile(rb"<!-- (.*); generated, sha256 ([0-9a-f]{16}) -->\n")
+
+
+def _stamp_generated(label: str, body: bytes) -> bytes:
+    digest = hashlib.sha256(body).hexdigest()[:16]
+    return f"<!-- {label}; generated, sha256 {digest} -->\n".encode() + body
+
+
+def _is_pristine_generated(data: bytes) -> bool:
+    m = _GENERATED_STAMP.match(data)
+    if m is None:
+        return False
+    return hashlib.sha256(data[m.end() :]).hexdigest()[:16] == m.group(2).decode()
 
 
 def _ensure_vm_cap() -> None:
@@ -2593,28 +2613,69 @@ class Registry:
 
     @staticmethod
     def _write_generated(ws: Workspace, seed: str, installed: str) -> bool:
-        """Write the generated files of the skill seeded from directory
-        ``seed`` into its installed tree, skipping any already there.
-        True when something was written. Best-effort, like seeding."""
+        """Bring the generated files of the skill seeded from directory
+        ``seed`` up to date in its installed tree. True when anything
+        changed. Best-effort, like seeding.
+
+        Generated files describe the server, not the session, so unlike
+        the directory's own files a pristine one follows the server: it
+        is rewritten when its source changed (a package was upgraded)
+        and removed when its source is gone (one was uninstalled). A
+        file the agent edited no longer matches its stamp, and is left
+        as it is either way.
+        """
         make = _GENERATED_SKILL_FILES.get(seed)
         if make is None:
             return False
         try:
-            files = make()
+            files = {
+                rel: _stamp_generated(label, body)
+                for rel, (label, body) in make().items()
+            }
         except Exception:
             return False
-        written = False
+        fs = ws.files.fs
+        root = f"{ws.root}/skills/{installed}"
+        changed = False
         for rel, data in files.items():
-            dest = f"{ws.root}/skills/{installed}/{rel}"
+            dest = f"{root}/{rel}"
             try:
-                if ws.files.fs.exists(dest):
-                    continue
-                ws.files.fs.makedirs(dest.rsplit("/", 1)[0], exist_ok=True)
-                ws.files.fs.write(dest, data)
-                written = True
+                if fs.exists(dest):
+                    old = fs.read(dest)
+                    if old == data or not _is_pristine_generated(old):
+                        continue
+                else:
+                    fs.makedirs(dest.rsplit("/", 1)[0], exist_ok=True)
+                fs.write(dest, data)
+                changed = True
             except Exception:
                 continue
-        return written
+        for path in Registry._walk_files(fs, root):
+            if path[len(root) + 1 :] in files:
+                continue
+            try:
+                if _is_pristine_generated(fs.read(path)):
+                    fs.remove(path)
+                    changed = True
+            except Exception:
+                continue
+        return changed
+
+    @staticmethod
+    def _walk_files(fs: Any, root: str) -> list[str]:
+        """Every file under ``root``, or none when it cannot be listed."""
+        out = []
+        try:
+            names = sorted(fs.list(root))
+        except Exception:
+            return out
+        for name in names:
+            path = f"{root}/{name}"
+            if fs.isdir(path):
+                out.extend(Registry._walk_files(fs, path))
+            else:
+                out.append(path)
+        return out
 
     @staticmethod
     def _top_up_skills(ws: Workspace, *, wsgit: bool) -> None:
@@ -2630,7 +2691,9 @@ class Registry:
         gap: a seed file with no counterpart in the tree is written, an
         existing file is left as it is, whoever wrote it. A seed file
         the agent deleted comes back on the next open, which the studio
-        cannot tell apart from staleness. Best-effort, like seeding.
+        cannot tell apart from staleness. Generated files are the one
+        exception to "touch nothing": a pristine one is also refreshed
+        or removed (see ``_write_generated``). Best-effort, like seeding.
         """
         added = False
         for seed in Registry._skill_seeds(wsgit=wsgit):

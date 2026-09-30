@@ -78,7 +78,11 @@ One skill is partly built at seeding: `nontainer-ecosystem` ships only
 its `SKILL.md` overview, and its `references/` are the READMEs of the
 stack's packages, read from the metadata of the copies installed here.
 They describe the versions this server runs, and a package that is not
-installed (dud is an extra) has no file.
+installed (dud is an extra) has no file. They stay that way in older
+sessions too: on each open, a README the agent has not edited is
+rewritten when its package was upgraded and removed when it was
+uninstalled. The first line's hash is how an unedited file is told apart;
+an edited one is the session's own and is left alone.
 
 The app-assets directory and the notes that describe it are one decision.
 Swapping the directory means updating `FRONTEND_NOTES` in
