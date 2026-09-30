@@ -95,6 +95,31 @@ def test_fetch_asks_a_small_model_to_read_the_page():
     assert "https://docs.example/page" in body["messages"][-1]["content"]
 
 
+def test_a_list_of_urls_is_read_together():
+    """One question for every page, or one per page; answers come back
+    in order, and a page that fails holds its error in its own slot."""
+
+    def handler(body):
+        prompt = body["messages"][-1]["content"]
+        if "bad.example" in prompt:
+            return 502, {"error": "upstream"}
+        return 200, _chat(prompt.replace("\n", " | "))
+
+    w, _ = _web(handler)
+    out = w.fetch(["https://a.example", "https://bad.example"], "the version?")
+    assert out[0].startswith("URL: https://a.example | Question: the version?")
+    assert out[1].startswith("web.fetch failed for 'https://bad.example': ")
+    out = w.fetch(
+        ["https://a.example", "https://b.example"], ["the version?", "the license?"]
+    )
+    assert "Question: the license?" in out[1]
+    assert w.fetch([], "anything") == []
+    with pytest.raises(ValueError, match="2 URLs but 1 questions"):
+        w.fetch(["https://a.example", "https://b.example"], ["only one"])
+    with pytest.raises(ValueError, match="needs a list of URLs"):
+        w.fetch("https://a.example", ["q1", "q2"])
+
+
 def test_fetch_never_credits_a_page_it_did_not_read():
     """An answer from the model's memory must not come back as the
     page's: without an executed fetch there is no answer to give."""
