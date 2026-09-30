@@ -226,6 +226,36 @@ waiting on a host call counts against it and a deep search alone takes
 20–40 seconds. Measured costs: about half a cent for a search, 3–4 cents
 for a deep one, and a tenth of a cent for a fetch.
 
+## Media
+
+| name | default | what it does |
+|---|---|---|
+| `NONTAINER_STUDIO_MEDIA` | on when `OPENROUTER_API_KEY` is set | gives agent sessions the `media` host object; `0`, `false`, `no` or `off` withholds it |
+
+`media` lets the agent's Python make images and speech through
+OpenRouter, on the operator's key, and writes each file into the
+session's workspace:
+
+- `media.image(prompt, path, transparent=False, aspect="1:1",
+  quality="low", references=None)` writes a PNG from
+  `openai/gpt-image-2.5-sunburst`. `transparent=True` asks for a real
+  alpha channel, which on OpenRouter only OpenAI's image models give:
+  Gemini's and `gpt-image-2` take no transparent background.
+  `references` are workspace images to work from. Measured: about 11s
+  and $0.006 at low quality.
+- `media.speech(text, path, voice="Kore")` writes a WAV from
+  `google/gemini-3.8-flash-tts`, with bracketed direction such as
+  `[whispers]` in the text, and returns its length in seconds. Gemini
+  speech comes back only as raw PCM, so it is wrapped as 24kHz mono WAV,
+  about 48KB a second.
+
+Both take a list of dicts of their arguments to make several at once.
+Relative paths are taken from `/workspace`, not the agent's cwd, and
+nothing is written outside it. Only agent sessions get `media`, for the
+same reason as `web`, and each session's is bound to its own workspace.
+The file is written when the call returns; under dud the running call
+cannot read it back, but the next call can.
+
 ## Delegation caps
 
 | name | default | what it does |

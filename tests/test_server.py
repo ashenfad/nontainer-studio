@@ -651,21 +651,27 @@ def test_web_reaches_the_agent_and_never_a_published_app(studio, monkeypatch):
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "x")
     monkeypatch.delenv("NONTAINER_STUDIO_WEB", raising=False)
+    monkeypatch.delenv("NONTAINER_STUDIO_MEDIA", raising=False)
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
     config = session.ws.runtime.python_config
     assert "web" in config.host_objects
     assert config.timeout == sessions_mod.AGENT_PYTHON_TIMEOUT
+    # media writes into its own session's workspace, so each has its own
+    assert config.host_objects["media"]._ws is session.ws
     fork = client.post("/api/sessions/s1/fork", json={}).json()
-    forked = registry.get(fork["name"]).ws.runtime.python_config
+    child = registry.get(fork["name"])
+    forked = child.ws.runtime.python_config
     assert "web" in forked.host_objects
+    assert forked.host_objects["media"]._ws is child.ws
 
     session.ws.files.fs.write("/workspace/app/index.html", b"<p>hi</p>")
     session.ws.commit()
     pub = _publish(client, "s1")
     served = registry.resolve(pub["token"]).runtime.python_config
     assert "web" not in served.host_objects
+    assert "media" not in served.host_objects
     assert "db" in served.host_objects
     assert served.timeout == 30.0
 
@@ -675,15 +681,21 @@ def test_without_web_the_agent_is_neither_given_nor_told_of_it(studio, monkeypat
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "x")
     monkeypatch.setenv("NONTAINER_STUDIO_WEB", "off")
+    monkeypatch.setenv("NONTAINER_STUDIO_MEDIA", "off")
     assert sessions_mod._python_primer() == sessions_mod.DB_PRIMER
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     config = registry.get("s1").ws.runtime.python_config
     assert "web" not in config.host_objects
+    assert "media" not in config.host_objects
     assert config.timeout == 30.0
 
     monkeypatch.delenv("NONTAINER_STUDIO_WEB")
-    assert sessions_mod.WEB_PRIMER in sessions_mod._python_primer()
+    primer = sessions_mod._python_primer()
+    assert sessions_mod.WEB_PRIMER in primer
+    assert sessions_mod.MEDIA_PRIMER not in primer
+    monkeypatch.delenv("NONTAINER_STUDIO_MEDIA")
+    assert sessions_mod.MEDIA_PRIMER in sessions_mod._python_primer()
 
 
 def test_publish_makes_a_publication_and_marks_the_transcript(scripted, tmp_path):
