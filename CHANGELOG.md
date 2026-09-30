@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- **The transcript shows the agent's work quietly, in plain words.**
+  Studio now works the way Cursor does:
+  - **Tool runs** are a muted line with a chevron, "Ran 2 commands,
+    edited 1 file", instead of a pill with a dot and raw tool names.
+  - **Thinking** is a line of its own, "Thought for 12s", or
+    "Thinking…" while it streams.
+  - **Detail opens in three levels:** the group, one line per step
+    ("Ran `cat app.py`", "Edited app/app.jsx", "Tested the app ·
+    failed · 6 steps · 1 screenshot"), then the step's output, with the
+    same per-tool renderers as before.
+  - **A finished turn folds** its tool runs and thinking under one
+    line, "Worked for 3m 10s". What the agent said, and any artifacts,
+    stay in view.
+  - **Work in progress** shimmers ("Running", "Thinking…",
+    "Working…") instead of pulsing a dot.
+  - **Screenshots** stay in their step. The step's line says it has
+    them.
+- **Every transcript event carries `ts`,** when it happened. The
+  durations above are read off it; a transcript from before this
+  change says "Worked" and "Thought" without a time.
+
 ### Fixed
 
 - **An unpublish or repoint no longer fails a request mid-flight on a

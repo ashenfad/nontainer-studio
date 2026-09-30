@@ -121,6 +121,24 @@ def _send(page, message: str) -> None:
     page.get_by_role("button", name="send").click()
 
 
+def _open_work(page, group: str):
+    """Open a finished turn's work down to its steps: every folded
+    "Worked" line on the page, the work group whose line names
+    ``group`` (its plain-words summary, e.g. "Wrote" or "Ran"), and
+    every step in that group. Returns the group's timeline."""
+    expect(page.locator(".worked").last).to_be_visible(timeout=15000)
+    folded = page.locator(".worked:not(.open)")
+    for _ in range(folded.count()):
+        folded.first.click()
+    line = page.locator(".group-line", has_text=group).last
+    line.click()
+    timeline = line.locator("xpath=..").locator(".timeline")
+    closed = timeline.locator(".step-line:not(.open)")
+    for _ in range(closed.count()):
+        closed.first.click()
+    return timeline
+
+
 def _title(server: str, name: str, title: str) -> None:
     """Name a session so its rail row is findable. Rows are labelled by
     TITLE now — identity is a slug that never displays — so two untitled
@@ -165,14 +183,12 @@ def test_turn_streams_into_transcript(page, server):
         '!tool file_write {"path": "/workspace/notes.md", "content": "hello"}\n'
         "!text Wrote your note.",
     )
-    # activity chip for the real tool call, then the streamed reply
-    expect(page.locator(".chip", has_text="file_write")).to_be_visible(timeout=15000)
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "Wrote your note.", timeout=15000
     )
-    # chip expands to the timeline with the REAL tool result
-    page.locator(".chip", has_text="file_write").click()
-    expect(page.locator(".timeline")).to_contain_text("wrote /workspace/notes.md")
+    # the work opens down to the step, which carries the REAL tool result
+    timeline = _open_work(page, "Wrote")
+    expect(timeline).to_contain_text("wrote /workspace/notes.md")
 
     # the files tab lists the real workspace write; clicking opens the
     # shared file modal with a RENDERED view (markdown, not raw text)
@@ -237,8 +253,7 @@ def test_a_plain_dict_in_ui_renders_nothing_and_says_why(page, server):
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "Nothing to show.", timeout=15000
     )
-    page.locator(".chip", has_text="run_python").click()
-    expect(page.locator(".timeline")).to_contain_text(
+    expect(_open_work(page, "Ran")).to_contain_text(
         "is a plain dict, which is data and not a UI artifact", timeout=10000
     )
     # and the turn carries no artifact: nothing was written to render
@@ -334,8 +349,7 @@ def test_long_tool_lines_scroll_instead_of_widening_layout(page, server):
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "ran it", timeout=15000
     )
-    page.locator(".chip", has_text="terminal").click()
-    expect(page.locator(".timeline")).to_be_visible()
+    expect(_open_work(page, "Ran").locator("pre.block").first).to_be_visible()
     metrics = page.evaluate(
         """() => ({
             doc: document.documentElement.scrollWidth,
@@ -348,10 +362,11 @@ def test_long_tool_lines_scroll_instead_of_widening_layout(page, server):
     assert metrics["pre"] > metrics["preBox"], f"pre should scroll: {metrics}"
 
 
-def test_thinking_interleaves_into_the_work_chip(page, server):
-    """Thinking around tool calls folds INTO the activity chip (the
-    think -> act narrative lives in the drill-down); a tool-free
-    thought keeps its standalone toggle block."""
+def test_thinking_interleaves_into_the_work_group(page, server):
+    """Thinking around tool calls folds INTO the work group (the
+    think -> act narrative lives in the drill-down, as "Thought …"
+    lines between the steps); a tool-free thought is a line of its
+    own. A finished turn folds both under "Worked"."""
     page.goto(f"{server}/?session=e2e-think")
     _send(
         page,
@@ -362,22 +377,51 @@ def test_thinking_interleaves_into_the_work_chip(page, server):
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "Done pondering.", timeout=15000
     )
-    # no standalone thinking block: it joined the work group
-    expect(page.locator(".think-toggle")).to_have_count(0)
-    page.locator(".chip", has_text="file_write").click()
-    timeline = page.locator(".timeline")
-    expect(timeline).to_contain_text("thinking")
+    timeline = _open_work(page, "Wrote")
+    # no standalone thinking line: it joined the work group
+    expect(page.locator(".agent-msg > .think-block")).to_have_count(0)
+    thought = timeline.locator(".think-toggle")
+    expect(thought).to_contain_text("Thought")
+    thought.click()
     expect(timeline).to_contain_text("Considering the request carefully.")
 
-    # a pure thought (no tools) stays a standalone foldable block
+    # a pure thought (no tools) is a line of its own, under "Worked"
     _send(page, "!think Just musing, no tools.\n!text Mused.")
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "Mused.", timeout=15000
     )
-    toggle = page.locator(".think-toggle").first
+    page.locator(".worked").last.click()
+    toggle = page.locator(".agent-msg").last.locator(".think-toggle")
     expect(toggle).to_be_visible()
     toggle.click()
     expect(page.locator(".think-text").last).to_contain_text("Just musing")
+
+
+def test_a_finished_turn_folds_its_work_and_keeps_its_prose(page, server):
+    """The Cursor-style transcript: once a turn is done its tool runs
+    and thinking fold under one quiet "Worked …" line, timed from the
+    events, while what the agent SAID stays in view."""
+    page.goto(f"{server}/?session=e2e-fold")
+    _send(
+        page,
+        "!think Planning.\n"
+        '!tool terminal {"command": "echo hi"}\n'
+        '!tool file_write {"path": "/a.txt", "content": "a"}\n'
+        "!text All set.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "All set.", timeout=15000
+    )
+    worked = page.locator(".worked").last
+    expect(worked).to_be_visible(timeout=15000)
+    # timed from the events' ts: a scripted turn is quick
+    expect(worked).to_contain_text(re.compile(r"Worked (briefly|for \d+s)"))
+    expect(page.locator(".group-line")).to_have_count(0)  # folded
+    expect(page.locator(".agent-msg .bubble").last).to_be_visible()  # prose stays
+    worked.click()
+    line = page.locator(".group-line").last
+    expect(line).to_contain_text("Ran 1 command")
+    expect(line).to_contain_text("wrote 1 file")
 
 
 def test_a_message_typed_while_the_agent_works_waits_then_lands(page, server):
@@ -410,10 +454,14 @@ def test_a_message_typed_while_the_agent_works_waits_then_lands(page, server):
 
     # the interjection splits the agent's message in two, and the tool
     # call it landed inside opened in the first half: its result must
-    # still pair with THAT call, not open a second activity chip and
-    # leave the first spinning forever
-    expect(page.locator(".activity .chip")).to_have_count(1)
-    expect(page.locator(".dot.running")).to_have_count(0)
+    # still pair with THAT call, not open a second work group and
+    # leave the first running forever
+    expect(page.locator(".worked").last).to_be_visible(timeout=15000)
+    folded = page.locator(".worked:not(.open)")
+    for _ in range(folded.count()):
+        folded.first.click()
+    expect(page.locator(".group-line")).to_have_count(1)
+    expect(page.locator(".group-line.act-live")).to_have_count(0)
 
 
 def test_edit_rewinds_files_and_truncates_transcript(page, server):
@@ -893,18 +941,20 @@ def test_tool_steps_render_by_type(page, server):
     expect(page.locator(".agent-msg .bubble").last).to_contain_text(
         "edited", timeout=15000
     )
-    page.locator(".chip", has_text="terminal").click()
-    timeline = page.locator(".timeline")
-    # terminal: prompt-prefixed command block
+    # the group says what the run did, in plain words
+    expect(page.locator(".worked").last).to_be_visible(timeout=15000)
+    timeline = _open_work(page, "Ran")
+    expect(page.locator(".group-line").last).to_contain_text("Ran 1 command")
+    expect(page.locator(".group-line").last).to_contain_text("edited 1 file")
+    # terminal: its line names the command, its detail is a prompt block
+    expect(timeline.locator(".step-line", has_text="cat /app.py")).to_be_visible()
     expect(timeline.locator(".terminal")).to_contain_text("$ cat /app.py")
-    # file_edit: old-then-new line diff with the path in the label
-    expect(timeline.locator(".step-name", has_text="edit — /app.py")).to_be_visible()
+    # file_edit: "Edited" and the path, then an old-then-new line diff
+    expect(timeline.locator(".step-line", has_text="Edited")).to_contain_text("/app.py")
     expect(timeline.locator(".diff-removed")).to_contain_text("y = 2")
     expect(timeline.locator(".diff-added")).to_contain_text("y = 3")
     # write: highlighted content (hljs spans present) in the first turn
-    prev_chip = page.locator(".chip", has_text="file_write").first
-    prev_chip.click()
-    expect(page.locator(".timeline .hljs").first).to_be_visible()
+    expect(_open_work(page, "Wrote").locator(".hljs").first).to_be_visible()
 
 
 def test_chat_markdown_link_opens_file_modal(page, server):
@@ -940,8 +990,12 @@ def test_tool_result_images_stay_in_the_timeline(page, server):
     )
     # nothing rendered inline in the transcript...
     expect(page.locator(".agent-msg .artifact-img")).to_have_count(0)
-    # ...but the expanded tool timeline carries it
-    page.locator(".chip", has_text="file_write").click()
+    # ...but the step carries it, and its line says so while folded
+    expect(page.locator(".worked").last).to_be_visible(timeout=15000)
+    page.locator(".worked").last.click()
+    page.locator(".group-line", has_text="Wrote").last.click()
+    expect(page.locator(".step-line").last).to_contain_text("1 image")
+    page.locator(".step-line").last.click()
     expect(page.locator(".timeline .step-img")).to_have_count(1, timeout=5000)
 
 

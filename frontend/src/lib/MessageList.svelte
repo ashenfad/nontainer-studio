@@ -225,7 +225,9 @@
         {/if}
     {/each}
     {#if rt.busy && rt.messages.at(-1)?.role === 'user'}
-        <div class="thinking"><span class="pulse-dot"></span></div>
+        <div class="act-line act-live working">
+            <span class="act-verb">Working</span><span class="act-rest">…</span>
+        </div>
     {/if}
     <!-- Messages typed while the agent works: they are waiting, not
          said yet, so they sit at the bottom looking like it until the
@@ -495,15 +497,7 @@
         padding: 0.45rem 0.7rem;
         margin: 0.3rem 0;
     }
-    .thinking {
-        padding: 0.4rem 0.2rem;
-    }
-    .pulse-dot {
-        display: inline-block;
-        width: 9px;
-        height: 9px;
-        border-radius: 50%;
-        background: var(--accent);
-        animation: pulse 1.2s ease-in-out infinite;
+    .working {
+        cursor: default;
     }
 </style>

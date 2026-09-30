@@ -7,8 +7,26 @@
     import Artifact from './Artifact.svelte'
     import ToolGroup from './ToolGroup.svelte'
     import ThinkingBlock from './ThinkingBlock.svelte'
+    import { duration } from './activity.js'
 
     let { msg, session } = $props()
+
+    // A finished turn folds its work -- tool runs and thinking -- under
+    // one line, "Worked for 3m", and keeps its prose and artifacts in
+    // view: the prose is the agent talking to the human, the work is
+    // how it got there. A turn still running shows everything.
+    let showWork = $state(false)
+    const hasWork = $derived(
+        msg.items.some((i) => i.kind === 'tool' || i.kind === 'thinking'),
+    )
+    const folded = $derived(!msg.streaming && hasWork && !showWork)
+    const worked = $derived(duration(msg.startTs, msg.endTs))
+    // the live tail already says it is working when it is a running
+    // tool or streaming thinking; otherwise one quiet line does
+    const liveTail = $derived.by(() => {
+        const last = msg.items.at(-1)
+        return last?.kind === 'thinking' || (last?.kind === 'tool' && last.running)
+    })
 
     // Group items: runs of WORK (tools + the thinking interleaved
     // between them) collapse into one activity chip; prose and
@@ -54,8 +72,17 @@
 </script>
 
 <div class="agent-msg">
+    {#if !msg.streaming && hasWork}
+        <button class="act-line worked" class:open={showWork} onclick={() => (showWork = !showWork)}>
+            <span class="act-verb">Worked</span>
+            {#if worked}<span class="act-rest">{worked}</span>{/if}
+            <span class="act-chev">⌄</span>
+        </button>
+    {/if}
     {#each groups as g, i (i)}
-        {#if g.kind === 'tools'}
+        {#if folded && (g.kind === 'tools' || g.kind === 'thinking')}
+            <!-- folded under "Worked" -->
+        {:else if g.kind === 'tools'}
             <ToolGroup entries={g.entries} {session} />
         {:else if g.kind === 'thinking'}
             <ThinkingBlock item={g} live={msg.streaming && g === msg.items.at(-1)} />
@@ -73,8 +100,8 @@
             <Artifact {session} path={g.path} name={g.name} />
         {/if}
     {/each}
-    {#if msg.streaming}
-        <div class="thinking"><span class="pulse-dot"></span></div>
+    {#if msg.streaming && !liveTail}
+        <div class="act-line act-live working"><span class="act-verb">Working</span><span class="act-rest">…</span></div>
     {/if}
 </div>
 
@@ -90,15 +117,10 @@
         font-size: 0.88rem;
         line-height: 1.55;
     }
-    .thinking {
-        padding: 0.4rem 0.2rem;
+    .worked {
+        display: flex;
     }
-    .pulse-dot {
-        display: inline-block;
-        width: 9px;
-        height: 9px;
-        border-radius: 50%;
-        background: var(--accent);
-        animation: pulse 1.2s ease-in-out infinite;
+    .working {
+        cursor: default;
     }
 </style>
