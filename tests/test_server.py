@@ -7005,6 +7005,43 @@ def test_an_existing_session_is_topped_up_with_the_seed_files_it_lacks(studio):
     )
 
 
+def test_the_ecosystem_skill_carries_the_installed_readmes(studio, monkeypatch):
+    """The ecosystem skill's references are the READMEs of the packages
+    installed here, read from their metadata when a session is seeded,
+    so they describe the versions this server runs. A package that is
+    not installed has no file, and the seed is committed like any
+    other skill."""
+    from importlib.metadata import version
+
+    from nontainer_studio import sessions
+
+    monkeypatch.setattr(
+        sessions, "_ECOSYSTEM_PACKAGES", ("kvgit", "termish", "not-a-package-here")
+    )
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    fs = session.ws.files.fs
+    refs = "/workspace/skills/nontainer-ecosystem/references"
+    assert fs.exists("/workspace/skills/nontainer-ecosystem/SKILL.md")
+    assert sorted(fs.list(refs)) == ["kvgit.md", "termish.md"]
+    kvgit = fs.read(f"{refs}/kvgit.md").decode()
+    assert kvgit.startswith(f"<!-- kvgit {version('kvgit')}: ")
+    assert "# kvgit" in kvgit
+    assert not session.ws.uncommitted
+
+    # topped up like the directory's own files: a missing README comes
+    # back, an edited one is left alone
+    fs.remove(f"{refs}/kvgit.md")
+    fs.write(f"{refs}/termish.md", b"agent-edited")
+    session.ws.commit()
+    registry.close()
+    registry._sessions.clear()
+    reopened = registry.open("s1").ws.files.fs
+    assert reopened.read(f"{refs}/kvgit.md").decode() == kvgit
+    assert reopened.read(f"{refs}/termish.md") == b"agent-edited"
+
+
 # -- the inbox: messages queued while the agent works -------------------------
 
 

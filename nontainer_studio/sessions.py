@@ -481,6 +481,50 @@ _GATED_SKILLS: dict[str, Callable[[bool], bool]] = {
     "starting-from-published": _can_start_from_published,
 }
 
+#: The packages the nontainer-ecosystem skill documents, whose READMEs it
+#: carries under references/.
+_ECOSYSTEM_PACKAGES = (
+    "nontainer-studio",
+    "nontainer",
+    "termish",
+    "monkeyfs",
+    "sandtrap",
+    "kvgit",
+    "reprobate",
+    "dud",
+)
+
+
+def _ecosystem_readmes() -> dict[str, bytes]:
+    """``references/<package>.md`` for each installed package: the README
+    its distribution metadata carries, headed with the version.
+
+    Read from what is installed rather than copied into the repo, so the
+    text describes the versions this server actually runs and never goes
+    stale. A package that is not installed (dud is an extra) is skipped.
+    """
+    from importlib.metadata import PackageNotFoundError, metadata
+
+    files = {}
+    for name in _ECOSYSTEM_PACKAGES:
+        try:
+            meta = metadata(name)
+        except PackageNotFoundError:
+            continue
+        body = (meta.get_payload() or meta.get("Description") or "").strip()
+        if not body:
+            continue
+        head = f"<!-- {name} {meta['Version']}: the README of the installed package -->"
+        files[f"references/{name}.md"] = f"{head}\n\n{body}\n".encode()
+    return files
+
+
+#: Skill files built when a session is seeded rather than kept in the
+#: skill's directory, keyed by that directory's name.
+_GENERATED_SKILL_FILES: dict[str, Callable[[], dict[str, bytes]]] = {
+    "nontainer-ecosystem": _ecosystem_readmes,
+}
+
 
 def _ensure_vm_cap() -> None:
     """Default dud's VM budget for the studio's long-running posture.
@@ -2511,9 +2555,12 @@ class Registry:
                     if gate is not None and not gate(wsgit):
                         continue
                     try:
-                        skills.install(ws, child)
+                        installed = skills.install(ws, child)
                     except Exception:
-                        pass
+                        continue
+                    if Registry._write_generated(ws, child.name, installed):
+                        if ws.caps.versioned and ws.uncommitted:
+                            ws.commit(info={"tool": "skill", "skill": installed})
         try:
             skills.install_from_modules(ws)
         except Exception:
@@ -2545,6 +2592,31 @@ class Registry:
         return seeds
 
     @staticmethod
+    def _write_generated(ws: Workspace, seed: str, installed: str) -> bool:
+        """Write the generated files of the skill seeded from directory
+        ``seed`` into its installed tree, skipping any already there.
+        True when something was written. Best-effort, like seeding."""
+        make = _GENERATED_SKILL_FILES.get(seed)
+        if make is None:
+            return False
+        try:
+            files = make()
+        except Exception:
+            return False
+        written = False
+        for rel, data in files.items():
+            dest = f"{ws.root}/skills/{installed}/{rel}"
+            try:
+                if ws.files.fs.exists(dest):
+                    continue
+                ws.files.fs.makedirs(dest.rsplit("/", 1)[0], exist_ok=True)
+                ws.files.fs.write(dest, data)
+                written = True
+            except Exception:
+                continue
+        return written
+
+    @staticmethod
     def _top_up_skills(ws: Workspace, *, wsgit: bool) -> None:
         """Add to an existing session's skill tree the seed files it
         lacks, and touch nothing it has.
@@ -2574,6 +2646,8 @@ class Registry:
                     added = True
                 except Exception:
                     continue
+            if Registry._write_generated(ws, seed.name, seed.name):
+                added = True
         if not added:
             return
         try:
