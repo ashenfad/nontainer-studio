@@ -197,6 +197,34 @@ built — the retention sweep, the drill-down routes and the delegates
 listing all read it — and with no tool to fork through they simply find
 nothing.
 
+## The web
+
+| name | default | what it does |
+|---|---|---|
+| `NONTAINER_STUDIO_WEB` | on when `OPENROUTER_API_KEY` is set | gives agent sessions the `web` host object; `0`, `false`, `no` or `off` withholds it |
+
+`web` lets the agent's Python search and read the web through
+OpenRouter, on the operator's key:
+
+- `web.search(query, deep=False)` answers from a Perplexity search
+  (`perplexity/sonar`, or `perplexity/sonar-pro-search` with `deep=True`)
+  and lists the numbered sources. A list of queries runs concurrently.
+- `web.fetch(url, question)` reads one page and answers a question from
+  it. A small model (`google/gemini-3.5-flash-lite`) reads the page
+  through OpenRouter's `web_fetch` tool, which extracts its main content
+  with Parallel. It returns an extract, never the page itself: OpenRouter
+  hands fetched content only to a model, and a model asked to relay a page
+  verbatim abridges it. The fetch happens at OpenRouter, so it cannot
+  reach this machine or its network.
+
+Only agent sessions get it. A published app serves anyone holding its
+link, so its snapshot is built without `web`, and app code in the
+session's own preview should not call it either. A session with `web`
+also gets a 180-second Python timeout in place of 30, because time spent
+waiting on a host call counts against it and a deep search alone takes
+20–40 seconds. Measured costs: about half a cent for a search, 3–4 cents
+for a deep one, and a tenth of a cent for a fetch.
+
 ## Delegation caps
 
 | name | default | what it does |

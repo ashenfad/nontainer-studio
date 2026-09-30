@@ -34,6 +34,8 @@ dependencies = [
     # opt-in installs
     "anthropic",
     "openai",
+    # the `web` host object's calls to OpenRouter
+    "httpx>=0.27",
     # agno's compression watermark counts tokens with these; without
     # them it estimates and warns on every new model id
     "tiktoken",

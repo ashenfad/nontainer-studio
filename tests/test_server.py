@@ -642,6 +642,50 @@ def _publish(client, session: str, **body) -> dict:
     return r.json()
 
 
+def test_web_reaches_the_agent_and_never_a_published_app(studio, monkeypatch):
+    """`web` spends the operator's OpenRouter key, so an agent session
+    gets it, with a timeout above a deep search, and a published
+    snapshot, which serves anyone holding its link, does not. A fork is
+    an agent session too."""
+    from nontainer_studio import sessions as sessions_mod
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "x")
+    monkeypatch.delenv("NONTAINER_STUDIO_WEB", raising=False)
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    config = session.ws.runtime.python_config
+    assert "web" in config.host_objects
+    assert config.timeout == sessions_mod.AGENT_PYTHON_TIMEOUT
+    fork = client.post("/api/sessions/s1/fork", json={}).json()
+    forked = registry.get(fork["name"]).ws.runtime.python_config
+    assert "web" in forked.host_objects
+
+    session.ws.files.fs.write("/workspace/app/index.html", b"<p>hi</p>")
+    session.ws.commit()
+    pub = _publish(client, "s1")
+    served = registry.resolve(pub["token"]).runtime.python_config
+    assert "web" not in served.host_objects
+    assert "db" in served.host_objects
+    assert served.timeout == 30.0
+
+
+def test_without_web_the_agent_is_neither_given_nor_told_of_it(studio, monkeypatch):
+    from nontainer_studio import sessions as sessions_mod
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "x")
+    monkeypatch.setenv("NONTAINER_STUDIO_WEB", "off")
+    assert sessions_mod._python_primer() == sessions_mod.DB_PRIMER
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    config = registry.get("s1").ws.runtime.python_config
+    assert "web" not in config.host_objects
+    assert config.timeout == 30.0
+
+    monkeypatch.delenv("NONTAINER_STUDIO_WEB")
+    assert sessions_mod.WEB_PRIMER in sessions_mod._python_primer()
+
+
 def test_publish_makes_a_publication_and_marks_the_transcript(scripted, tmp_path):
     """A version is a version of a nontainer publication named for the
     app's token, the app's row names the session's db, and the

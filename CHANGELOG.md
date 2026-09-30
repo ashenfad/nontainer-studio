@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The agent can search and read the web.** When `OPENROUTER_API_KEY`
+  is set, an agent session's Python has a `web` host object. The new
+  `NONTAINER_STUDIO_WEB` setting turns it off.
+  - **`web.search(query, deep=False)`** answers from a Perplexity search
+    and lists its numbered sources. `deep=True` uses the multi-step
+    search, and a list of queries runs concurrently.
+  - **`web.fetch(url, question)`** answers a question from one page. A
+    small model reads the page through OpenRouter's `web_fetch` tool,
+    with Parallel extracting its main content. Parallel was chosen by
+    measurement: Exa served a days-old copy of a GitHub README, and the
+    raw fetch drowned the model in 124k tokens of HTML.
+  - **It returns an extract, not the page.** OpenRouter gives fetched
+    content only to a model, and a model asked to repeat a page
+    verbatim quietly shortened a 10k-character README to 2.7k.
+  - **Agent sessions only, forks included.** Published apps never get
+    it, since they serve anyone with the link.
+  - **A longer Python timeout comes with it,** 180 seconds instead of
+    30. Waiting on a host call counts toward the limit, and a deep
+    search takes 20–40 seconds.
+
 - **A skill about the stack itself.** `nontainer-ecosystem` tells the
   agent what it is running on: nontainer-studio, nontainer, termish,
   monkeyfs, sandtrap, kvgit, reprobate and dud, with a short overview of
