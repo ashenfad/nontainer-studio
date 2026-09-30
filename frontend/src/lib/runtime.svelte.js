@@ -180,6 +180,8 @@ export async function createSession() {
 const ARTIFACT_NOTE = /\[ui artifacts: ([^\]]+)\]/
 const IMAGE_PATHS = /\/[\w./-]+\.(?:png|jpe?g|gif|webp)\b/g
 
+const ENDS_THINKING = new Set(['text', 'tool_start', 'tool_end', 'interject', 'user', 'error', 'done'])
+
 export class SessionRuntime {
     messages = $state([])
     busy = $state(false)
@@ -204,6 +206,10 @@ export class SessionRuntime {
     foreground = false // set via setForeground; gates the SSE stream
     cursor = 0
     #turnArts = []
+    // when the turn being written started (its user event's ts), for the
+    // agent message's "Worked for …"; the transcript reads every
+    // duration off the events' ts, and old logs without one say less
+    #turnTs = null
     // Ids whose delivery arrived before the POST that queued them came
     // back. The SSE event and the response race, and the loser must not
     // put a message back on screen as waiting after the agent has read
@@ -284,9 +290,14 @@ export class SessionRuntime {
 
     #apply(ev) {
         if (typeof ev.cursor === 'number') this.cursor = ev.cursor + 1
+        // Thinking lasts until the agent does something else: close its
+        // span on the next event that adds to the transcript (a usage
+        // or notice event arriving between chunks is not that).
+        if (ENDS_THINKING.has(ev.type)) this.#closeThinking(ev.ts)
         if (ev.type === 'user') {
             this.busy = true
             this.#turnArts = []
+            this.#turnTs = ev.ts ?? null
             // a turn STARTED from the queue says which messages it took
             if (ev.from_queue?.length) this.#stopWaiting(ev.from_queue)
             this.messages.push({
@@ -304,7 +315,12 @@ export class SessionRuntime {
             // comes next is its answer to this.
             this.#stopWaiting([ev.id])
             const open = this.messages.at(-1)
-            if (open?.role === 'agent') open.streaming = false
+            if (open?.role === 'agent') {
+                open.streaming = false
+                open.endTs = ev.ts ?? null
+            }
+            // what the agent writes next answers this, and is timed from it
+            this.#turnTs = ev.ts ?? null
             this.messages.push({
                 role: 'user',
                 text: ev.text,
@@ -316,12 +332,12 @@ export class SessionRuntime {
             const items = this.#agentItems()
             const last = items.at(-1)
             if (last?.kind === 'text') last.text += ev.delta
-            else items.push({ kind: 'text', text: ev.delta })
+            else items.push({ kind: 'text', text: ev.delta, ts: ev.ts })
         } else if (ev.type === 'thinking') {
             const items = this.#agentItems()
             const last = items.at(-1)
             if (last?.kind === 'thinking') last.text += ev.delta
-            else items.push({ kind: 'thinking', text: ev.delta })
+            else items.push({ kind: 'thinking', text: ev.delta, ts: ev.ts, endTs: null })
         } else if (ev.type === 'tool_start') {
             this.#agentItems().push({
                 kind: 'tool',
@@ -329,6 +345,7 @@ export class SessionRuntime {
                 args: ev.args,
                 result: null,
                 running: true,
+                ts: ev.ts,
             })
         } else if (ev.type === 'tool_end') {
             // tool calls can run in PARALLEL (several starts, then the
@@ -423,6 +440,7 @@ export class SessionRuntime {
                     if (!prose.includes(a.path))
                         msg.items.push({ kind: 'artifact', name: a.name, path: a.path })
                 msg.streaming = false
+                msg.endTs = ev.ts ?? null
             }
             this.#turnArts = []
             if (!this.foreground) this.unseen = true
@@ -469,10 +487,23 @@ export class SessionRuntime {
     #agentItems() {
         let msg = this.messages.at(-1)
         if (msg?.role !== 'agent' || !msg.streaming) {
-            msg = { role: 'agent', items: [], streaming: true }
+            msg = {
+                role: 'agent',
+                items: [],
+                streaming: true,
+                startTs: this.#turnTs,
+                endTs: null,
+            }
             this.messages.push(msg)
         }
         return msg.items
+    }
+
+    /** end the span of the thinking being written, if any, at ``ts`` */
+    #closeThinking(ts) {
+        const msg = this.messages.at(-1)
+        const last = msg?.role === 'agent' ? msg.items.at(-1) : null
+        if (last?.kind === 'thinking' && last.endTs == null) last.endTs = ts ?? null
     }
 
     /** record a turn artifact, idempotent by path — the server now emits

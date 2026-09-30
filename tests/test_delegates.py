@@ -1648,7 +1648,11 @@ def test_closing_the_registry_does_not_wait_out_a_delegates_turn(tmp_path):
     # the child's own transcript records the cut
     log = (tmp_path / "events" / "boss.scout.jsonl").read_text()
     cut = [json.loads(line) for line in log.splitlines()]
-    assert [e for e in cut if e["type"] == "error"] == [
+    # ts is when it happened; the rest of the event is what matters here
+    errors = [
+        {k: v for k, v in e.items() if k != "ts"} for e in cut if e["type"] == "error"
+    ]
+    assert errors == [
         {"type": "error", "message": server.STOPPED_AT_SHUTDOWN, "seq": 1}
     ]
     assert cut[-1]["type"] == "done"  # the turn was closed out, not abandoned

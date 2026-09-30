@@ -221,3 +221,74 @@ button {
         transform: rotate(360deg);
     }
 }
+
+/* ---------------------------------------------------------------------------
+ * The agent's work, quietly: "Worked for 3s ⌄", "Ran 2 commands ⌄",
+ * "Thought for 12s ⌄". Text rather than chrome — no pill, no dot — with
+ * the verb a step brighter than what it acted on, and a chevron that
+ * turns when the line is open. Shared by the turn summary, work groups,
+ * tool steps and thinking (see lib/activity.js for the wording).
+ * --------------------------------------------------------------------------- */
+.act-line {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    max-width: 100%;
+    background: none;
+    border: none;
+    padding: 0.12rem 0;
+    margin: 0.1rem 0;
+    font: inherit;
+    font-size: 0.84rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    text-align: left;
+}
+.act-line:hover .act-verb,
+.act-line:hover .act-rest {
+    color: var(--text);
+}
+.act-verb {
+    color: #b3b3b3;
+    white-space: nowrap;
+}
+.act-rest {
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+.act-rest.code {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+}
+.act-chev {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+    transform: rotate(-90deg);
+}
+.act-line.open .act-chev {
+    transform: none;
+}
+/* Work still under way: the words shimmer instead of a dot pulsing. */
+.act-live .act-verb,
+.act-live .act-rest {
+    background: linear-gradient(90deg, var(--text-muted) 0%, var(--text) 50%, var(--text-muted) 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: act-shimmer 1.6s linear infinite;
+}
+@keyframes act-shimmer {
+    from { background-position: 100% 0; }
+    to { background-position: -100% 0; }
+}
+/* What an open line reveals: indented under it, on a faint rule. */
+.act-body {
+    margin: 0.1rem 0 0.35rem 0.2rem;
+    padding-left: 0.75rem;
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+}

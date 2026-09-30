@@ -154,6 +154,20 @@ def test_turn_runs_in_background_and_transcript_replays(studio):
     assert [e["type"] for e in tail] == ["done"]
 
 
+def test_every_event_carries_when_it_happened(studio):
+    """The transcript reads durations off the events ("Thought for
+    12s", "Worked for 3m"), so each carries a ts, in order; a merged
+    delta run keeps its first chunk's."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    client.post("/api/sessions/s1/chat", json={"message": "go"})
+    events = _collect_until_done(client, "s1")
+    stamps = [e["ts"] for e in events]
+    assert all(isinstance(t, float) for t in stamps), events
+    assert stamps == sorted(stamps)
+    assert abs(stamps[-1] - time.time()) < 60
+
+
 def test_native_thinking_streams_as_thinking_events(studio):
     """reasoning_content deltas on RunContent (and ReasoningContentDelta
     events) surface as `thinking` transcript events; mixed chunks split

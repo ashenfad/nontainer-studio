@@ -9,8 +9,24 @@
     import { highlightCode } from './markdown.js'
     import { viewFile } from './viewer.svelte.js'
     import Diff from './Diff.svelte'
+    import { stepLine } from './activity.js'
 
     let { tool, session } = $props()
+
+    // One quiet line ("Ran `pwd && ls`", "Edited app/app.jsx", "Tested
+    // the app · passed · 6 steps"); the renderers below are what it
+    // opens to.
+    let open = $state(false)
+    const line = $derived(stepLine(tool))
+    // What the line says it carries, while folded: a test run's
+    // screenshots, any other step's images. view_image's detail is the
+    // image itself, so its line says nothing more.
+    const pictures = $derived.by(() => {
+        const n = tool.name === 'view_image' ? 0 : (tool.images?.length ?? 0)
+        if (!n) return ''
+        const noun = tool.name === 'test_app' ? 'screenshot' : 'image'
+        return `· ${n} ${noun}${n === 1 ? '' : 's'}`
+    })
 
     const args = $derived.by(() => {
         if (tool.args && typeof tool.args === 'object') return tool.args
@@ -60,14 +76,6 @@
         return 'generic'
     })
 
-    const label = $derived.by(() => {
-        if (kind === 'write') return `write — ${args.path}`
-        if (kind === 'edit')
-            return `edit${args.replace_all ? ' (all)' : ''} — ${args.path}`
-        if (kind === 'view') return `view — ${args.path}`
-        if (kind === 'python') return 'python'
-        return tool.name
-    })
 
     const verdict = $derived.by(() => {
         if (kind !== 'test' || typeof tool.result !== 'string') return null
@@ -82,10 +90,20 @@
 </script>
 
 <div class="step">
-    <div class="step-name">
-        {label}
-        {#if tool.running}<span class="working">working…</span>{/if}
-    </div>
+    <button
+        class="act-line step-line"
+        class:open
+        class:act-live={tool.running}
+        onclick={() => (open = !open)}
+    >
+        <span class="act-verb">{line.verb}</span>
+        {#if line.subject}<span class="act-rest" class:code={line.code}>{line.subject}</span
+            >{/if}
+        {#if pictures}<span class="act-rest">{pictures}</span>{/if}
+        <span class="act-chev">⌄</span>
+    </button>
+    {#if open}
+    <div class="act-body step-detail">
 
     {#if kind === 'terminal'}
         <pre class="block terminal">{'$ ' +
@@ -130,23 +148,13 @@
             {/each}
         </div>
     {/if}
+    </div>
+    {/if}
 </div>
 
 <style>
-    .step-name {
-        font-size: 0.72rem;
-        font-weight: 600;
-        color: var(--purple);
+    .step-line {
         display: flex;
-        gap: 0.5rem;
-        align-items: baseline;
-        font-family: var(--font-mono);
-    }
-    .working {
-        color: var(--accent);
-        font-weight: 400;
-        font-family: var(--font-body);
-        animation: pulse 1.2s ease-in-out infinite;
     }
     .block {
         font-size: 0.72rem;
