@@ -3760,7 +3760,7 @@ def test_models_endpoint_reflects_env(studio, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "x")
     monkeypatch.setenv("NONTAINER_STUDIO_MODEL", "openrouter")
     data = client.get("/api/models").json()
-    assert data["default"] == "openrouter:anthropic/claude-sonnet-5"
+    assert data["default"] == "openrouter:anthropic/claude-sonnet-5.5"
     openrouter = next(p for p in data["providers"] if p["name"] == "openrouter")
     assert openrouter["models"]  # curated picks for the picker
 
