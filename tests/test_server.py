@@ -7042,6 +7042,42 @@ def test_the_ecosystem_skill_carries_the_installed_readmes(studio, monkeypatch):
     assert reopened.read(f"{refs}/termish.md") == b"agent-edited"
 
 
+def test_generated_skill_files_follow_the_server(studio, monkeypatch):
+    """A generated reference describes the server, not the session: an
+    upgraded package's README replaces the old one, an uninstalled
+    package's is removed, and a file the agent edited stays either
+    way."""
+    from nontainer_studio import sessions
+
+    installed = {"alpha": "1.0", "beta": "1.0", "gamma": "1.0"}
+
+    def readmes():
+        return {
+            f"references/{name}.md": (f"{name} {v}", f"\n# {name} {v}\n".encode())
+            for name, v in installed.items()
+        }
+
+    monkeypatch.setitem(sessions._GENERATED_SKILL_FILES, "nontainer-ecosystem", readmes)
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    refs = "/workspace/skills/nontainer-ecosystem/references"
+    session.ws.files.fs.write(f"{refs}/gamma.md", b"the agent's own notes")
+    session.ws.commit()
+    registry.close()
+    registry._sessions.clear()
+
+    installed.update(alpha="2.0")  # upgraded
+    del installed["beta"]  # uninstalled
+    del installed["gamma"]  # uninstalled, but the agent edited its file
+    reopened = registry.open("s1")
+    fs = reopened.ws.files.fs
+    assert "# alpha 2.0" in fs.read(f"{refs}/alpha.md").decode()
+    assert not fs.exists(f"{refs}/beta.md")
+    assert fs.read(f"{refs}/gamma.md") == b"the agent's own notes"
+    assert not reopened.ws.uncommitted
+
+
 # -- the inbox: messages queued while the agent works -------------------------
 
 
