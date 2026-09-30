@@ -9,9 +9,9 @@ defaults rather than overrides — see `.env.example`.
 
 | name | default | what it does |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | unset | offers the `anthropic` provider (default model `claude-sonnet-5`) |
+| `ANTHROPIC_API_KEY` | unset | offers the `anthropic` provider (default model `claude-sonnet-5-5`) |
 | `OPENAI_API_KEY` | unset | offers `openai` (default `gpt-5.6-sol`) |
-| `OPENROUTER_API_KEY` | unset | offers `openrouter` (default `anthropic/claude-sonnet-5`), over the `openai` SDK |
+| `OPENROUTER_API_KEY` | unset | offers `openrouter` (default `anthropic/claude-sonnet-5.5`), over the `openai` SDK |
 | `GOOGLE_API_KEY` | unset | offers `google` (default `gemini-2.5-pro`); needs `google-genai` installed |
 | `OLLAMA_HOST` | unset | offers `ollama` (default `llama3.3`); needs `ollama` installed. Point it at your daemon, usually `:11434` |
 | `NONTAINER_STUDIO_MODEL` | first available provider | the default model spec for new sessions |

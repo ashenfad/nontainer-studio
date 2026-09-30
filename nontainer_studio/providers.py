@@ -24,8 +24,8 @@ _PROVIDERS: dict[str, tuple[str, str, str, list[str]]] = {
     "anthropic": (
         "ANTHROPIC_API_KEY",
         "anthropic",
-        "claude-sonnet-5",
-        ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"],
+        "claude-sonnet-5-5",
+        ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-4-5"],
     ),
     "openai": (
         "OPENAI_API_KEY",
@@ -42,10 +42,10 @@ _PROVIDERS: dict[str, tuple[str, str, str, list[str]]] = {
     "openrouter": (
         "OPENROUTER_API_KEY",
         "openai",  # OpenRouter rides the openai SDK (OpenAILike)
-        "anthropic/claude-sonnet-5",
+        "anthropic/claude-sonnet-5.5",
         [
-            "anthropic/claude-sonnet-5",
-            "anthropic/claude-opus-4.8",
+            "anthropic/claude-sonnet-5.5",
+            "anthropic/claude-opus-5.5",
             "openai/gpt-5.6-luna",
             "openai/gpt-5.6-sol",
             "google/gemini-2.5-pro",

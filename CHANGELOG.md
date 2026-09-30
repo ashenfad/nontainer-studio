@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- **The Claude picks are Sonnet 5.5 and Opus 5.5.** This covers the
+  direct `anthropic` provider (`claude-sonnet-5-5`, the new default, and
+  `claude-opus-5-5`) and OpenRouter (`anthropic/claude-sonnet-5.5`, the
+  new default, and `anthropic/claude-opus-5.5`). Any other model id
+  still works as a spec.
+
 ### Fixed
 
 - **Claude now caches its prompt, directly and through OpenRouter.**
