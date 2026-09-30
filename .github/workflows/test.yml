@@ -101,6 +101,10 @@ jobs:
       run: npm ci && npm run build
       working-directory: frontend
 
+    - name: Unit tests (node --test)
+      run: npm test
+      working-directory: frontend
+
     - name: The committed bundle matches the source
       run: |
         git diff --exit-code --stat nontainer_studio/static/ || {

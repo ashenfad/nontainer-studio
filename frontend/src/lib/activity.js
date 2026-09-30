@@ -5,10 +5,27 @@
 
 const plural = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`
 
+// A tool call's arguments as an object, or null. Events carry them
+// structured, but older transcripts and some providers ship them as a
+// JSON string, salvaged here so a step reads the same either way.
+// Python-repr strings from before structured args stay null: the
+// generic view shows them raw.
+export function toolArgs(tool) {
+    if (tool.args && typeof tool.args === 'object') return tool.args
+    if (typeof tool.args === 'string' && tool.args.startsWith('{')) {
+        try {
+            return JSON.parse(tool.args)
+        } catch {
+            return null
+        }
+    }
+    return null
+}
+
 // A tool's step line: a verb, what it acted on, and whether that
 // subject reads as code.
 export function stepLine(tool) {
-    const args = tool.args && typeof tool.args === 'object' ? tool.args : {}
+    const args = toolArgs(tool) ?? {}
     const first = (text) =>
         String(text ?? '')
             .split('\n')
@@ -58,9 +75,7 @@ export function groupPhrases(tools) {
         }
         seen.get(t.name).push(t)
     }
-    const paths = (ts) =>
-        new Set(ts.map((t) => (t.args && typeof t.args === 'object' ? t.args.path : null)))
-            .size
+    const paths = (ts) => new Set(ts.map((t) => toolArgs(t)?.path ?? null)).size
     const phrase = (name, ts) => {
         const n = ts.length
         switch (name) {
@@ -92,10 +107,13 @@ export function groupPhrases(tools) {
 // transcripts from before events carried a time say only "Thought".
 export function duration(start, end) {
     if (typeof start !== 'number' || typeof end !== 'number') return null
-    const s = Math.max(0, end - start)
-    if (s < 2) return 'briefly'
-    if (s < 60) return `for ${Math.round(s)}s`
+    const span = Math.max(0, end - start)
+    if (span < 2) return 'briefly'
+    // Round the whole span first, then split it: rounding the seconds
+    // after choosing the unit shows 59.5s as "60s" and 119.5s as "1m 60s".
+    const s = Math.round(span)
+    if (s < 60) return `for ${s}s`
     const m = Math.floor(s / 60)
-    const rest = Math.round(s - m * 60)
+    const rest = s % 60
     return rest ? `for ${m}m ${rest}s` : `for ${m}m`
 }
