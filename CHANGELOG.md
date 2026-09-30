@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **Video checks no longer log a sandbox warning.** The video skill's
+  reference player page framed the composition on its own origin (the
+  HyperFrames player's default, `allow-scripts allow-same-origin`), so
+  every `test_app` run on a video app logged *"An iframe which has both
+  allow-scripts and allow-same-origin … can escape its sandboxing"*.
+  - **Harmless, but worth fixing.** The page and the composition are
+    the same app, so that sandbox guarded nothing, and the studio
+    preview's own frame is opaque. But the warning was noise in every
+    check, and one an agent might try to "fix".
+  - **The fix:** the reference now sets `sandbox-origin="opaque"`, and
+    the player drives the composition through messages.
+  - **Checked** with a sub-composition too, in the preview (top level
+    and inside the shell), on a published link, and under `test_app`.
+    The skill says to keep the attribute, and the recipe test asserts
+    no sandbox warning.
+
 ### Changed
 
 - **The transcript shows the agent's work quietly, in plain words.**

@@ -16,7 +16,11 @@
 </head>
 <body>
   <!-- width and height are the composition's own size, for the aspect
-       ratio; the CSS above sets how big it shows. -->
-  <hyperframes-player src="video.html" width="1920" height="1080" controls></hyperframes-player>
+       ratio; the CSS above sets how big it shows. sandbox-origin="opaque"
+       keeps the composition's frame from sharing this page's origin: the
+       player drives it through messages instead, and the browser stops
+       warning that a same-origin sandbox could be escaped. -->
+  <hyperframes-player src="video.html" width="1920" height="1080" controls
+                      sandbox-origin="opaque"></hyperframes-player>
 </body>
 </html>

@@ -6573,6 +6573,9 @@ def test_the_video_reference_loads_the_runtime_first_and_no_gsap():
     page = (VIDEO_SKILL / "references" / "index.html").read_text()
     assert '<script src="vendor/hyperframes-player.js">' in page
     assert 'src="video.html"' in page
+    # the composition's frame does not share the page's origin (see
+    # test_the_skills_check_passes_on_the_reference_video for why)
+    assert 'sandbox-origin="opaque"' in page
 
 
 def test_the_agent_is_pointed_at_the_video_skill():
@@ -6651,6 +6654,12 @@ def test_the_skills_check_passes_on_the_reference_video(studio):
     )
     assert crossfade.value == "True", crossfade  # both scenes partly visible
     assert not result.rejected  # nothing reached for a CDN
+    # The player page loads too (the default page and the goto above).
+    # With a same-origin sandbox on the composition's frame, every such
+    # run logged "An iframe which has both allow-scripts and
+    # allow-same-origin ... can escape its sandboxing": noise in every
+    # video check, and a warning an agent would go and "fix".
+    assert not [line for line in result.console if "sandbox" in line.lower()]
 
 
 def test_the_server_module_defines_everything_before_its_main_guard():
