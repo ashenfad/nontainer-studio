@@ -16,7 +16,7 @@ defaults rather than overrides — see `.env.example`.
 | `OLLAMA_HOST` | unset | offers `ollama` (default `llama3.3`); needs `ollama` installed. Point it at your daemon, usually `:11434` |
 | `NONTAINER_STUDIO_MODEL` | first available provider | the default model spec for new sessions |
 | `NONTAINER_STUDIO_SUMMARY_MODEL` | the session's own model | the model that names sessions and describes published apps |
-| `NONTAINER_STUDIO_EFFORT` | `medium` | reasoning effort for Anthropic models that take it |
+| `NONTAINER_STUDIO_EFFORT` | `medium` | reasoning effort for Claude models that take it, direct or via OpenRouter |
 
 Availability is **detected, not configured**: a provider is offered when
 its key is present and its SDK is importable, and the keys stay in the
@@ -45,9 +45,18 @@ description an app carries when you publish one. Naming a conversation is
 a job a small, cheap model does as well as the one doing the building.
 
 `NONTAINER_STUDIO_EFFORT` takes `low`, `medium`, `high`, `xhigh` or
-`max`. It reaches only Anthropic models whose capability lookup reports
-adaptive thinking with effort support; a model on the older `enabled`
-thinking shape, or with no extended thinking at all, ignores it.
+`max`. On the `anthropic` provider it reaches only models whose capability
+lookup reports adaptive thinking with effort support; a model on the older
+`enabled` thinking shape, or with no extended thinking at all, ignores it.
+On `openrouter` every `anthropic/` model is sent it as `reasoning.effort`,
+which OpenRouter translates for the model underneath.
+
+Effort is the only lever on how long Claude thinks: adaptive thinking
+takes no token budget. So one Claude response may generate up to 64,000
+tokens, thinking included, or the model's own output limit if that is
+lower. The limit comes from the same lookup directly and from OpenRouter's
+model catalog; when it can't be learned the cap is 16,384. A smaller cap
+risks a turn that spends it all thinking and ends before its tool call.
 
 ## Server and store
 

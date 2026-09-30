@@ -37,7 +37,14 @@ def scripted_model(monkeypatch):
 
     def install(reply: str) -> ScriptedModel:
         model = ScriptedModel(reply)
-        monkeypatch.setattr(providers, "build_model", lambda spec=None: model)
+        built = []
+
+        def build(spec=None, *, stream=True):
+            built.append(stream)
+            return model
+
+        monkeypatch.setattr(providers, "build_model", build)
+        model.built_streaming = built
         return model
 
     return install
@@ -192,6 +199,8 @@ def test_the_generators_share_one_runner(scripted_model):
     summaries.generate_description("dummy", "transcript")
     assert len(model.asked) == 2
     assert summaries.TITLE_PROMPT != summaries.DESCRIPTION_PROMPT
+    # the runner doesn't stream, so it asks for a model built for that
+    assert model.built_streaming == [False, False]
 
 
 # -- which model runs them ---------------------------------------------------

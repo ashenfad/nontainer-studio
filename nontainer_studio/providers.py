@@ -262,7 +262,7 @@ _CONTEXT_BY_PROVIDER = {
     "google": 1_000_000,
 }
 
-_openrouter_meta: dict[str, tuple[bool, int | None]] | None = None
+_openrouter_meta: dict[str, tuple[bool, int | None, int | None]] | None = None
 _openrouter_meta_failed_at: float | None = None
 _META_RETRY_SECONDS = 60.0
 
@@ -302,6 +302,7 @@ def _openrouter_model_meta(model: str) -> tuple[bool, int | None]:
                     "image"
                     in ((m.get("architecture") or {}).get("input_modalities") or []),
                     m.get("context_length"),
+                    (m.get("top_provider") or {}).get("max_completion_tokens"),
                 )
                 for m in data.get("data", [])
             }
@@ -309,6 +310,41 @@ def _openrouter_model_meta(model: str) -> tuple[bool, int | None]:
             _openrouter_meta_failed_at = now
             return (False, None)
     return _openrouter_meta.get(model, (False, None))
+
+
+#: How much one Claude response may generate, thinking included. Claude
+#: 5.x thinks adaptively, with no budget to set, so a hard turn can think
+#: for 15k tokens before its tool call; at the old 16,384 that tool call
+#: never came (finish_reason "length"), and a response with no tool call
+#: ends the agent's run. 64k leaves room for long thinking AND a large
+#: file write, while still bounding a runaway response. Billing is for
+#: tokens generated, not for the cap.
+_CLAUDE_MAX_OUTPUT = 64_000
+#: What a Claude gets when its own limit could not be looked up: the old
+#: value, which every Claude accepts.
+_CLAUDE_FALLBACK_OUTPUT = 16_384
+_ANTHROPIC_MAX_OUTPUT: dict[str, int] = {}  # model id -> its own limit
+
+
+def _claude_max_tokens(limit: int | None) -> int:
+    """The response cap for a Claude whose own output limit is ``limit``
+    (None when unknown): never more than the model takes, since an
+    over-limit max_tokens fails every call."""
+    if not limit:
+        return _CLAUDE_FALLBACK_OUTPUT
+    return min(_CLAUDE_MAX_OUTPUT, limit)
+
+
+def _openrouter_max_output(model: str) -> int | None:
+    """An OpenRouter model's output limit, from the catalog, or None."""
+    entry = _openrouter_model_meta(model)
+    return entry[2] if len(entry) > 2 else None
+
+
+def _effort() -> str:
+    """NONTAINER_STUDIO_EFFORT, else the default: one setting for Claude
+    on either path."""
+    return os.getenv("NONTAINER_STUDIO_EFFORT") or _DEFAULT_EFFORT
 
 
 def supports_vision(spec: str | None) -> bool:
@@ -432,13 +468,16 @@ def _anthropic_thinking(model_id: str) -> dict[str, Any]:
         # unreachable endpoint must fail fast rather than hold up a
         # session behind the SDK's default timeout and retries.
         client = anthropic.Anthropic(timeout=10.0, max_retries=1)
-        caps = client.models.retrieve(model_id).capabilities
+        info = client.models.retrieve(model_id)
+        limit = getattr(info, "max_tokens", None)
+        if isinstance(limit, int):
+            _ANTHROPIC_MAX_OUTPUT[model_id] = limit
+        caps = info.capabilities
         types = caps.thinking.types
         if types.adaptive.supported:
             kwargs: dict[str, Any] = {"thinking": {"type": "adaptive"}}
             if caps.effort.supported:
-                effort = os.getenv("NONTAINER_STUDIO_EFFORT") or _DEFAULT_EFFORT
-                kwargs["output_config"] = {"effort": effort}
+                kwargs["output_config"] = {"effort": _effort()}
         elif types.enabled.supported:
             kwargs = legacy
         else:
@@ -452,10 +491,16 @@ def _anthropic_thinking(model_id: str) -> dict[str, Any]:
     return kwargs
 
 
-def build_model(spec: str | None = None) -> Any:
+def build_model(spec: str | None = None, *, stream: bool = True) -> Any:
     """spec -> a constructed agno Model (None = server default), with
-    the transient-failure policy applied (see ``_with_retries``)."""
-    return _with_retries(_construct_model(spec))
+    the transient-failure policy applied (see ``_with_retries``).
+
+    ``stream=False`` is for a caller that runs the model without
+    streaming. The Anthropic SDK refuses such a request when its
+    max_tokens could take over ten minutes (anything above about 21k),
+    so a direct Claude built for one keeps the smaller fallback cap.
+    """
+    return _with_retries(_construct_model(spec, stream=stream))
 
 
 # Retry AT THE MODEL CALL, not at the run. agno has two retry layers and
@@ -514,7 +559,7 @@ def _with_retries(model: Any) -> Any:
 _CLAUDE_CACHE: dict[str, Any] = {"cache_control": {"type": "ephemeral"}}
 
 
-def _construct_model(spec: str | None = None) -> Any:
+def _construct_model(spec: str | None = None, *, stream: bool = True) -> Any:
     """spec -> a constructed agno Model (None = server default)."""
     provider, model = parse_spec(spec or default_spec())
     if provider == "dummy":
@@ -528,11 +573,15 @@ def _construct_model(spec: str | None = None) -> Any:
         # thinking blocks. The parameter SHAPE is per-model and looked
         # up, not assumed (see _anthropic_thinking); with the legacy
         # shape the budget must stay under max_tokens.
+        thinking = _anthropic_thinking(model)  # also learns the model's limit
+        max_tokens = _claude_max_tokens(_ANTHROPIC_MAX_OUTPUT.get(model))
+        if not stream:
+            max_tokens = min(max_tokens, _CLAUDE_FALLBACK_OUTPUT)
         return Claude(
             id=model,
-            max_tokens=16384,
+            max_tokens=max_tokens,
             request_params={"extra_body": dict(_CLAUDE_CACHE)},
-            **_anthropic_thinking(model),
+            **thinking,
         )
     if provider == "openai":
         # gpt-5.6 rejects tools + reasoning on chat-completions (same
@@ -564,12 +613,19 @@ def _construct_model(spec: str | None = None) -> Any:
                 extra_body={"provider": pin} if pin else None,
             )
         extra_body = None
+        max_tokens = 16384  # the agno default (1024) truncates real coding turns
         if model.startswith("anthropic/"):
             # Claude via OpenRouter doesn't reason unless asked. The
             # signed thinking blocks survive tool round-trips only
             # because SafeOpenRouter re-merges the streamed
             # reasoning_details fragments (see _merge_reasoning_details).
-            extra_body = {"reasoning": {"max_tokens": 4096}, **_CLAUDE_CACHE}
+            #
+            # Effort, not a token budget: Claude 5.x thinks adaptively and
+            # ignores a budget (measured: 11.9k reasoning tokens against
+            # a 4096 "budget"). Effort is what steers it, and is what the
+            # direct path sends, from the same setting.
+            extra_body = {"reasoning": {"effort": _effort()}, **_CLAUDE_CACHE}
+            max_tokens = _claude_max_tokens(_openrouter_max_output(model))
         if model.startswith("google/gemma"):
             # gemma-4's native tool-call format (token-level, not JSON)
             # needs a provider-side parser, and quality varies wildly
@@ -587,8 +643,9 @@ def _construct_model(spec: str | None = None) -> Any:
         if pin:
             # an explicit @tag outranks curated routing (gemma defaults)
             extra_body = {**(extra_body or {}), "provider": pin}
-        # the agno default (1024) truncates real coding turns
-        return _safe_openrouter()(id=model, max_tokens=16384, extra_body=extra_body)
+        return _safe_openrouter()(
+            id=model, max_tokens=max_tokens, extra_body=extra_body
+        )
     if provider == "google":
         from agno.models.google import Gemini
 

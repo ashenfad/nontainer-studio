@@ -158,7 +158,7 @@ def _generate(spec: str | None, prompt: str, transcript: str) -> str | None:
     from agno.agent import Agent
 
     agent = Agent(
-        model=providers.build_model(spec),
+        model=providers.build_model(spec, stream=False),
         instructions=prompt,
         markdown=False,
     )
