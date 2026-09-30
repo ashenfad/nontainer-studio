@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The agent can make images and speech.** When `OPENROUTER_API_KEY`
+  is set, an agent session's Python has a `media` host object. The new
+  `NONTAINER_STUDIO_MEDIA` setting turns it off.
+  - **`media.image(prompt, path, transparent=False, …)`** writes a PNG
+    and returns its size and cost. `transparent=True` gives a real
+    alpha channel. That is why the model is OpenAI's
+    `gpt-image-2.5-sunburst`: Gemini's image models fake transparency
+    with a painted checkerboard. `references` pass earlier images back
+    in, to keep a character consistent or to edit an image.
+  - **`media.speech(text, path, voice="Kore")`** writes a WAV from
+    Gemini text-to-speech and returns its length, which a video needs to
+    time its scenes. Bracketed direction such as `[whispers]` steers the
+    delivery. The agent is told about ten of the 30 voices, and an
+    unknown voice is refused with the full list.
+  - **A list of dicts makes several at once,** and a failed item holds
+    its error in its slot.
+  - **Files, not bytes.** Each call writes into the workspace and
+    returns JSON facts. Under dud, bytes inside a dict or list can't
+    cross back from the guest, and a batch has to.
+  - **The making-videos skill has a narration section:** voice the
+    script in one call, size scenes from the returned lengths, and place
+    each line as an audio clip.
+
+
 - **The agent can search and read the web.** When `OPENROUTER_API_KEY`
   is set, an agent session's Python has a `web` host object. The new
   `NONTAINER_STUDIO_WEB` setting turns it off.

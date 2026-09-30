@@ -1175,11 +1175,56 @@ WEB_PRIMER = (
 )
 
 
+MEDIA_PRIMER = (
+    "`media` makes images and speech and writes them into the workspace. "
+    "Paths are relative to /workspace (not your cwd). "
+    '`media.image(prompt, path, transparent=False, aspect="1:1", '
+    'quality="low", references=None)` writes a PNG and returns '
+    '{"path", "width", "height", "cost"}. `transparent=True` gives a '
+    "real alpha channel, for sprites, icons and overlays. aspect is "
+    "1:1, 3:2, 2:3, 4:3, 3:4, 16:9, 9:16 or 21:9; quality runs low, "
+    "medium, high, xhigh, max (low is about 11s and $0.006). "
+    "`references` are workspace images to work from: pass earlier "
+    "images to keep a character or style consistent, or one image to "
+    "edit it. Look at what you made with view_image before using it. "
+    '`media.speech(text, path, voice="Kore")` writes a WAV and returns '
+    '{"path", "seconds"}; time scenes to those seconds. Bracketed '
+    "direction in the text steers the delivery and is not spoken: "
+    "\"[whispers] It's here. [excited] It's really here!\", or [sighs], "
+    "[laughs], [serious], [very slow]. Voices: Kore (firm, the "
+    "default), Puck (upbeat), Charon (informative), Zephyr (bright), "
+    "Fenrir (excitable), Leda (youthful), Aoede (breezy), Sulafat "
+    "(warm), Achernar (soft), Algenib (gravelly), among 30. WAV is "
+    "about 48KB a second, so keep clips to what is used. Each takes a "
+    "list of dicts of its arguments by name and makes them all at once, "
+    "returning a list in order; a failed item holds its error. Batch "
+    "whenever you have several: one call, not a loop. `media` is "
+    "yours, not the app's: app code must not call it."
+)
+
+
 def _agent_host_objects() -> dict[str, Any]:
     """The host objects only an agent session gets, keyed by name."""
+    from .media import Media, media_enabled
     from .web import web_enabled
 
-    return {"web": _shared_web()} if web_enabled() else {}
+    objects: dict[str, Any] = {}
+    if web_enabled():
+        objects["web"] = _shared_web()
+    if media_enabled():
+        # One per session: it writes into the session's workspace, and
+        # is bound to it once that is open (see _bind_host_objects).
+        objects["media"] = Media(os.environ["OPENROUTER_API_KEY"])
+    return objects
+
+
+def _bind_host_objects(ws: Workspace) -> None:
+    """Hand the workspace to the host objects that write into it. They
+    are built with the Python config, before the workspace exists."""
+    for obj in ws.runtime.python_config.host_objects.values():
+        bind = getattr(obj, "_bind", None)
+        if callable(bind):
+            bind(ws)
 
 
 @functools.cache
@@ -1193,9 +1238,15 @@ def _shared_web() -> Any:
 
 def _python_primer() -> str:
     """What the agent is told about its Python's host objects."""
+    from .media import media_enabled
     from .web import web_enabled
 
-    return f"{DB_PRIMER}\n\n{WEB_PRIMER}" if web_enabled() else DB_PRIMER
+    parts = [DB_PRIMER]
+    if web_enabled():
+        parts.append(WEB_PRIMER)
+    if media_enabled():
+        parts.append(MEDIA_PRIMER)
+    return "\n\n".join(parts)
 
 
 class Db:
@@ -2535,6 +2586,7 @@ class Registry:
                     python=self._python_config(db, agent=True),
                     **_ws_kwargs(),
                 )
+                _bind_host_objects(ws)
                 # Published before anything can ask: _build_agent
                 # constructs the toolkit, which checks that the store db
                 # owns this workspace, and the db answers by calling
@@ -3825,6 +3877,7 @@ class Registry:
                 python=self._python_config(db, agent=True),
                 **_ws_kwargs(),
             )
+            _bind_host_objects(ws)
             with self._lock:
                 self._opening[name] = ws
                 try:

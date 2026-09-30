@@ -202,6 +202,32 @@ and then scrubs wrong:
 - `<video>` and `<audio>` are timed by the runtime when they are clips
   with `data-start`; do not call `.play()` on them yourself.
 
+## Narration and generated images
+
+If your Python has `media` (the primer describes it), a video can be
+narrated and illustrated.
+
+- **Write the whole script, then voice it in one call.** One line per
+  scene, spoken together:
+  ```python
+  clips = media.speech([
+      {"text": "[warmly] Meet nontainer-studio.", "path": "app/audio/s1.wav"},
+      {"text": "Every turn is a commit.", "path": "app/audio/s2.wav"},
+  ])
+  ```
+  Each result's `seconds` is that line's length. Set each scene's
+  `data-duration` from it, with half a second or so to spare, so the
+  picture follows the voice rather than cutting it off.
+- **Place each line as a clip in its scene:** `<audio class="clip"
+  src="audio/s1.wav" data-start="0" data-duration="3.2" crossorigin>`,
+  with the `crossorigin` the rule above asks for.
+- **Generate pictures with `transparent=True`** for anything that sits
+  on a background: characters, icons, objects. Pass earlier images as
+  `references` to keep a character the same from scene to scene, and
+  look at each with `view_image` before placing it.
+- **Keep words in the HTML,** not in generated images: image models
+  misspell, and HTML text stays sharp at any size and animates.
+
 ## Scenes in separate files
 
 A composition can pull a scene from another file:
