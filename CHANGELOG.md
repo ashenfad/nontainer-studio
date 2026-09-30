@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **A skill about the stack itself.** `nontainer-ecosystem` tells the
+  agent what it is running on: nontainer-studio, nontainer, termish,
+  monkeyfs, sandtrap, kvgit, reprobate and dud, with a short overview of
+  how they fit.
+  - **Each package's README comes with it,** under `references/`. They
+    are read when a session is seeded, from the metadata of the copies
+    installed here, so they match the versions the server runs. A
+    package that is not installed, such as dud without its extra, is
+    skipped.
+  - **Existing sessions get it too.** The top-up pass that adds new
+    seed files to older sessions writes the READMEs as well, and leaves
+    alone any the agent has edited.
+
 ### Changed
 
 - **The Claude picks are Sonnet 5.5 and Opus 5.5.** This covers the

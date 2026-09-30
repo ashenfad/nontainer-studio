@@ -74,6 +74,12 @@ A skill whose workflow needs a knob that is off is not seeded: the
 `starting-from-published` skill needs the `ws-git` verb to read an origin
 tag, so a session without it never sees the skill.
 
+One skill is partly built at seeding: `nontainer-ecosystem` ships only
+its `SKILL.md` overview, and its `references/` are the READMEs of the
+stack's packages, read from the metadata of the copies installed here.
+They describe the versions this server runs, and a package that is not
+installed (dud is an extra) has no file.
+
 The app-assets directory and the notes that describe it are one decision.
 Swapping the directory means updating `FRONTEND_NOTES` in
 `nontainer_studio/sessions.py` too, so the agent is told about *your*
