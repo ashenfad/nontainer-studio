@@ -9,7 +9,7 @@
     import { highlightCode } from './markdown.js'
     import { viewFile } from './viewer.svelte.js'
     import Diff from './Diff.svelte'
-    import { stepLine } from './activity.js'
+    import { stepLine, toolArgs } from './activity.js'
 
     let { tool, session } = $props()
 
@@ -28,20 +28,7 @@
         return `· ${n} ${noun}${n === 1 ? '' : 's'}`
     })
 
-    const args = $derived.by(() => {
-        if (tool.args && typeof tool.args === 'object') return tool.args
-        // salvage JSON-string args (older events; defensive for any
-        // provider that ships arguments unparsed). Python-repr strings
-        // from pre-structured transcripts stay in the generic view.
-        if (typeof tool.args === 'string' && tool.args.startsWith('{')) {
-            try {
-                return JSON.parse(tool.args)
-            } catch {
-                return null
-            }
-        }
-        return null
-    })
+    const args = $derived(toolArgs(tool))
 
     const EXT_LANGS = {
         py: 'python',
