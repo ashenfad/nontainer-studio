@@ -98,6 +98,13 @@ cat /workspace/skills/making-videos/references/hyperframes/css-animations.md # C
   Video is watched, not read: text 32px or larger and headlines 80px or
   larger on the 1920×1080 stage, and weights far apart (400 against 800).
 - **Images come from the app:** put them under `app/`.
+- **Sound and video clips carry `crossorigin`:** `<audio class="clip"
+  src="music.mp3" crossorigin …>`. The player frames the composition on
+  an opaque origin (see `index.html`), so without the attribute the
+  runtime cannot route the sound through Web Audio. It falls back to
+  plain playback, which loses fades, effects, groups and gain above 1,
+  and logs `runtime_web_audio_bypass`. With it, the app serves the file
+  in a way the runtime can use, and nothing is lost.
 
 ## Scenes and transitions
 

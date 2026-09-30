@@ -6746,6 +6746,68 @@ def test_a_served_request_lets_go_of_its_snapshot(studio):
     assert snapshot._closed
 
 
+def _tone_wav() -> bytes:
+    import io
+    import math
+    import struct
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(
+            b"".join(
+                struct.pack("<h", int(8000 * math.sin(2 * math.pi * 440 * i / 8000)))
+                for i in range(8000)
+            )
+        )
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("crossorigin", [True, False])
+def test_a_sound_clip_needs_crossorigin_under_the_opaque_player(studio, crossorigin):
+    """The reference player frames the composition on an opaque origin,
+    so the runtime can route a sound clip through Web Audio only when
+    the clip opts into CORS; without `crossorigin` it falls back to plain
+    playback (no fades, effects, groups) and says so in the console. The
+    skill tells agents to add it; this pins why."""
+    pytest.importorskip("playwright")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    fs = session.ws.files.fs
+    fs.makedirs("/workspace/app", exist_ok=True)
+    fs.write(
+        "/workspace/app/index.html",
+        (VIDEO_SKILL / "references" / "index.html").read_bytes(),
+    )
+    fs.write("/workspace/app/tone.wav", _tone_wav())
+    attr = " crossorigin" if crossorigin else ""
+    fs.write(
+        "/workspace/app/video.html",
+        f"""<!doctype html><html><head>
+<script src="vendor/hyperframes.runtime.js"></script></head><body>
+<div id="root" data-composition-id="main" data-start="0" data-duration="3"
+     data-width="1920" data-height="1080">
+  <audio class="clip" data-start="0" data-duration="1" src="tone.wav"{attr}></audio>
+</div></body></html>""".encode(),
+    )
+    session.ws.commit()
+    result = session.runtime.test_app(
+        [
+            {"wait": 2000},
+            {"eval": "document.querySelector('hyperframes-player').play()"},
+            {"wait": 1000},
+        ]
+    )
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)  # no chromium
+    bypassed = any("runtime_web_audio_bypass" in line for line in result.console)
+    assert bypassed is not crossorigin, result.console
+
+
 BROKEN_SCRUB = b"""<!doctype html><html><head>
 <script src="vendor/hyperframes.runtime.js"></script><script src="vendor/anime.min.js"></script>
 </head><body>
