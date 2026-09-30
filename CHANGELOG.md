@@ -23,6 +23,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     and inside the shell), on a published link, and under `test_app`.
     The skill says to keep the attribute, and the recipe test asserts
     no sandbox warning.
+  - **Sound and video clips need `crossorigin` in opaque mode.**
+    Without it the runtime cannot route their sound through Web Audio.
+    It falls back to plain playback, losing fades, effects, groups and
+    gain above 1, and logs `runtime_web_audio_bypass`. The skill now
+    says to put `crossorigin` on every `<audio>` and `<video>` clip.
+    Studio already serves app files with `Access-Control-Allow-Origin`,
+    so with the attribute nothing is lost. A test covers both ways.
 
 ### Changed
 
