@@ -16,6 +16,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Claude no longer stops after thinking, before acting.** Sonnet 5.5
+  would end a turn mid-task with OpenRouter reporting a stop reason of
+  `length` after about 16k tokens.
+  - **The cause:** each Claude response was capped at 16,384 tokens,
+    thinking included. Claude 5.x thinks adaptively and ignores a token
+    budget, so the 4,096-token budget sent through OpenRouter did
+    nothing: a hard turn could think for 15k tokens and run out before
+    its tool call. A response with no tool call ends the agent's run.
+  - **The fix:** a Claude response may now run to 64,000 tokens, or the
+    model's own output limit if that is lower. The limit comes from the
+    capability lookup directly and from OpenRouter's catalog; when
+    neither answers, the cap stays 16,384. You pay for tokens generated,
+    not for the cap. Session titles and app descriptions still use
+    16,384 on the direct path, because they run without streaming and
+    the Anthropic SDK refuses a longer non-streaming request.
+  - **OpenRouter Claude is steered by effort now**, not the ignored
+    budget, and reads the same `NONTAINER_STUDIO_EFFORT` (default
+    `medium`) as the direct path.
 - **Claude now caches its prompt, directly and through OpenRouter.**
   Anthropic models cache only when a request asks. Most other providers,
   including OpenAI, DeepSeek, Gemini and much of what OpenRouter routes

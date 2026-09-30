@@ -117,7 +117,7 @@ def test_claude_asks_for_prompt_caching_on_both_paths(monkeypatch):
     ephemeral = {"type": "ephemeral"}
     via_openrouter = _shape("openrouter:anthropic/claude-sonnet-5")
     assert via_openrouter.extra_body["cache_control"] == ephemeral
-    assert via_openrouter.extra_body["reasoning"] == {"max_tokens": 4096}
+    assert via_openrouter.extra_body["reasoning"] == {"effort": "medium"}
     # and it survives an @provider pin
     pinned = _shape("openrouter:anthropic/claude-sonnet-5@anthropic")
     assert pinned.extra_body["cache_control"] == ephemeral
@@ -131,6 +131,67 @@ def test_claude_asks_for_prompt_caching_on_both_paths(monkeypatch):
 
     # providers that cache on their own are left alone
     assert _shape("openrouter:qwen/qwen3.6-35b-a3b").extra_body is None
+
+
+def test_claude_gets_room_to_think_and_still_act(monkeypatch):
+    """The bug: Claude 5.x thinks adaptively and ignores a token budget,
+    so a hard turn thought for ~15k tokens and hit the 16,384 cap before
+    its tool call; finish_reason "length" with no tool call ended the
+    run. The cap is now 64k or the model's own limit if lower, looked
+    up per path, and OpenRouter is steered by effort, not a budget."""
+    from nontainer_studio import providers
+
+    monkeypatch.delenv("NONTAINER_STUDIO_EFFORT", raising=False)
+    monkeypatch.setattr(
+        providers,
+        "_openrouter_meta",
+        {
+            "anthropic/claude-sonnet-5.5": (True, 1_000_000, 128_000),
+            "anthropic/claude-haiku-4.5": (True, 200_000, 32_000),
+            "anthropic/claude-mystery": (True, 200_000, None),
+        },
+    )
+    sonnet = _shape("openrouter:anthropic/claude-sonnet-5.5@anthropic")
+    assert sonnet.max_tokens == 64_000
+    assert sonnet.extra_body["reasoning"] == {"effort": "medium"}
+    # never over the model's own limit, which would fail every call
+    assert _shape("openrouter:anthropic/claude-haiku-4.5").max_tokens == 32_000
+    # unknown limit: the old cap, which every Claude takes
+    assert _shape("openrouter:anthropic/claude-mystery").max_tokens == 16_384
+    assert _shape("openrouter:anthropic/not-in-catalog").max_tokens == 16_384
+    # other models keep their cap
+    assert _shape("openrouter:qwen/qwen3.6-35b-a3b").max_tokens == 16_384
+
+    monkeypatch.setenv("NONTAINER_STUDIO_EFFORT", "high")
+    assert _shape("openrouter:anthropic/claude-sonnet-5.5").extra_body["reasoning"] == {
+        "effort": "high"
+    }
+
+
+def test_direct_claude_cap_comes_from_the_capability_lookup(monkeypatch):
+    """The lookup studio already makes for thinking also reports the
+    model's output limit; the cap honours it."""
+    from nontainer_studio import providers
+
+    monkeypatch.setattr(providers, "_ANTHROPIC_MAX_OUTPUT", {})
+    _stub_anthropic(
+        monkeypatch,
+        _caps(enabled=False, adaptive=True, effort=True),
+        max_tokens=128_000,
+    )
+    assert (
+        providers._construct_model("anthropic:claude-sonnet-5-5").max_tokens == 64_000
+    )
+    _stub_anthropic(
+        monkeypatch, _caps(enabled=True, adaptive=False, effort=False), max_tokens=8_192
+    )
+    assert providers._construct_model("anthropic:claude-old").max_tokens == 8_192
+    # a non-streaming caller keeps a cap the SDK accepts without a stream
+    built = providers.build_model("anthropic:claude-sonnet-5-5", stream=False)
+    assert built.max_tokens == 16_384
+    # a failed lookup leaves the limit unknown
+    _stub_anthropic(monkeypatch, RuntimeError("offline"))
+    assert providers._construct_model("anthropic:claude-offline").max_tokens == 16_384
 
 
 def test_openrouter_at_tag_pins_the_upstream_provider():
@@ -160,7 +221,7 @@ def test_openrouter_at_tag_pins_the_upstream_provider():
     }
     # composes with anthropic's reasoning extra_body
     model = _shape("openrouter:anthropic/claude-sonnet-5@anthropic")
-    assert model.extra_body["reasoning"] == {"max_tokens": 4096}
+    assert model.extra_body["reasoning"] == {"effort": "medium"}
     assert model.extra_body["provider"]["order"] == ["anthropic"]
 
 
@@ -332,7 +393,7 @@ def _caps(*, enabled: bool, adaptive: bool, effort: bool):
     return type("C", (), {"thinking": thinking, "effort": _Support(effort)})()
 
 
-def _stub_anthropic(monkeypatch, capabilities, calls=None):
+def _stub_anthropic(monkeypatch, capabilities, calls=None, max_tokens=None):
     import anthropic
 
     class _Models:
@@ -341,7 +402,9 @@ def _stub_anthropic(monkeypatch, capabilities, calls=None):
                 calls.append(model_id)
             if isinstance(capabilities, Exception):
                 raise capabilities
-            return type("M", (), {"capabilities": capabilities})()
+            return type(
+                "M", (), {"capabilities": capabilities, "max_tokens": max_tokens}
+            )()
 
     class _Client:
         models = _Models()
