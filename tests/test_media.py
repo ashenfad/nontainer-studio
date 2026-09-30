@@ -83,6 +83,7 @@ def test_an_image_is_written_and_described():
         "path": "/workspace/app/img/robot.png",
         "width": 1536,
         "height": 1024,
+        "alpha": True,
         "cost": 0.006,
     }
     assert ws.files.fs.read("/workspace/app/img/robot.png").startswith(b"\x89PNG")

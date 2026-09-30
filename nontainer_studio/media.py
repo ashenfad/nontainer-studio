@@ -128,7 +128,8 @@ class Media:
 
         ``transparent`` gives a real alpha channel. ``references`` are
         workspace images to work from: a character or style to keep, or
-        an image to edit. Returns ``{"path", "width", "height", "cost"}``.
+        an image to edit. Returns ``{"path", "width", "height", "alpha",
+        "cost"}``, read from the file written.
 
         A list of dicts, each with this call's arguments by name, is
         generated concurrently and returns a list in the same order; one
@@ -185,11 +186,12 @@ class Media:
             png = base64.b64decode(data["data"][0]["b64_json"])
         except (KeyError, IndexError, TypeError, ValueError):
             raise RuntimeError("media.image: the response held no image") from None
-        width, height = _png_size(png)
+        width, height, alpha = _png_facts(png)
         return {
             "path": dest,
             "width": width,
             "height": height,
+            "alpha": alpha,
             "cost": _cost(data),
             "_bytes": png,
         }
@@ -347,11 +349,13 @@ class Media:
             raise RuntimeError(f"{label}: the response was not JSON") from None
 
 
-def _png_size(png: bytes) -> tuple[int | None, int | None]:
-    """Width and height from a PNG's IHDR chunk."""
-    if png[:8] != b"\x89PNG\r\n\x1a\n" or len(png) < 24:
-        return None, None
-    return struct.unpack(">II", png[16:24])
+def _png_facts(png: bytes) -> tuple[int | None, int | None, bool | None]:
+    """Width, height and whether it has an alpha channel, from a PNG's
+    IHDR chunk. Colour types 4 and 6 carry alpha."""
+    if png[:8] != b"\x89PNG\r\n\x1a\n" or len(png) < 26:
+        return None, None, None
+    width, height = struct.unpack(">II", png[16:24])
+    return width, height, png[25] in (4, 6)
 
 
 def _pcm_format(content_type: str) -> tuple[int, int]:

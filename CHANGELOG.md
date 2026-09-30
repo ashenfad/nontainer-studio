@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is set, an agent session's Python has a `media` host object. The new
   `NONTAINER_STUDIO_MEDIA` setting turns it off.
   - **`media.image(prompt, path, transparent=False, …)`** writes a PNG
-    and returns its size and cost. `transparent=True` gives a real
+    and returns its size, whether it has alpha, and its cost. `transparent=True` gives a real
     alpha channel. That is why the model is OpenAI's
     `gpt-image-2.5-sunburst`: Gemini's image models fake transparency
     with a painted checkerboard. `references` pass earlier images back
