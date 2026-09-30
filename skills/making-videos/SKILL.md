@@ -35,6 +35,9 @@ cp /workspace/skills/making-videos/references/video.html /workspace/app/video.ht
 ```
 
 `index.html` is the player page and rarely needs more than a title.
+Keep its `sandbox-origin="opaque"`: without it the player frames the
+composition on the page's own origin, and every `test_app` run logs a
+browser warning that the sandbox could be escaped.
 `video.html` is the composition, and it is where the work is: a title
 scene in CSS, a bar chart that Anime.js grows, and a closing card, with
 a crossfade between each. Keep its scene structure when you change the
