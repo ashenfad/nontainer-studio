@@ -275,6 +275,10 @@ built a scene per delegate, in parallel. Each delegate is a whole agent
 on your model, so use three to six of them, not twenty, and build a
 short video yourself.
 
+This is for the session directing the whole video. **If you are a
+delegate given a scene, build it yourself:** a scene is the unit of the
+work, and splitting it again only multiplies the cost.
+
 1. **Set what the scenes share, first.** Write the composition: its
    styles (fonts, colours, the scene wrappers), the root, and a plan of
    the scenes with their narration. Pick the voice. Delegates start from
@@ -287,8 +291,9 @@ short video yourself.
 3. **A task that stands alone.** A delegate starts without this
    conversation, so its task says everything: the scene's id and its
    narration, the voice, that its file starts from
-   `skills/making-videos/references/narrated-scene.html`, to animate with
-   CSS only, to voice the line with `media.speech` and size the scene
+   `skills/making-videos/references/narrated-scene.html`, to build the
+   scene itself without delegating, to animate with CSS only, to voice
+   the line with `media.speech` and size the scene
    from `seconds`, to check its scene with `test_app` (`goto` the
    composition with the scene placed, or the scene file), and to reply
    with the scene's length and the files it wrote.
