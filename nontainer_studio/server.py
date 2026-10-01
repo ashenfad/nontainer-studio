@@ -623,7 +623,6 @@ async def _run_turn(session: Any, message: str | None, registry: Any = None) -> 
             if not queued:
                 if ran is None or registry is None or not registry.may_wake(session):
                     break
-                session.wakes_left -= 1
                 message, from_queue = None, []
                 continue
             # A drained note is delivered-but-unsettled, which the next
@@ -664,7 +663,12 @@ async def _wake_idle_forever(registry: Any, every: float = WAKE_EVERY) -> None:
     cannot stop the others being woken."""
     while True:
         await asyncio.sleep(every)
-        for session in registry.live_sessions():
+        try:
+            live = registry.live_sessions()
+        except Exception:
+            log.warning("waking: listing the live sessions failed", exc_info=True)
+            continue
+        for session in live:
             try:
                 await _maybe_wake(session, registry)
             except Exception:
@@ -682,7 +686,6 @@ async def _maybe_wake(session: Any, registry: Any) -> bool:
     if not session.turn_lock.acquire(blocking=False):
         return False
     session.in_turn = True
-    session.wakes_left -= 1
     session.turn_task = asyncio.create_task(_run_turn(session, None, registry))
     return True
 
@@ -738,9 +741,12 @@ async def _one_turn(
         _snapshot_delegates(session, registry)
 
     woken = message is None
-    if woken and not session.answered_delegates():
-        # Cancelled or swept since the wake was decided.
-        return None
+    if woken:
+        if not session.answered_delegates():
+            # Cancelled or swept since the wake was decided: no turn,
+            # and nothing spent.
+            return None
+        session.wakes_left -= 1
     state = _RunState()
     try:
         # head here = the workspace BEFORE this turn: the user event's

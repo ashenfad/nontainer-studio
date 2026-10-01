@@ -22,7 +22,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Guards:** a stopped or errored turn turns waking off until the
     human writes. `NONTAINER_STUDIO_DELEGATE_WAKES` (default 10, `0` for
     off) bounds woken turns between human messages, and the transcript
-    says once when it runs out. Delegates themselves are never woken.
+    says once when it runs out. A delegate is woken by its runner
+    instead: a reply it gives while its own delegates are out is treated
+    as waiting, and its answer is the reply it gives once their answers
+    are in.
   - **The agent is told** that answers come to it on its own, so it ends
     its turn instead of polling.
 

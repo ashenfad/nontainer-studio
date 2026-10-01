@@ -1891,3 +1891,43 @@ def test_a_woken_turn_with_nothing_left_to_deliver_runs_nothing(registry):
     since = parent.next_seq
     assert asyncio.run(server._one_turn(parent, None, registry)) is None
     assert [e for e in parent.events if e.get("seq", -1) >= since] == []
+
+
+def _nested_ask() -> str:
+    """The parent asks a scout and waits for it; the scout asks a
+    deeper delegate of its own and replies that it is waiting."""
+    inner = json.dumps({"action": "ask", "name": "deep", "task": "!text Deep result."})
+    scout_task = f"!tool sessions {inner}\n!text Waiting on deep."
+    outer = json.dumps(
+        {"action": "ask", "name": "scout", "wait": True, "task": scout_task}
+    )
+    return f"!tool sessions {outer}\n!text Asked."
+
+
+def test_a_delegate_waiting_on_its_own_delegate_is_woken_by_its_answer(
+    registry, monkeypatch
+):
+    """The primer tells every agent to end its turn while its delegates
+    work, delegates included. A delegate's reply is its answer, so the
+    runner must not take "waiting" for one: it waits for the deeper
+    answer, wakes the delegate with it, and its answer is the reply it
+    gives then."""
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_WAKES", "10")
+    parent = registry.open("boss")
+    result = _tool_results(_turn(parent, _nested_ask(), registry), "sessions")[0]
+    # the woken turn's reply (the dummy echoes what it was sent, which
+    # opens with the deeper delegate's answer), not "Waiting on deep."
+    assert "dummy: [delegate `boss.scout.deep` answered" in result
+    assert "Waiting on deep." not in result
+    scout_events = registry.open("boss.scout").events
+    assert [e["type"] for e in scout_events].count("wake") == 1
+
+
+def test_a_delegate_out_of_wakes_says_its_answer_lacks_its_delegates(registry):
+    """With waking off there is no turn to read the deeper answer in, so
+    the reply comes back marked as written without it."""
+    parent = registry.open("boss")
+    result = _tool_results(_turn(parent, _nested_ask(), registry), "sessions")[0]
+    assert "Waiting on deep." in result
+    assert "`boss.scout.deep`" in result
+    assert "written without their answers" in result

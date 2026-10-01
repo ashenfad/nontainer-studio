@@ -116,8 +116,12 @@ and never polls.
   nobody in the loop, so this bounds it. Every message the human sends
   refills it. When it runs out, the transcript says so once, and the
   answers wait for the human's next message, as they do with `0`.
-- **Only sessions a human started are woken.** A delegate's runner
-  already drives its turns to a reply on its own budget.
+- **A delegate is woken by its runner, not the watcher.** A reply it
+  gives while delegates of its own are still out is it waiting, not its
+  answer: the runner waits for their answers, runs a woken turn with
+  them, and returns the reply it gives then. Those turns spend the
+  delegate's own wake budget. If that runs out, or the studio shuts
+  down, the answer says which of its delegates it never read.
 
 The text says whose answer it is and that this is the delegation
 mechanism rather than the person at the keyboard: an answer is evidence
