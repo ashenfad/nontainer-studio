@@ -16,7 +16,7 @@ from agno.models.response import ModelResponse
 from nontainer.errors import BranchExpired
 from nontainer.sessions import Sessions
 
-from nontainer_studio import delegates, prompts, server
+from nontainer_studio import config, delegates, prompts, server
 from nontainer_studio import sessions as sessions_mod
 from nontainer_studio import summaries as summaries_mod
 from nontainer_studio.dummy import DummyModel
@@ -839,13 +839,13 @@ def test_the_setting_is_hours_and_a_bad_one_falls_back(monkeypatch):
     """The TTL is read where the other settings are read, in the unit
     the decision is made in. A value that is not a number keeps the
     default rather than taking the studio down at startup."""
-    assert sessions_mod._delegate_ttl_hours() == 24.0
+    assert config._delegate_ttl_hours() == 24.0
     monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TTL", "2")
-    assert sessions_mod._delegate_ttl_hours() == 2.0
+    assert config._delegate_ttl_hours() == 2.0
     monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TTL", "overnight")
-    assert sessions_mod._delegate_ttl_hours() == 24.0
+    assert config._delegate_ttl_hours() == 24.0
     monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TTL", "-3")
-    assert sessions_mod._delegate_ttl_hours() == 0.0
+    assert config._delegate_ttl_hours() == 0.0
 
 
 def test_the_record_carries_what_the_sweep_measures(registry):
@@ -1234,11 +1234,11 @@ def test_the_depth_setting_is_hops_and_a_bad_one_falls_back(monkeypatch, tmp_pat
     """Read where the other settings are read, in the unit the rule is
     stated in. A value that is not a number keeps the default rather
     than taking the studio down at startup."""
-    assert sessions_mod._delegate_depth() == 2
+    assert config._delegate_depth() == 2
     monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_DEPTH", "deep")
-    assert sessions_mod._delegate_depth() == 2
+    assert config._delegate_depth() == 2
     monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_DEPTH", "-1")
-    assert sessions_mod._delegate_depth() == 0
+    assert config._delegate_depth() == 0
 
     monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_DEPTH", "1")
     registry = sessions_mod.Registry(
@@ -1334,13 +1334,13 @@ def test_the_tool_call_setting_is_calls_and_a_bad_one_falls_back(monkeypatch):
     """Read where the other settings are read. A value that is not a
     number keeps the default rather than taking the studio down at
     startup."""
-    assert sessions_mod._delegate_tool_calls() == 60
+    assert config._delegate_tool_calls() == 60
     monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TOOL_CALLS", "12")
-    assert sessions_mod._delegate_tool_calls() == 12
+    assert config._delegate_tool_calls() == 12
     monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TOOL_CALLS", "lots")
-    assert sessions_mod._delegate_tool_calls() == 60
+    assert config._delegate_tool_calls() == 60
     monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_TOOL_CALLS", "-1")
-    assert sessions_mod._delegate_tool_calls() == 0
+    assert config._delegate_tool_calls() == 0
 
 
 def test_only_a_delegates_agent_carries_the_cap(registry):
