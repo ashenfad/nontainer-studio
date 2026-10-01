@@ -16,7 +16,7 @@ from agno.models.response import ModelResponse
 from nontainer.errors import BranchExpired
 from nontainer.sessions import Sessions
 
-from nontainer_studio import delegates, server
+from nontainer_studio import delegates, prompts, server
 from nontainer_studio import sessions as sessions_mod
 from nontainer_studio import summaries as summaries_mod
 from nontainer_studio.dummy import DummyModel
@@ -517,7 +517,7 @@ def test_the_tool_is_nontainers_shape_under_nontainers_name(registry):
         "resume",
         "wait",
     ]
-    assert tool.__doc__ is sessions_mod.SESSIONS_TOOL_DESCRIPTION
+    assert tool.__doc__ is prompts.SESSIONS_TOOL_DESCRIPTION
     assert registry._sessions_tool(boss.name, boss.delegates).__doc__ is tool.__doc__
     assert '  action="published"' in tool.__doc__
 
@@ -714,8 +714,8 @@ def test_a_session_records_whether_ws_git_installed(registry):
     re-reading the runtime flags the function read itself."""
     session = registry.open("boss")
     assert session.wsgit is True
-    assert sessions_mod._versioning_primer(True) is sessions_mod.VERSIONING_PRIMER
-    assert sessions_mod._versioning_primer(False) == ""
+    assert prompts._versioning_primer(True) is prompts.VERSIONING_PRIMER
+    assert prompts._versioning_primer(False) == ""
 
 
 def test_no_verb_no_delegation_half(registry, monkeypatch):
@@ -727,8 +727,8 @@ def test_no_verb_no_delegation_half(registry, monkeypatch):
     session = registry.open("verbless")
 
     assert session.wsgit is False
-    primer = sessions_mod._delegation_primer(True, False)
-    assert primer is sessions_mod.NO_VERSIONING_PRIMER
+    primer = prompts._delegation_primer(True, False)
+    assert primer is prompts.NO_VERSIONING_PRIMER
     assert "ws-git" not in primer
     assert "ws-git" not in session.agent.instructions
     # and a delegate of that session opens with the same honesty
@@ -1194,10 +1194,10 @@ def test_the_primer_says_the_number_and_the_verb(registry, tmp_path):
     """nontainer's `sessions` tool says `keep` exists. Whether anything
     sweeps, and on what clock, is the studio's to say — so the agent is
     told the hours and that it is on."""
-    primer = sessions_mod._retention_primer(24)
+    primer = prompts._retention_primer(24)
     assert "24 hours" in primer
     assert "sessions keep" in primer
-    assert sessions_mod._retention_primer(0) == ""
+    assert prompts._retention_primer(0) == ""
     assert primer in registry.open("boss").agent.instructions
 
     off = sessions_mod.Registry(
@@ -1322,11 +1322,9 @@ def test_only_the_session_at_the_cap_is_told_about_it(registry):
     for in prompt, so it is told to the one it binds."""
     grandchild = _nest(registry, "boss", "boss.scout", "boss.scout.finch")
 
-    assert sessions_mod.DEPTH_CAP_PRIMER in grandchild.agent.instructions
+    assert prompts.DEPTH_CAP_PRIMER in grandchild.agent.instructions
     for name in ("boss", "boss.scout"):
-        assert sessions_mod.DEPTH_CAP_PRIMER not in (
-            registry.open(name).agent.instructions
-        )
+        assert prompts.DEPTH_CAP_PRIMER not in (registry.open(name).agent.instructions)
 
 
 # -- the tool-call cap: a delegate's loop has nobody watching it ------------

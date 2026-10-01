@@ -18,7 +18,7 @@ from nontainer.apps import render_test_app
 from nontainer.apps import request as nt_request
 from starlette.testclient import TestClient
 
-from nontainer_studio import server
+from nontainer_studio import prompts, server
 from nontainer_studio import sessions as sessions_mod
 from nontainer_studio import summaries as summaries_mod
 
@@ -685,12 +685,11 @@ def test_web_reaches_the_agent_and_never_a_published_app(studio, monkeypatch):
 
 
 def test_without_web_the_agent_is_neither_given_nor_told_of_it(studio, monkeypatch):
-    from nontainer_studio import sessions as sessions_mod
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "x")
     monkeypatch.setenv("NONTAINER_STUDIO_WEB", "off")
     monkeypatch.setenv("NONTAINER_STUDIO_MEDIA", "off")
-    assert sessions_mod._python_primer() == sessions_mod.DB_PRIMER
+    assert prompts._python_primer() == prompts.DB_PRIMER
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     config = registry.get("s1").ws.runtime.python_config
@@ -699,11 +698,11 @@ def test_without_web_the_agent_is_neither_given_nor_told_of_it(studio, monkeypat
     assert config.timeout == 30.0
 
     monkeypatch.delenv("NONTAINER_STUDIO_WEB")
-    primer = sessions_mod._python_primer()
-    assert sessions_mod.WEB_PRIMER in primer
-    assert sessions_mod.MEDIA_PRIMER not in primer
+    primer = prompts._python_primer()
+    assert prompts.WEB_PRIMER in primer
+    assert prompts.MEDIA_PRIMER not in primer
     monkeypatch.delenv("NONTAINER_STUDIO_MEDIA")
-    assert sessions_mod.MEDIA_PRIMER in sessions_mod._python_primer()
+    assert prompts.MEDIA_PRIMER in prompts._python_primer()
 
 
 def test_publish_makes_a_publication_and_marks_the_transcript(scripted, tmp_path):
@@ -4299,7 +4298,7 @@ def test_no_tool_asks_the_agent_for_a_title(studio):
     )
     names = {getattr(t, "name", getattr(t, "__name__", "")) for t in agent.tools}
     assert "recommend_title" not in names
-    assert "recommend_title" not in sessions_mod.STUDIO_PRIMER
+    assert "recommend_title" not in prompts.STUDIO_PRIMER
 
 
 def _real_agent(registry, name: str):
@@ -4328,9 +4327,9 @@ def test_the_primer_names_only_verbs_the_session_carries(studio, monkeypatch):
     session = registry.get("s1")
     instructions = _real_agent(registry, "s1").instructions
 
-    assert "ws-git" in sessions_mod.VERSIONING_PRIMER
+    assert "ws-git" in prompts.VERSIONING_PRIMER
     for verb in ("ws-pytest", "ws-vitest"):
-        assert verb in sessions_mod.UNIT_TEST_PRIMER
+        assert verb in prompts.UNIT_TEST_PRIMER
     for verb in ("ws-git", "ws-pytest", "ws-vitest"):
         assert verb in session.ws.runtime.commands
         assert verb in instructions
@@ -4358,7 +4357,7 @@ def test_the_primer_says_where_else_a_delegate_can_start():
     share one store, so any commit of any of them is one. The rest of
     what an ask takes is the `sessions` tool's own description, and
     saying it twice is how the two drift."""
-    primer = sessions_mod.DELEGATION_PRIMER
+    primer = prompts.DELEGATION_PRIMER
     assert "fork_from=<session>@<commit>" in primer
     assert "ws-git branch" in primer  # how the agent learns the names
     assert "resume" in primer
@@ -4411,7 +4410,7 @@ def test_the_wsgit_knob_puts_the_verb_back(studio, monkeypatch):
 
     assert session.wsgit is True
     assert "ws-git" in session.ws.runtime.commands
-    assert sessions_mod.VERSIONING_PRIMER in _real_agent(registry, "s1").instructions
+    assert prompts.VERSIONING_PRIMER in _real_agent(registry, "s1").instructions
 
 
 def test_the_sessions_knob_puts_the_tool_back(studio, monkeypatch):
@@ -4423,8 +4422,8 @@ def test_the_sessions_knob_puts_the_tool_back(studio, monkeypatch):
     agent = _real_agent(registry, "s1")
 
     assert "sessions" in _tool_names(agent)
-    assert sessions_mod.DELEGATION_PRIMER in agent.instructions
-    assert 'action="published"' in sessions_mod.SESSIONS_TOOL_DESCRIPTION
+    assert prompts.DELEGATION_PRIMER in agent.instructions
+    assert 'action="published"' in prompts.SESSIONS_TOOL_DESCRIPTION
 
 
 def test_the_sessions_knob_brings_ws_git_with_it(studio, monkeypatch):
@@ -4441,11 +4440,11 @@ def test_the_sessions_knob_brings_ws_git_with_it(studio, monkeypatch):
     assert sessions_mod.wsgit_enabled() is True
     assert session.wsgit is True
     assert "ws-git" in session.ws.runtime.commands
-    assert sessions_mod.VERSIONING_PRIMER in agent.instructions
+    assert prompts.VERSIONING_PRIMER in agent.instructions
     # the half that says a delegate's work comes over, not the one that
     # says it never does
-    assert sessions_mod.DELEGATION_PRIMER in agent.instructions
-    assert sessions_mod.NO_VERSIONING_PRIMER not in agent.instructions
+    assert prompts.DELEGATION_PRIMER in agent.instructions
+    assert prompts.NO_VERSIONING_PRIMER not in agent.instructions
 
     monkeypatch.delenv("NONTAINER_STUDIO_SESSIONS")
     monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
@@ -4580,11 +4579,11 @@ def test_the_app_skill_teaches_no_hidden_tool(studio):
 def test_the_db_primer_says_the_store_is_shared():
     """An agent told its db is a copy would trust rows nobody else can
     see, and would not defend a handler against a concurrent writer."""
-    assert "HANDLE to one external store" in sessions_mod.DB_PRIMER
-    assert "a fork" in sessions_mod.DB_PRIMER
-    assert "delegate" in sessions_mod.DB_PRIMER
-    assert "copies it" not in sessions_mod.DB_PRIMER
-    assert "the published app owns" not in sessions_mod.STUDIO_PRIMER
+    assert "HANDLE to one external store" in prompts.DB_PRIMER
+    assert "a fork" in prompts.DB_PRIMER
+    assert "delegate" in prompts.DB_PRIMER
+    assert "copies it" not in prompts.DB_PRIMER
+    assert "the published app owns" not in prompts.STUDIO_PRIMER
 
 
 def test_edit_rewinds_the_generated_title(titling, monkeypatch):
@@ -6521,7 +6520,7 @@ def test_the_primer_makes_the_unit_test_runs_part_of_done():
     """The skill is read once; the primer is read every turn, so the
     rule that an app is not done until both runners have run on it (or
     the report says which tier had nothing to test) lives there too."""
-    primer = sessions_mod.UNIT_TEST_PRIMER
+    primer = prompts.UNIT_TEST_PRIMER
     assert "not done until both have run on it and passed" in primer
     assert "count lines" in primer
     assert "README.md" in primer
@@ -6565,15 +6564,15 @@ def test_the_skill_says_when_to_read_the_returns_reference():
     assert "more than a few thousand rows" in skill
     assert "`references/returns.md`" in skill
     assert (root / "references" / "returns.md").is_file()
-    assert "references/returns.md" in sessions_mod.FRONTEND_NOTES
-    assert "'apache-arrow'" in sessions_mod.FRONTEND_NOTES
+    assert "references/returns.md" in prompts.FRONTEND_NOTES
+    assert "'apache-arrow'" in prompts.FRONTEND_NOTES
 
 
 def test_the_skill_points_at_the_vendor_inventory():
     root = Path(__file__).parent.parent
     skill = (root / "skills" / "building-apps" / "SKILL.md").read_text()
     assert "references/vendor.md" in skill
-    assert "references/vendor.md" in sessions_mod.FRONTEND_NOTES
+    assert "references/vendor.md" in prompts.FRONTEND_NOTES
 
 
 VIDEO_SKILL = Path(__file__).parent.parent / "skills" / "making-videos"
@@ -6643,7 +6642,7 @@ def test_the_video_reference_loads_the_runtime_first_and_no_gsap():
 
 
 def test_the_agent_is_pointed_at_the_video_skill():
-    notes = sessions_mod.FRONTEND_NOTES
+    notes = prompts.FRONTEND_NOTES
     assert "making-videos" in notes
     assert "vendor/hyperframes-player.js" in notes
     assert "GSAP" in notes
