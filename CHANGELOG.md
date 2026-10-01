@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **You can see delegates at work.** A parent waiting on its delegates
+  has ended its turn, and nothing said it was not done unless you
+  thought to open the ⑂ listing.
+  - **A strip above the composer** shows one chip per delegate that is
+    out: its name, how long it has been running, and its last step
+    ("Ran Python …", "thinking"), until its answer reaches the parent.
+    A chip opens the delegate's live transcript.
+  - **The rail's ⑂ badge pulses** while a session's delegates are
+    running.
+  - **`sessions` work lines say what happened:** "Asked intro: Scene
+    1 …", grouped as "Asked 3 delegates", instead of "Sessions ask".
+  - **The delegates listing carries what the strip needs:** each row's
+    task, start and finish times, whether its answer was delivered, and
+    a running delegate's last step, with long arguments trimmed. The
+    session list counts running delegates.
+- **With waking off, no wake notice.** With
+  `NONTAINER_STUDIO_DELEGATE_WAKES=0` the transcript said answers had
+  "already started as many turns as they may", as if a budget had run
+  out. Waking off means answers wait for the human, so nothing is said.
+
 - **A delegate's answer wakes its parent.** Before, an answer that
   arrived after the parent's turn ended waited for the human's next
   message, so "build three scenes, then put them together" stalled until

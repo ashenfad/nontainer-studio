@@ -26,6 +26,7 @@
     import MessageList from './lib/MessageList.svelte'
     import ChatInput from './lib/ChatInput.svelte'
     import DelegateBar from './lib/DelegateBar.svelte'
+    import DelegateStrip from './lib/DelegateStrip.svelte'
     import Preview from './lib/Preview.svelte'
     import FilesTab from './lib/FilesTab.svelte'
     import ChangesTab from './lib/ChangesTab.svelte'
@@ -347,6 +348,7 @@
                     {#snippet left()}
                         <div class="chat">
                             <MessageList {rt} readonly={!!delegate} />
+                            <DelegateStrip {rt} name={active} onSwitch={switchTo} />
                             {#if delegate}
                                 <DelegateBar
                                     name={active}
@@ -399,6 +401,7 @@
                 <!-- full-width mode: cap the column so lines stay readable -->
                 <div class="chat solo">
                     <MessageList {rt} readonly={!!delegate} />
+                    <DelegateStrip {rt} name={active} onSwitch={switchTo} />
                     {#if delegate}
                         <DelegateBar
                             name={active}

@@ -1864,7 +1864,8 @@ def test_a_stopped_or_errored_turn_is_not_followed_by_a_wake(registry, monkeypat
 def test_a_spent_wake_budget_leaves_answers_for_the_human_and_says_so(
     registry, monkeypatch
 ):
-    parent = _idle_with_an_answer(registry, monkeypatch, wakes="0")
+    parent = _idle_with_an_answer(registry, monkeypatch, wakes="1")
+    parent.wakes_left = 0  # spent on an earlier answer
     started, events = _wake(parent, registry)
     assert not started
     assert [e["type"] for e in events] == ["notice"]
@@ -1872,6 +1873,14 @@ def test_a_spent_wake_budget_leaves_answers_for_the_human_and_says_so(
     # said once
     assert _wake(parent, registry) == (False, [])
     # and the answer is still there for the human's next message
+    assert parent.answered_delegates()
+
+
+def test_with_waking_off_an_answer_waits_without_a_notice(registry, monkeypatch):
+    """0 is the setting, not a budget that ran out, so nothing says one
+    did; the answer waits for the human, as it did before waking."""
+    parent = _idle_with_an_answer(registry, monkeypatch, wakes="0")
+    assert _wake(parent, registry) == (False, [])
     assert parent.answered_delegates()
 
 
@@ -2017,3 +2026,65 @@ def test_an_answer_that_lands_during_a_reservation_wakes_once_it_is_free(
     asyncio.run(go())
     kinds = [e["type"] for e in parent.events if e.get("seq", -1) >= since]
     assert kinds[0] == "wake" and "delegate" in kinds
+
+
+def test_the_strip_rows_follow_a_delegate_from_asked_to_delivered(registry):
+    """What the strip above the composer reads: the task, when it
+    started, the delegate's last step while it runs, and whether its
+    answer has reached the parent yet. The rail counts it as working
+    meanwhile, because the parent's own turn has ended."""
+    sleepy = json.dumps({"code": "import time; time.sleep(1.5)"})
+    task = f"!tool run_python {sleepy}\n!text Slept on it."
+    ask = json.dumps({"action": "ask", "name": "scout", "task": task})
+    parent = registry.open("boss")
+    _turn(parent, f"!tool sessions {ask}\n!text Sent a scout.", registry)
+
+    def row():
+        return next(
+            r for r in registry.delegate_rows("boss") if r["name"] == "boss.scout"
+        )
+
+    deadline = time.monotonic() + 15
+    while row()["step"] is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    running = row()
+    assert running["status"] == "running"
+    assert running["task"].startswith("!tool run_python")
+    assert running["started"] and running["finished"] is None
+    assert running["step"]["name"] == "run_python"
+    assert "time.sleep" in running["step"]["args"]["code"]
+    assert running["delivered"] is False
+    assert [r["delegates_running"] for r in registry.list() if r["name"] == "boss"] == [
+        1
+    ]
+
+    _await_delegates(parent)
+    answered = row()
+    assert answered["status"] == "answered"
+    assert answered["finished"] and answered["step"] is None
+    assert answered["delivered"] is False  # waking is off in this file
+    assert [r["delegates_running"] for r in registry.list() if r["name"] == "boss"] == [
+        0
+    ]
+
+    _turn(parent, "what did it say?", registry)
+    assert row()["delivered"] is True
+
+
+def test_a_step_is_trimmed_to_what_a_line_needs():
+    """Polled every couple of seconds: long strings clipped, a long list
+    kept only as its length, a large object dropped."""
+    big = "x" * 5000
+    trimmed = delegates._trim_args(
+        {
+            "path": "/a.md",
+            "content": big,
+            "actions": [{"click": big}] * 3,
+            "blob": {"k": big},
+        }
+    )
+    assert trimmed["path"] == "/a.md"
+    assert len(trimmed["content"]) == 200 and trimmed["content"].endswith("…")
+    assert trimmed["actions"] == [None, None, None]
+    assert "blob" not in trimmed
+    assert delegates._trim_args("not a dict") == "not a dict"

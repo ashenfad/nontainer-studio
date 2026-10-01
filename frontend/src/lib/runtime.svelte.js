@@ -194,6 +194,10 @@ export class SessionRuntime {
     /** bumps whenever the workspace likely changed (done / notice) —
      * the preview iframe and files tab refresh off it */
     version = $state(0)
+    /** bumps when this session's delegates likely changed: it asked one
+     * (a `sessions` result), or one's answer arrived (`delegate`,
+     * `wake`). The delegate strip refreshes off it. */
+    delegateTick = $state(0)
     attachments = $state([])
     lastError = $state(null)
     /** latest model-call context size: {input_tokens, cached_tokens} */
@@ -290,6 +294,12 @@ export class SessionRuntime {
 
     #apply(ev) {
         if (typeof ev.cursor === 'number') this.cursor = ev.cursor + 1
+        if (
+            ev.type === 'delegate' ||
+            ev.type === 'wake' ||
+            (ev.type === 'tool_end' && ev.name === 'sessions')
+        )
+            this.delegateTick++
         // Thinking lasts until the agent does something else: close its
         // span on the next event that adds to the transcript (a usage
         // or notice event arriving between chunks is not that).
