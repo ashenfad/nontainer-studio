@@ -37,11 +37,8 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from . import delegates
-from .sessions import (
-    Registry,
-    ReservedSessionError,
-    SweptSessionError,
-)
+from .session import ReservedSessionError, SweptSessionError
+from .sessions import Registry
 
 log = logging.getLogger(__name__)
 
