@@ -1986,3 +1986,34 @@ def test_a_turn_looks_for_answers_once_it_lets_the_session_go(registry, monkeypa
     parent = registry.open("boss")
     _turn(parent, "!text hi", registry)
     assert looked == [("boss", False, False)]
+
+
+def test_an_answer_that_lands_during_a_reservation_wakes_once_it_is_free(
+    registry, monkeypatch
+):
+    """A publish, restore or fork holds the session for a moment and,
+    unlike a turn, looks for no answers when it lets go. The waker looks
+    again until the reservation is over."""
+    monkeypatch.setattr(turns, "RESERVED_RETRY", 0.05)
+    parent = _idle_with_an_answer(registry, monkeypatch)
+
+    async def go():
+        consumer = asyncio.create_task(turns._wake_on_answers(registry))
+        await asyncio.sleep(0)
+        parent.turn_lock.acquire()  # a reservation: no turn in it
+        registry._answer_landed("boss")
+        await asyncio.sleep(0.2)
+        assert parent.turn_task is None  # passed over while reserved
+        parent.turn_lock.release()
+        for _ in range(500):
+            if parent.turn_task is not None:
+                break
+            await asyncio.sleep(0.01)
+        await parent.turn_task
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+
+    since = parent.next_seq
+    asyncio.run(go())
+    kinds = [e["type"] for e in parent.events if e.get("seq", -1) >= since]
+    assert kinds[0] == "wake" and "delegate" in kinds

@@ -384,6 +384,11 @@ async def _run_turn(session: Any, message: str | None, registry: Any = None) -> 
             await _name_the_session(session, registry)
 
 
+#: How soon to look again at a session whose answer arrived while a
+#: reservation held it, in seconds.
+RESERVED_RETRY = 0.5
+
+
 async def _wake_on_answers(registry: Any) -> None:
     """Start a turn on an idle session as soon as one of its delegates
     answers.
@@ -393,7 +398,9 @@ async def _wake_on_answers(registry: Any) -> None:
     hands it to this loop. A session in a turn is passed over: it reads
     the answer with its next tool result, or on the chain ``_run_turn``
     runs when the turn ends, which looks once more after it lets go of
-    the session. A failure is logged and the next answer is still
+    the session. One held by a reservation instead is looked at again
+    until it is free, since a reservation looks for nothing when it
+    lets go. A failure is logged and the next answer is still
     heard. The hook comes out when this stops.
     """
     loop = asyncio.get_running_loop()
@@ -408,9 +415,15 @@ async def _wake_on_answers(registry: Any) -> None:
             if session is None:
                 continue  # released since: its answers wait for it
             try:
-                await _maybe_wake(session, registry)
+                woke = await _maybe_wake(session, registry)
             except Exception:
                 log.warning("waking %s failed", name, exc_info=True)
+                continue
+            if not woke and session.turn_lock.locked() and not session.in_turn:
+                # Held by a reservation (a publish, a restore, a fork),
+                # not a turn. A turn looks for answers when it lets go;
+                # a reservation does not, so look again shortly.
+                loop.call_later(RESERVED_RETRY, landed.put_nowait, name)
     finally:
         registry.set_wake_hook(None)
 

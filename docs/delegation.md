@@ -107,7 +107,9 @@ and never polls.
   landed after its last tool call, on the chain that runs the human's
   queued messages, which goes straight on into a woken turn. The turn
   looks once more after it lets go of the session, for an answer that
-  arrived in the moment between.
+  arrived in the moment between. A parent held for a moment by a
+  publish, a restore or a fork is looked at again until it is free,
+  since those look for no answers when they let go.
 - **A woken turn opens with a `wake` event,** not a `user` one: it is no
   message of the human's and no edit anchor. The model is sent the
   answers and a short note from the mechanism saying nobody spoke.
