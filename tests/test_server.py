@@ -4597,6 +4597,11 @@ def test_the_video_skill_teaches_delegation_only_where_it_can_be_followed(
     monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")  # brings ws-git with it
     client.post("/api/sessions", json={"name": "director"})
     assert "## Long videos with delegates" in skill("director")
+    # A delegate is a fork and inherits this text, the depth cap or not;
+    # the recipe tells one given a scene to build it, not to delegate.
+    assert "If you are a\ndelegate given a scene, build it yourself" in skill(
+        "director"
+    )
 
     for name in ("solo", "director"):
         assert "<!--if:" not in skill(name) and "<!--endif" not in skill(name)
