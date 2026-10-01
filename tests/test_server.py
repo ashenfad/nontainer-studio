@@ -18,7 +18,7 @@ from nontainer.apps import render_test_app
 from nontainer.apps import request as nt_request
 from starlette.testclient import TestClient
 
-from nontainer_studio import config, prompts, server, titles
+from nontainer_studio import config, prompts, publishing, server, titles
 from nontainer_studio import session as session_mod
 from nontainer_studio import sessions as sessions_mod
 from nontainer_studio import skills as studio_skills
@@ -1280,16 +1280,16 @@ def test_a_version_whose_record_fails_is_taken_back_down(studio, tmp_path):
         raise RuntimeError("the record could not be written")
 
     moves = []
-    original = sessions_mod._head_tree
+    original = publishing._head_tree
     set_current = registry._store.set_current
     registry._store.set_current = lambda *a: moves.append(a) or set_current(*a)
-    sessions_mod._head_tree = boom
+    publishing._head_tree = boom
     try:
         session.ws.files.write("/workspace/app/index.html", "<h1>v2</h1>")
         with pytest.raises(RuntimeError):
             registry.publish("s1")
     finally:
-        sessions_mod._head_tree = original
+        publishing._head_tree = original
         registry._store.set_current = set_current
 
     assert moves == []  # nothing to move back, so nothing moved
@@ -1400,7 +1400,7 @@ def test_a_manifest_naming_a_version_the_store_lost_is_left_alone(
     manifest["apps"][token]["current"] = "v9"
     registry._save_manifest(manifest)
 
-    with caplog.at_level("WARNING", logger="nontainer_studio.sessions"):
+    with caplog.at_level("WARNING", logger="nontainer_studio.publishing"):
         reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
         reborn._build_agent = lambda *a, **k: FakeAgent()
         try:
@@ -1789,7 +1789,7 @@ def test_changes_file_shows_sizes_where_it_cannot_show_bytes(studio, monkeypatch
     parquet = b"PAR1\x00\x00\x00\x01" + bytes(range(256)) * 4
     session.ws.files.fs.write("/workspace/app/rows.parquet", parquet)
     big = ("x" * 79 + "\n") * 1000
-    assert len(big.encode()) > sessions_mod.CHANGE_BODY_MAX
+    assert len(big.encode()) > publishing.CHANGE_BODY_MAX
     session.ws.files.write("/workspace/app/big.txt", big)
     token = _publish(client, "s1")["token"]
 
@@ -1914,7 +1914,7 @@ def test_old_shape_publications_migrate_on_load(studio, tmp_path, caplog):
     }
     registry._save_manifest(manifest)
 
-    with caplog.at_level("INFO", logger="nontainer_studio.sessions"):
+    with caplog.at_level("INFO", logger="nontainer_studio.publishing"):
         reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
     try:
@@ -2023,7 +2023,7 @@ def _tagged_app(registry, session, token, versions, current=None) -> dict:
         rows[version] = {
             "tag": tag,
             "commit": commit,
-            "tree": sessions_mod._head_tree(session.ws),
+            "tree": publishing._head_tree(session.ws),
             "created": 100.0 + i,
         }
     db = registry._store.path / "dbs" / "apps" / f"{token}.sqlite"
@@ -2063,7 +2063,7 @@ def test_tagged_versions_migrate_to_publications(studio, tmp_path, caplog):
     _tagged_app(registry, registry.get("s2"), "orphan-app", [("v1", "<h1>alone</h1>")])
     assert client.delete("/api/sessions/s2").json() == {"ok": True}
 
-    with caplog.at_level("INFO", logger="nontainer_studio.sessions"):
+    with caplog.at_level("INFO", logger="nontainer_studio.publishing"):
         reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     reborn._build_agent = lambda *a, **k: FakeAgent()
     try:
@@ -3708,7 +3708,7 @@ def test_the_sweep_refuses_a_manifest_it_cannot_read(studio, tmp_path, caplog):
     registry.release("s1")  # no handle held: only the manifest protects it
     (tmp_path / "sessions.json").write_text("{not json at all")
 
-    with caplog.at_level("WARNING", logger="nontainer_studio.sessions"):
+    with caplog.at_level("WARNING", logger="nontainer_studio.manifest"):
         assert registry.sweep_dbs() == []
     assert "sessions.json" in "\n".join(caplog.messages)
     assert db.exists()
@@ -3724,7 +3724,7 @@ def test_the_sweep_refuses_a_manifest_it_cannot_open(studio, tmp_path, caplog):
     path = tmp_path / "sessions.json"
     path.chmod(0o000)
     try:
-        with caplog.at_level("WARNING", logger="nontainer_studio.sessions"):
+        with caplog.at_level("WARNING", logger="nontainer_studio.manifest"):
             assert registry.sweep_dbs() == []
     finally:
         path.chmod(0o644)
@@ -3742,7 +3742,7 @@ def test_the_sweep_refuses_when_the_manifest_names_nothing(studio, tmp_path, cap
     registry.release("s1")  # no handle held: only the manifest protects it
     (tmp_path / "sessions.json").write_text("{}")
 
-    with caplog.at_level("WARNING", logger="nontainer_studio.sessions"):
+    with caplog.at_level("WARNING", logger="nontainer_studio.manifest"):
         assert registry.sweep_dbs() == []
     assert rel in "\n".join(caplog.messages)  # what it would have taken
     assert (tmp_path / rel).exists()
