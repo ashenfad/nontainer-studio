@@ -1,5 +1,7 @@
-"""The studio's ``SessionRunner``: drive a delegate's session to an
-answer.
+"""Delegation in the studio: the ``SessionRunner`` that drives a
+delegate's session to an answer, the messages that frame a delegate's
+task and its answer, and ``DelegationMixin``, the registry's record of
+who forked whom and what becomes of their branches.
 
 nontainer owns the substrate of delegation — ``ws.fork`` makes the
 child, ``nontainer.sessions.Sessions`` mints its name and keeps the job
@@ -35,6 +37,7 @@ Three rules hold this together:
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -44,6 +47,8 @@ from nontainer.sessions import render_answer
 if TYPE_CHECKING:
     from .session import Session
     from .sessions import Registry
+
+log = logging.getLogger(__name__)
 
 DELEGATE_TURNS = 3
 """Turns a delegate may spend before its answer is CAPPED.
@@ -429,3 +434,611 @@ def _reply(child: "Session", since: int) -> tuple[str, str | None]:
         elif event.get("type") == "error":
             error = event.get("message")
     return "".join(text).strip(), error
+
+
+class DelegationMixin:
+    """Delegates as the registry keeps them, as part of ``Registry``:
+    who forked whom, how deep, retention and the sweep, the live job
+    tables, the runs a shutdown stops, and whether an answer may wake a
+    session.
+
+    A mixin over the registry's state (``_lock``, ``_store``,
+    ``_sessions``, ``_pinned``, ``_delegate_runs``, ``_stopping``) and its
+    manifest methods, which ``Registry`` brings.
+    """
+
+    @property
+    def delegate_ttl(self) -> float:
+        """The retention TTL in SECONDS, which is what sweeps take.
+        The setting is hours because that is the unit the decision is
+        made in; 0 means no sweep."""
+        return self.delegate_ttl_hours * 3600
+
+    def may_wake(self, session: Session) -> bool:
+        """Whether delegates' answers should start a turn on ``session``.
+
+        Yes when answers are waiting to be delivered, the session's last
+        turn was not stopped or errored, the wake budget the human last
+        refilled is not spent, and the session is one a human started.
+        A delegate is excluded: its runner already drives its turns to a
+        reply, and a turn woken under it would run outside that budget.
+        Cheap checks first: this is asked of every live session about
+        once a second.
+        """
+        if not session.wake_ok or session.wakes_left <= 0:
+            return False
+        if session.delegates is None or not session.answered_delegates():
+            return False
+        return not self.is_delegate(session.name)
+
+    def is_delegate(self, name: str, manifest: dict | None = None) -> bool:
+        """Whether ``name`` is a session somebody forked as a delegate.
+
+        Recorded, never inferred. nontainer scopes a child under the
+        session that asked for it (``analyst.sleepy-otter``, dot-
+        separated because a session id is a branch name and holds no
+        path separator), but that is NAMING: ``analyst.notes`` typed by
+        a human is an ordinary session, and reading ownership off the
+        prefix would hide it from the rail and delete it with
+        ``analyst``. What makes a session a delegate is the record the
+        studio wrote when it opened one (see :meth:`open_delegate`).
+
+        Pass ``manifest`` to answer for a batch without re-reading it.
+        """
+        return self.parent_of(name, manifest) is not None
+
+    def parent_of(self, name: str, manifest: dict | None = None) -> str | None:
+        """The session that forked ``name``, or ``None`` for one nobody
+        forked — the delegates record asked about a single name.
+
+        Pass ``manifest`` to answer for a batch without re-reading it.
+        """
+        entry = (manifest or self._manifest())["delegates"].get(name)
+        return entry["parent"] if entry is not None else None
+
+    def delegates_of(self, name: str, manifest: dict | None = None) -> list[str]:
+        """Every session forked under ``name``, delegates of delegates
+        included — the subtree that goes when ``name`` goes."""
+        record = (manifest or self._manifest())["delegates"]
+        found: list[str] = []
+        frontier = [name]
+        while frontier:
+            parent = frontier.pop()
+            children = sorted(
+                child
+                for child, entry in record.items()
+                if entry["parent"] == parent and child not in found
+            )
+            found.extend(children)
+            frontier.extend(children)
+        return found
+
+    def depth_of(self, name: str, manifest: dict | None = None) -> int:
+        """How many delegations deep ``name`` sits: ``0`` for a session
+        a human started, ``1`` for a delegate of one, ``2`` for a
+        delegate of that.
+
+        Walked over the delegates record, which is the only thing that
+        says who forked whom — a dotted name is a naming convention,
+        and `analyst.notes` a human typed is nobody's delegate. A
+        parent already on the walk ends it, so a record that somehow
+        names a cycle answers rather than spinning.
+
+        Pass ``manifest`` to answer for a batch without re-reading it.
+        """
+        record = (manifest or self._manifest())["delegates"]
+        depth = 0
+        seen = {name}
+        entry = record.get(name)
+        while entry is not None and entry["parent"] not in seen:
+            depth += 1
+            seen.add(entry["parent"])
+            entry = record.get(entry["parent"])
+        return depth
+
+    def at_depth_cap(self, name: str, manifest: dict | None = None) -> bool:
+        """Whether ``name`` has reached the nesting cap and may not
+        delegate.
+
+        Asked of the record rather than of the session, so it answers
+        for a delegate whose branch this process has never opened, and
+        asked afresh on each ask rather than frozen when the agent was
+        built: the record is what a restart keeps.
+        """
+        cap = self.delegate_depth
+        return cap > 0 and self.depth_of(name, manifest) >= cap
+
+    def open_delegate(self, parent: str, name: str) -> Session:
+        """Assemble a session over a branch ``ws.fork`` already made.
+
+        A fork is a BRANCH. A branch is not a model, a toolkit, a python
+        config or an app db, and a delegate needs all four to be an
+        agent at all — so the child is opened the way every other
+        session is, and gets what every other session gets.
+
+        The exception is the app db, which the fork does not carry: it
+        is live external state that never versions. The child's row
+        NAMES the parent's file instead of getting a copy of it — `db`
+        stands in for a production store, and a delegate sent to work
+        on an app writes to the store its parent is looking at, the way
+        a real subagent does.
+
+        This is also the one moment the studio knows both halves of
+        ``child -> parent``, so it is where that is written down, with
+        the clock retention runs on: a delegate has been dealt with as
+        of the moment it was asked for, and the record is what still
+        says so after the restart that takes the job table away. Only
+        what is written down is a delegate: the naming convention says
+        who asked, the record says who OWNS, and a branch the helper
+        forked whose run never reached here has neither a record nor a
+        session row — it is a branch in the store that nothing lists,
+        that no parent's deletion takes with it, and that becomes an
+        ordinary session if a later ``open`` is ever asked for its name.
+        """
+        with self._lock:
+            manifest = self._manifest()
+            manifest["delegates"][name] = {
+                "parent": parent,
+                "touched": time.time(),
+                "kept": None,  # nobody has said; the job table answers
+            }
+            self._save_manifest(manifest)
+            # The row before the open that reads it: `open` builds the
+            # child's python config over the file its row names.
+            self._record(name, db=self._db_of(parent, manifest))
+        try:
+            # minting: the record above is this call's own doing, and
+            # the branch is the fork that brought us here.
+            return self.open(name, minting=True)
+        except BaseException:
+            # An unopened name whose record stayed would hide a session
+            # that does not exist from a rail that never showed it, and
+            # would put it on the parent's deletion list.
+            with self._lock:
+                self._unrecord(name)
+            raise
+
+    def _freshest(self, entry: dict, job: Any) -> tuple[float, bool]:
+        """``(touched, kept)`` for a record and the live job that may
+        know more than it.
+
+        ``touched`` is the later of the two: both sides move it when
+        they deal with the delegate, and a delegate is as recent as the
+        most recent thing anybody did with it.
+
+        A PINNED job is read past entirely. Its flag and its stamp are
+        the sweep's own doing (see :meth:`_pin`), so reading either as
+        news about the delegate would report a keep nobody asked for
+        and a delegate dealt with by nothing.
+
+        ``kept`` is the record's as soon as the record HAS one.
+        ``None`` there means nobody has said, which is when nontainer's
+        flag answers — that is how a `sessions keep` the agent typed
+        becomes durable. A human's keep or un-keep is final from then
+        on, and it has to be: nontainer's flag is one-way (there is no
+        un-keep, so a job it kept reads kept for as long as its session
+        lives), and a rule that re-derived this from a timestamp would
+        put the flag back the next time an answer was read.
+        """
+        touched, kept = entry["touched"], entry["kept"]
+        if job is not None and job.name not in self._pinned:
+            touched = max(touched, float(getattr(job, "touched", 0.0) or 0.0))
+            if kept is None:
+                kept = getattr(job, "kept", False)
+        return touched, bool(kept)
+
+    def _live_jobs(self) -> dict[str, Any]:
+        """Every job a live session's helper still holds, by child name.
+
+        A closed or broken helper contributes nothing rather than
+        failing the caller: what it knew is in the manifest, which is
+        exactly the case these readers are written for.
+        """
+        jobs: dict[str, Any] = {}
+        for session in list(self._sessions.values()):
+            if session.delegates is None:
+                continue
+            try:
+                for job in session.delegates.list():
+                    jobs[job.name] = job
+            except Exception:  # noqa: BLE001 - the record answers instead
+                continue
+        return jobs
+
+    def snapshot_delegates(self, name: str) -> None:
+        """Copy what a live session's job table says about its
+        delegates into the manifest.
+
+        ``Job.touched`` and ``Job.kept`` are what retention is measured
+        on, and they live in an in-process table that a restart takes
+        with it. This is where they become durable, so a `sessions
+        keep` the agent typed and an answer it read last night still
+        count tomorrow morning. Cheap — one ``list()`` and a manifest
+        write only when something actually moved — so it runs at the
+        end of every turn and after a delivery, which is when the
+        studio has just dealt with these jobs.
+        """
+        session = self._sessions.get(name)
+        if session is None or session.delegates is None:
+            return
+        try:
+            jobs = session.delegates.list()
+        except Exception:  # noqa: BLE001 - a closed helper has nothing to say
+            return
+        with self._lock:
+            manifest = self._manifest()
+            record = manifest["delegates"]
+            changed = False
+            for job in jobs:
+                entry = record.get(job.name)
+                # Only what this session is recorded as owning: a branch
+                # the helper forked whose open never reached the record
+                # is not a delegate (see `open_delegate`).
+                if entry is None or entry["parent"] != name:
+                    continue
+                touched, kept = self._freshest(entry, job)
+                # Only a keep the record does not carry yet is written
+                # down as one: the human's own answer, once given, is
+                # not something a later read may overturn.
+                kept = entry["kept"] if entry["kept"] is not None else kept or None
+                if (touched, kept) == (entry["touched"], entry["kept"]):
+                    continue
+                record[job.name] = {"parent": name, "touched": touched, "kept": kept}
+                changed = True
+            if changed:
+                self._save_manifest(manifest)
+
+    def sweep_delegates(self, now: float | None = None) -> list[str]:
+        """Delete the branches of delegates nobody has dealt with
+        inside the TTL, and return what went, sorted.
+
+        Two sweeps, one rule, and the rule is decided HERE before
+        either runs. Every live session's helper sweeps its own table,
+        which is nontainer's rule with its own touch-on-read in it;
+        then the manifest's record is walked for the delegates no table
+        holds — the ones asked for before a restart — and those
+        branches are deleted through the store directly.
+
+        What is spared: a kept delegate; one dealt with inside the TTL;
+        one this registry still holds open, since deleting the branch
+        under a live workspace would leave it reading a head nothing
+        reaches and failing its next commit (a delegate with a run in
+        flight is open and its job is `running`, so it is spared
+        twice); and a subtree holding either — a delegate's own
+        delegates are taken with it, so one of them being kept or open
+        leaves the whole subtree standing rather than deleting around
+        it.
+
+        The subtree rule is applied BEFORE nontainer's sweep rather
+        than after it, and that is what :meth:`_pin` is for. A helper
+        sweeps its whole table in one critical section and takes no
+        exclusion list, so a root whose subtree is held has to be
+        flagged kept in that table first or the branch is gone before
+        this can spare it — deleted, and with the record it is
+        reachable through.
+
+        A swept name leaves the record and the session rows with its
+        branch, which is what lets :meth:`sweep_dbs` collect a db
+        nothing names any more. The agent's chat record needs no
+        deletion of its own: the conversation lives in the branch.
+
+        ``0`` hours disables it. Runs when the registry opens and on
+        the server's timer, and nowhere else — an ask or a list that
+        swept would make one delegate's retention depend on how often
+        another is asked for.
+        """
+        ttl = self.delegate_ttl
+        if ttl <= 0:
+            return []
+        now = time.time() if now is None else now
+        # One critical section for the whole sweep: what is held is read
+        # off the record and the open sessions, and a sweep that let
+        # either move between deciding and deleting would spare the
+        # wrong subtree. The lock is reentrant, so the store deletions
+        # underneath may reach back through `workspace_for`.
+        with self._lock:
+            manifest = self._manifest()
+            record = manifest["delegates"]
+            live = self._live_jobs()
+            for child in sorted(record):
+                job = live.get(child)
+                if job is None or job.status in ("running", "expired"):
+                    continue  # no table is about to sweep this one
+                touched, kept = self._freshest(record[child], job)
+                if kept or touched > now - ttl:
+                    continue  # nor this one: nontainer spares it too
+                if self._held(child, manifest, live):
+                    self._pin(child, record[child]["parent"])
+            swept: set[str] = set()
+            for name, session in list(self._sessions.items()):
+                if session.delegates is None:
+                    continue
+                try:
+                    swept.update(session.delegates.sweep(ttl))
+                except Exception as e:  # noqa: BLE001
+                    # A branch something still holds open refuses to
+                    # delete, and a closed helper raises outright.
+                    # Neither is worth losing the rest of the sweep
+                    # over; the next pass tries again, and nothing was
+                    # marked expired here.
+                    log.info("delegates: %s's own jobs were not swept (%s)", name, e)
+            # after the sweeps: the jobs they took now read `expired`
+            live = self._live_jobs()
+            candidates: set[str] = set()
+            for child in sorted(record):
+                if child in swept:
+                    continue
+                job = live.get(child)
+                if job is not None and job.status != "expired":
+                    continue  # a table holds it: nontainer's sweep decides
+                touched, kept = self._freshest(record[child], job)
+                if kept or touched > now - ttl:
+                    continue
+                if child in self._sessions:
+                    log.info("delegates: %s is idle but open; leaving it", child)
+                    continue
+                candidates.add(child)
+            doomed: set[str] = set()
+            for child in sorted(candidates | swept):
+                # Grandchildren first: a delegate may delegate, and the
+                # record that says whose those branches are goes with
+                # the parent's.
+                subtree = self.delegates_of(child, manifest)
+                held = self._held(child, manifest, live)
+                if held:
+                    log.info(
+                        "delegates: leaving the subtree under %s — %s is kept or "
+                        "still open",
+                        child,
+                        ", ".join(held),
+                    )
+                    continue
+                doomed.update(subtree)
+                if child in candidates:
+                    doomed.add(child)
+            if doomed:
+                self._delete_branches(doomed)
+            gone = swept | doomed
+            for name in sorted(gone):
+                self._pinned.discard(name)
+                record.pop(name, None)
+                manifest["sessions"].pop(name, None)
+                manifest["models"].pop(name, None)
+                manifest["titles"].pop(name, None)
+                manifest["created"].pop(name, None)
+                # The transcript is the one thing a delegate owns
+                # OUTSIDE its branch, so the branch deletion cannot take
+                # it (see `delete`, which unlinks it for the same
+                # reason).
+                (self._store.path / "events" / f"{name}.jsonl").unlink(missing_ok=True)
+            if gone:
+                self._save_manifest(manifest)
+                log.info("delegates: swept %s", ", ".join(sorted(gone)))
+                self.sweep_dbs()
+            return sorted(gone)
+
+    def _held(self, name: str, manifest: dict, live: dict) -> list[str]:
+        """Branches under ``name`` that must stand: kept, or held open
+        by this registry. Caller holds ``_lock``.
+
+        The subtree goes with its root, so this is what decides whether
+        the root goes at all. An OPEN branch is in here for the same
+        reason a kept one is, plus a harder one: a handle pins its
+        branch, and asking the store to delete it raises in the middle
+        of a sweep that had other branches to take.
+        """
+        return sorted(
+            child
+            for child in self.delegates_of(name, manifest)
+            if child in self._sessions
+            or self._freshest(manifest["delegates"][child], live.get(child))[1]
+        )
+
+    def _pin(self, child: str, parent: str) -> None:
+        """Flag ``child``'s job kept in its parent's live table so
+        nontainer's sweep leaves it alone. Caller holds ``_lock``.
+
+        The studio decides what a sweep spares; nontainer's sweep takes
+        a whole table in one critical section and offers no exclusion
+        list, so this is the only seam through which that decision
+        reaches it. What it flags is a delegate whose own subtree is
+        held, never one somebody asked to keep.
+
+        A pin is not a keep, and nothing reads it as one: the record
+        stays as it was (see :meth:`_freshest`), so the rail shows what
+        the human decided and a restart sweeps the delegate if its
+        subtree is free by then. nontainer's flag is one-way, though,
+        so a pinned job is out of both sweeps' reach until its session
+        closes — the branch of a delegate whose subtree was freed in
+        the meantime waits for the next run rather than the next hour.
+        """
+        session = self._sessions.get(parent)
+        helper = session.delegates if session is not None else None
+        if helper is None:
+            return
+        try:
+            helper.keep(child)
+        except Exception as e:  # noqa: BLE001 - a job it cannot flag is not ours
+            log.info("delegates: %s could not be held back (%s)", child, e)
+            return
+        self._pinned.add(child)
+        log.info("delegates: %s is idle but its subtree is held; leaving it", child)
+
+    def delegate_rows(self, name: str) -> list[dict]:
+        """What ``name`` delegated, most recently dealt with first —
+        the per-session listing the rail shows under the ⑂ badge.
+
+        ``status`` is the live job's where a table holds one. Where
+        none does the row says ``known: false`` and reads as
+        ``answered``: the job table did not survive a restart, and what
+        is left is what the record knows — a delegate that was asked
+        for, whose branch is still here, and which is therefore not
+        running and not swept. ``touched`` and ``kept`` come from
+        whichever side was told last, so the rail agrees with the sweep
+        about what it is looking at.
+        """
+        manifest = self._manifest()
+        session = self._sessions.get(name)
+        live: dict[str, Any] = {}
+        if session is not None and session.delegates is not None:
+            try:
+                live = {job.name: job for job in session.delegates.list()}
+            except Exception:  # noqa: BLE001 - the record answers instead
+                live = {}
+        rows = []
+        for child, entry in manifest["delegates"].items():
+            if entry["parent"] != name:
+                continue
+            job = live.get(child)
+            touched, kept = self._freshest(entry, job)
+            rows.append(
+                {
+                    "name": child,
+                    "status": job.status if job is not None else "answered",
+                    "known": job is not None,
+                    "kept": kept,
+                    "touched": touched,
+                }
+            )
+        rows.sort(key=lambda r: (-r["touched"], r["name"]))
+        return rows
+
+    def orphaned_delegates(self, session: Session) -> list[str]:
+        """Delegates of ``session`` that no job table remembers and no
+        turn has mentioned yet, sorted — the ones a restart parted
+        from their answers.
+
+        A job table lives in this process and a branch lives in the
+        store, so a restart keeps the record of who forked whom and
+        the branch, and takes with it every answer nobody had
+        collected. Nothing else would ever say so: the session's live
+        helper lists no job, so `sessions list` reads "no delegated
+        jobs yet" over a branch that is sitting in the store and a
+        drill-down that still lists it.
+
+        A swept delegate is none of these — its branch is gone, so
+        there is nothing to point the session at. Neither is one the
+        transcript already shows, and reading delivery off the
+        transcript is what makes the note arrive once: a restart that
+        replays the transcript finds it delivered, and a rewind that
+        unsays it makes the next turn carry it again.
+        """
+        if session.delegates is None:
+            return []
+        try:
+            live = {job.name for job in session.delegates.list()}
+        except Exception:  # noqa: BLE001 - a closed helper remembers nothing
+            live = set()
+        record = self._manifest()["delegates"]
+        parted = [
+            child
+            for child, entry in record.items()
+            if entry["parent"] == session.name
+            and child not in live
+            and self._store.exists(child)
+        ]
+        return sorted(session.undelivered(parted))
+
+    def delegate_of(self, name: str) -> dict | None:
+        """The row ``name``'s parent sees for it, with the parent named
+        — ``None`` for a session nobody forked.
+
+        One question for a shell that has only a name: is this
+        somebody's delegate, whose, and what became of it. The row is
+        the parent's listing's, so both agree about what they are
+        looking at.
+        """
+        parent = self.parent_of(name)
+        if parent is None:
+            return None
+        row = next((r for r in self.delegate_rows(parent) if r["name"] == name), None)
+        return {**row, "parent": parent} if row is not None else None
+
+    def keep_delegate(self, parent: str, child: str, kept: bool) -> dict:
+        """Flag or unflag one delegate against the sweep; returns its
+        row. ``KeyError`` for a name ``parent`` did not fork.
+
+        Both halves are told, because they expire differently. A live
+        job's own ``keep`` is what nontainer's sweep reads, so a keep
+        goes there first; the manifest is what outlives the job table,
+        so it is written either way.
+
+        UN-keeping is the manifest alone: nontainer offers no un-keep,
+        and a job it has flagged stays flagged for as long as its
+        session lives. The record is stamped as dealt with NOW, which
+        makes it the later word on that delegate (see :meth:`_freshest`)
+        — so the rail and every restart read the un-keep, and the sweep
+        honours it from the moment the job table is gone.
+        """
+        if kept:
+            session = self._sessions.get(parent)
+            helper = session.delegates if session is not None else None
+            if helper is not None:
+                try:
+                    helper.keep(child)
+                except Exception as e:  # noqa: BLE001
+                    # An expired or unknown job: the record below still
+                    # answers, and a branch that is already gone is not
+                    # something a flag can bring back.
+                    log.info("delegates: %s was not kept live (%s)", child, e)
+        with self._lock:
+            manifest = self._manifest()
+            entry = manifest["delegates"].get(child)
+            if entry is None or entry["parent"] != parent:
+                raise KeyError(child)
+            manifest["delegates"][child] = {
+                "parent": parent,
+                "touched": time.time(),
+                "kept": bool(kept),
+            }
+            self._save_manifest(manifest)
+        return next(row for row in self.delegate_rows(parent) if row["name"] == child)
+
+    def hold_delegate_run(self, name: str, loop: Any, task: Any) -> None:
+        """Take the handles on a delegate turn that has just started.
+
+        One per child, because a branch runs one job at a time: the
+        helper refuses a second run on a child the first is still
+        driving.
+
+        A turn that arrives after the shutdown sweep is asked to stop
+        the way the sweep asks: `sessions ask` queues a worker, and a
+        worker still on its way here when the sweep read the table is
+        one the sweep never saw. Posted to the loop rather than
+        cancelled outright, so the turn starts, meets the cancel at its
+        first await, and writes why into the child's transcript like
+        any other stopped turn.
+        """
+        with self._lock:
+            self._delegate_runs[name] = (loop, task)
+            stopping = self._stopping
+        if stopping:
+            loop.call_soon_threadsafe(task.cancel)
+
+    def drop_delegate_run(self, name: str) -> None:
+        """Give up the handles on a delegate turn that has ended,
+        cancelled or not."""
+        with self._lock:
+            self._delegate_runs.pop(name, None)
+
+    def stop_delegate_runs(self) -> list[str]:
+        """Ask every delegate turn in flight to stop; returns the
+        children asked, sorted.
+
+        Asking, not waiting: the cancel is posted to each turn's own
+        loop and this returns at once. What waits is whoever joins the
+        helpers afterwards, and by then the turns are unwinding rather
+        than starting their next one. A turn that ends on its own
+        between the read and the post is not an error — the loop is
+        closed, the post raises, and the turn it would have stopped is
+        already over.
+        """
+        with self._lock:
+            self._stopping = True
+            runs = sorted(self._delegate_runs.items())
+        for name, (loop, task) in runs:
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError as e:  # one loop already gone, not the rest
+                log.info("delegates: %s's turn could not be stopped (%s)", name, e)
+        return [name for name, _ in runs]
