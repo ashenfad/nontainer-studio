@@ -2088,3 +2088,19 @@ def test_a_step_is_trimmed_to_what_a_line_needs():
     assert trimmed["actions"] == [None, None, None]
     assert "blob" not in trimmed
     assert delegates._trim_args("not a dict") == "not a dict"
+
+
+def test_a_cancelled_delegate_has_nothing_to_deliver(registry):
+    """A cancelled job's answer is discarded, so no turn ever delivers
+    it; its row must not read as waiting for one, or its chip would
+    never clear."""
+    sleepy = json.dumps({"code": "import time; time.sleep(1.5)"})
+    task = f"!tool run_python {sleepy}\n!text Too late."
+    ask = json.dumps({"action": "ask", "name": "scout", "task": task})
+    parent = registry.open("boss")
+    _turn(parent, f"!tool sessions {ask}\n!text Sent a scout.", registry)
+    parent.delegates.cancel("boss.scout")
+
+    row = next(r for r in registry.delegate_rows("boss") if r["name"] == "boss.scout")
+    assert row["status"] == "cancelled"
+    assert row["delivered"] is True

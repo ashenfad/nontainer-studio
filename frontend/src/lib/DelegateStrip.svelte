@@ -11,6 +11,7 @@
     // last-step line is the one thing that moves without an event.
     import { loadDelegates } from './runtime.svelte.js'
     import { stepLine } from './activity.js'
+    import { latestOnly } from './latest.js'
 
     let { rt, name, onSwitch } = $props()
 
@@ -18,13 +19,25 @@
     let rows = $state([])
     let now = $state(Date.now() / 1000)
 
-    const out = $derived(rows.filter((r) => r.status === 'running' || (r.known && !r.delivered)))
+    // Statuses that carry an answer to deliver; a cancelled or swept job
+    // has none, so it never holds a chip open waiting for one.
+    const DELIVERABLE = new Set(['answered', 'failed', 'capped'])
+    const out = $derived(
+        rows.filter(
+            (r) => r.status === 'running' || (r.known && !r.delivered && DELIVERABLE.has(r.status)),
+        ),
+    )
     const running = $derived(out.some((r) => r.status === 'running'))
+
+    // The poll and an event can overlap. Only the newest request's rows
+    // are shown: an older one answering last would bring back a chip the
+    // newer one had already seen delivered.
+    const fetchRows = latestOnly(loadDelegates)
 
     async function load(who) {
         try {
-            const fresh = await loadDelegates(who)
-            if (who === name) rows = fresh
+            const fresh = await fetchRows(who)
+            if (fresh !== latestOnly.SUPERSEDED && who === name) rows = fresh
         } catch {
             // a failed refresh keeps what was showing; the next one retries
         }

@@ -935,10 +935,12 @@ class DelegationMixin:
                 live = {job.name: job for job in session.delegates.list()}
             except Exception:  # noqa: BLE001 - the record answers instead
                 live = {}
+        # What a turn could still deliver: the session's own rule, so a
+        # cancelled or swept job, which has no answer to deliver, never
+        # reads as waiting for one.
         undelivered: set[str] = set()
         if session is not None:
-            finished = [n for n, job in live.items() if job.status != "running"]
-            undelivered = session.undelivered(finished)
+            undelivered = {job.name for job in session.answered_delegates()}
         rows = []
         for child, entry in manifest["delegates"].items():
             if entry["parent"] != name:
