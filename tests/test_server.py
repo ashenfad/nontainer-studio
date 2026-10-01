@@ -18,7 +18,7 @@ from nontainer.apps import render_test_app
 from nontainer.apps import request as nt_request
 from starlette.testclient import TestClient
 
-from nontainer_studio import config, prompts, publishing, server, titles
+from nontainer_studio import config, prompts, publishing, server, titles, turns
 from nontainer_studio import session as session_mod
 from nontainer_studio import sessions as sessions_mod
 from nontainer_studio import skills as studio_skills
@@ -79,7 +79,7 @@ def knobs_off(monkeypatch):
 def no_resume_backoff(monkeypatch):
     """A provider error resumes its turn after a wait meant for a real
     outage; a test's failures are scripted and clear at once."""
-    monkeypatch.setattr(server, "RESUME_BACKOFF", 0)
+    monkeypatch.setattr(turns, "RESUME_BACKOFF", 0)
 
 
 @pytest.fixture
@@ -2808,7 +2808,7 @@ def test_a_kept_run_persists_through_the_store_db(scripted):
     record.runs[-1].status = RunStatus.error
     registry.db.upsert_session(record)
 
-    server._keep_aborted_run(session, run_id, "credit balance too low")
+    turns._keep_aborted_run(session, run_id, "credit balance too low")
 
     stored = registry.db.get_session(session_id="s1", session_type=SessionType.AGENT)
     repaired = stored.runs[-1]
@@ -3373,7 +3373,7 @@ def test_keeping_leaves_healthy_runs_alone(studio):
     )
     session.agent.db = chat_db
 
-    server._keep_aborted_run(session, "run-1", "whatever")
+    turns._keep_aborted_run(session, "run-1", "whatever")
     assert chat_db.record.runs[0].messages == []  # untouched
 
 
@@ -3390,7 +3390,7 @@ def test_keeping_an_aborted_run_never_raises(studio, caplog):
     session = registry.get("s1")
     session.agent.db = BrokenDb()
 
-    server._keep_aborted_run(session, "run-1", "whatever")
+    turns._keep_aborted_run(session, "run-1", "whatever")
     assert "could not keep aborted run run-1" in caplog.text
 
 
@@ -3459,7 +3459,7 @@ def test_ui_dir_exists_from_the_start(studio):
 def test_error_truncation_keeps_the_exception_line(studio):
     """Tracebacks cap by cutting the MIDDLE: the final line (the
     exception) is the whole point of the message."""
-    from nontainer_studio.server import _short_middle
+    from nontainer_studio.turns import _short_middle
 
     trace = (
         "Traceback (most recent call last):\n"
@@ -4227,7 +4227,7 @@ async def _drive(session, message: str) -> None:
     """One turn straight through `_run_turn`, without a route in front
     of it — a delegate's turns are not driven by the human's."""
     session.turn_lock.acquire()
-    await server._run_turn(session, message)
+    await turns._run_turn(session, message)
 
 
 def test_a_generator_that_fails_leaves_the_name_alone(titling):
@@ -7511,7 +7511,7 @@ def test_a_stop_during_the_wait_is_not_resumed(scripted, monkeypatch):
     """The wait before a resume is part of the turn, and the stop button
     reaches it: the run is kept as stopped by the user instead of being
     resumed, and the turn does not sit out the rest of the wait."""
-    monkeypatch.setattr(server, "RESUME_BACKOFF", 30)
+    monkeypatch.setattr(turns, "RESUME_BACKOFF", 30)
     client, registry = scripted
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
