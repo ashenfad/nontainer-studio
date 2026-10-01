@@ -1912,8 +1912,17 @@ class Registry:
         return rows
 
     def live_sessions(self) -> list[Session]:
-        """The sessions open in this process right now."""
-        return list(self._sessions.values())
+        """The sessions open in this process right now. Copied under the
+        lock: worker threads open, fork and release sessions while the
+        server's loop asks."""
+        with self._lock:
+            return list(self._sessions.values())
+
+    @property
+    def stopping(self) -> bool:
+        """Whether the studio is shutting down its delegates' work."""
+        with self._lock:
+            return self._stopping
 
     def may_wake(self, session: Session) -> bool:
         """Whether delegates' answers should start a turn on ``session``.

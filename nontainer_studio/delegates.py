@@ -35,6 +35,7 @@ Three rules hold this together:
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING, Any
 
 from nontainer import Answer
@@ -230,8 +231,13 @@ class StudioRunner:
         turns = self._budget(budget)
         child = self._registry.open_delegate(self._parent, session)
         try:
-            prompt = self._brief(child, forked_at) + task
-            for _ in range(turns):
+            prompt: str | None = self._brief(child, forked_at) + task
+            asked = 0  # turns the budget counts: the task and the nudges
+            while True:
+                if prompt is not None:
+                    if asked == turns:
+                        return Answer(text=CAPPED, status="capped")
+                    asked += 1
                 text, error = self._turn(child, prompt)
                 # The error first, and always. A turn that streamed prose
                 # and THEN died has both, and prose that simply stops
@@ -239,14 +245,59 @@ class StudioRunner:
                 # so, whatever it managed to say on the way.
                 if error:
                     return Answer(text=_failed_text(text, error), status="failed")
-                if text:
+                if not text:
+                    prompt = NUDGE
+                    continue
+                # A reply while delegates of its own are still out is the
+                # delegate waiting for them, as the primer tells every
+                # agent to. Their answers wake it, as they wake a human's
+                # session, and its answer is the reply it gives once they
+                # are in. Woken turns spend its wake budget, not this one.
+                waited = self._await_own_answers(child)
+                if waited == "none":
                     return Answer(text=text)
-                prompt = NUDGE
-            return Answer(text=CAPPED, status="capped")
+                if waited == "stopping":
+                    return Answer(
+                        text=_failed_text(text, "the studio shut down"), status="failed"
+                    )
+                if waited == "spent":
+                    return Answer(text=_unwaited_text(text, self._outstanding(child)))
+                prompt = None  # a woken turn: the answers are its message
         finally:
             self._registry.release(session)
 
     # -- internals ---------------------------------------------------------
+
+    @staticmethod
+    def _outstanding(child: "Session") -> list[str]:
+        """The child's own delegates still working, or answered and not
+        yet delivered to it."""
+        if child.delegates is None:
+            return []
+        running = [
+            job.name for job in child.delegates.list() if job.status == "running"
+        ]
+        return running + [job.name for job in child.answered_delegates()]
+
+    def _await_own_answers(self, child: "Session") -> str:
+        """Wait for one of the child's own delegates to answer.
+
+        ``"answered"`` when one has and a woken turn may run; ``"none"``
+        when nothing is outstanding, so its reply is its answer;
+        ``"spent"`` when answers are coming but its wake budget is not;
+        ``"stopping"`` when the studio is shutting down. Between turns,
+        so no turn of the child's is held while it waits.
+        """
+        while True:
+            if self._registry.stopping:
+                return "stopping"
+            if child.answered_delegates():
+                return "answered" if child.wakes_left > 0 else "spent"
+            if child.delegates is None or not any(
+                job.status == "running" for job in child.delegates.list()
+            ):
+                return "none"
+            time.sleep(_AWAIT_EVERY)
 
     def _budget(self, budget: Any) -> int:
         """``budget`` as a turn count, or the registry's default.
@@ -331,6 +382,21 @@ class StudioRunner:
             asyncio.set_event_loop(None)
             loop.close()
         return _reply(child, since)
+
+
+#: How often a delegate waiting on delegates of its own checks for an
+#: answer, in seconds.
+_AWAIT_EVERY = 0.1
+
+
+def _unwaited_text(text: str, names: list[str]) -> str:
+    """A delegate's reply when its own delegates were still out and it
+    could not be woken again to read them."""
+    return (
+        f"{text}\n\n[the studio: this delegate's own delegates "
+        f"{', '.join(f'`{n}`' for n in names)} had not been read when it "
+        "ran out of wakes, so this reply was written without their answers]"
+    )
 
 
 def _failed_text(text: str, error: str) -> str:
