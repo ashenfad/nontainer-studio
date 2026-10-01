@@ -11,9 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .session import (
-    Db,
-)
+from .session import Db
 
 log = logging.getLogger(__name__)
 

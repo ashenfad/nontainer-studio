@@ -11,13 +11,9 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-from nontainer import (
-    Workspace,
-)
+from nontainer import Workspace
 
-from .config import (
-    sessions_tool_enabled,
-)
+from .config import sessions_tool_enabled
 
 
 def _can_start_from_published(wsgit: bool) -> bool:

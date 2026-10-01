@@ -86,7 +86,7 @@ an edited one is the session's own and is left alone.
 
 The app-assets directory and the notes that describe it are one decision.
 Swapping the directory means updating `FRONTEND_NOTES` in
-`nontainer_studio/sessions.py` too, so the agent is told about *your*
+`nontainer_studio/prompts.py` too, so the agent is told about *your*
 libraries — see [Apps](apps.md).
 
 `NONTAINER_STUDIO_CSP` is set on the apps config rather than on the

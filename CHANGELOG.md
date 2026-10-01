@@ -93,6 +93,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`sessions.py` and `server.py` are split into modules,** with no
+  change in behaviour. `sessions.py` was 5,574 lines and is now the
+  registry's core; `Registry` mixes in the rest from `manifest.py`,
+  `titles.py`, `skills.py`, `delegates.py` and `publishing.py`. The
+  environment settings went to `config.py`, the agent-facing text to
+  `prompts.py`, `Session` and `Db` to `session.py`, and the turn engine
+  out of `server.py` into `turns.py`.
+  - `from nontainer_studio.sessions import Registry` works as before.
+    Code importing other internals from `sessions` or `server` (`Db`,
+    `apps_config`, the primers, `_run_turn`) imports them from their
+    new modules.
+
 - **The Claude picks are Sonnet 5.5 and Opus 5.5.** This covers the
   direct `anthropic` provider (`claude-sonnet-5-5`, the new default, and
   `claude-opus-5-5`) and OpenRouter (`anthropic/claude-sonnet-5.5`, the
