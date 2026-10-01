@@ -93,6 +93,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Waking a parent no longer polls.** Delegates' answers wake an idle
+  parent the moment they are recorded, through the session helper's
+  `on_answer` in nontainer 0.8.4 (now the floor), instead of a watcher
+  checking every live session once a second. A delegate waiting on
+  delegates of its own blocks on the helper's `wait()` instead of
+  checking every tenth of a second. A turn looks for answers once more
+  after it lets go of the session, so one arriving in that moment is not
+  left for the human.
+
 - **`sessions.py` and `server.py` are split into modules,** with no
   change in behaviour. `sessions.py` was 5,574 lines and is now the
   registry's core; `Registry` mixes in the rest from `manifest.py`,

@@ -162,6 +162,9 @@ class Registry(
         # registers after the sweep has already run is stopped on
         # arrival, so nothing the sweep could not see starts afterwards.
         self._stopping = False
+        #: Called with a session's name when one of its delegates
+        #: answers (see ``DelegationMixin.set_wake_hook``).
+        self._wake_hook: Callable[[str], None] | None = None
         # The store is the object that owns what outlives a session:
         # opening one, deleting one, and the tag scope that belongs to
         # none of them. Studio's own bookkeeping (the app dbs, the
@@ -296,13 +299,6 @@ class Registry(
             )
         rows.sort(key=lambda r: (-created.get(r["name"], 0), r["name"]))
         return rows
-
-    def live_sessions(self) -> list[Session]:
-        """The sessions open in this process right now. Copied under the
-        lock: worker threads open, fork and release sessions while the
-        server's loop asks."""
-        with self._lock:
-            return list(self._sessions.values())
 
     @property
     def stopping(self) -> bool:
@@ -615,6 +611,9 @@ class Registry(
             ws,
             StudioRunner(self, name, self._delegate_turns),
             budget=self._delegate_turns,
+            # nontainer says when an answer lands; whether that starts a
+            # turn is the studio's (see DelegationMixin._answer_landed).
+            on_answer=lambda job, answer: self._answer_landed(name),
         )
         # Built here and handed to the toolkit rather than taken from
         # it: a model switch rebuilds the toolkit, and a queue that
