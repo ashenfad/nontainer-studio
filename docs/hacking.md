@@ -24,9 +24,18 @@ The server-side halves:
 
 | module | what it holds |
 |---|---|
-| `nontainer_studio/server.py` | the Starlette routes, the agno-stream → event mapping, the a2ui projection |
-| `nontainer_studio/sessions.py` | the registry: session open/fork/delete, synchronized rewind, publish, the app manifest, the durable transcript, the agent build |
-| `nontainer_studio/delegates.py` | `StudioRunner` — the loop that drives a forked session to an answer |
+| `nontainer_studio/server.py` | the Starlette routes, CORS for apps, snapshot holding, the a2ui projection |
+| `nontainer_studio/turns.py` | how a turn runs: the agno-stream → event mapping, the chain of turns, resuming, keeping a cut run, waking on delegates' answers |
+| `nontainer_studio/sessions.py` | the registry's core: session open/fork/delete, synchronized rewind, the agent build; the rest of `Registry` is mixed in from the modules below |
+| `nontainer_studio/session.py` | `Session`, `Db`, the durable transcript and what it says was delivered |
+| `nontainer_studio/manifest.py` | `ManifestMixin`: the manifest and the app db handles |
+| `nontainer_studio/publishing.py` | `PublishingMixin`: apps and versions, serving, what changed, migrations |
+| `nontainer_studio/delegates.py` | `StudioRunner`, the loop that drives a forked session to an answer, and `DelegationMixin`, the registry's record of delegates |
+| `nontainer_studio/titles.py` | `TitlesMixin`: session titles |
+| `nontainer_studio/skills.py` | `SkillsMixin`: seeding the starter skills |
+| `nontainer_studio/config.py` | what the environment decides: store, executor, apps config, settings, agent-only host objects |
+| `nontainer_studio/prompts.py` | what the agent is told: the primer, frontend notes, tool and host-object text |
+| `nontainer_studio/web.py`, `media.py` | the `web` and `media` host objects |
 | `nontainer_studio/compression.py` | tool-result compression that keeps a mid-run human message verbatim |
 | `nontainer_studio/summaries.py` | the stateless second pass that names a session and describes an app |
 | `nontainer_studio/providers.py` | which model backends are available, model specs, thinking and context settings |

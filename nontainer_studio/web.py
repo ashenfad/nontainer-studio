@@ -36,7 +36,7 @@ FETCH_MAX_CONTENT_TOKENS = 25_000
 
 # Measured: a quick search takes 3-5s, a deep one 20-40s, a page read
 # 4-10s. The agent's Python timeout (``AGENT_PYTHON_TIMEOUT`` in
-# sessions.py) is set above the longest of these, since time spent in a
+# config.py) is set above the longest of these, since time spent in a
 # host call counts against it.
 SEARCH_TIMEOUT = 60.0
 DEEP_SEARCH_TIMEOUT = 150.0

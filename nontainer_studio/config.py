@@ -15,9 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from nontainer import (
-    Workspace,
-)
+from nontainer import Workspace
 from nontainer.apps import AppsConfig
 
 from .prompts import (

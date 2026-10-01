@@ -7,9 +7,7 @@ the words can be read, and changed, in one place.
 
 from __future__ import annotations
 
-from nontainer import (
-    Workspace,
-)
+from nontainer import Workspace
 from nontainer.adapters.render import SESSIONS_DESCRIPTION
 
 HANDLER_EXAMPLE = """\

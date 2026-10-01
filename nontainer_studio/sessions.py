@@ -20,6 +20,12 @@ Ownership model, on display:
   jsonl per session. An EDIT (rewind_to_event) trims the visible
   transcript too, via an appended `truncate` event, never by mutating
   the log.
+
+``Registry`` here is the core: opening, forking, deleting and rewinding
+sessions and building their agents. The rest of it is mixed in, each
+part from a module of its own: the manifest and db handles
+(``manifest``), titles (``titles``), skill seeding (``skills``),
+delegates (``delegates``) and publishing (``publishing``).
 """
 
 from __future__ import annotations
@@ -62,9 +68,7 @@ from .config import (
     wsgit_enabled,
 )
 from .delegates import DELEGATE_TURNS, DelegationMixin, StudioRunner
-from .manifest import (
-    ManifestMixin,
-)
+from .manifest import ManifestMixin
 from .prompts import (
     SESSIONS_TOOL_DESCRIPTION,
     STUDIO_PRIMER,
@@ -77,9 +81,7 @@ from .prompts import (
     _unit_test_primer,
     _versioning_primer,
 )
-from .publishing import (
-    PublishingMixin,
-)
+from .publishing import PublishingMixin
 from .session import (
     Db,
     ReservedSessionError,
@@ -89,9 +91,7 @@ from .session import (
     _record_delivery,
     _visible,
 )
-from .skills import (
-    SkillsMixin,
-)
+from .skills import SkillsMixin
 from .titles import (
     TitlesMixin,
     _title_cursor,

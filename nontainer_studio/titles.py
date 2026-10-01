@@ -6,9 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from .session import (
-    Session,
-)
+from .session import Session
 
 log = logging.getLogger(__name__)
 

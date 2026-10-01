@@ -16,9 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from nontainer import (
-    Workspace,
-)
+from nontainer import Workspace
 from nontainer.apps import AppRuntime
 from nontainer.errors import (
     JobRunning,
@@ -27,9 +25,7 @@ from nontainer.errors import (
 )
 from nontainer.inbox import Inbox, Note
 
-from .config import (
-    _delegate_wakes,
-)
+from .config import _delegate_wakes
 from .delegates import answer_message
 
 log = logging.getLogger(__name__)

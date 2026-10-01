@@ -18,22 +18,16 @@ from nontainer import (
 )
 from nontainer.apps import mint_token
 from nontainer.apps.dispatch import PUBLISH_EXCLUDE
-from nontainer.errors import (
-    WorkspaceError,
-)
+from nontainer.errors import WorkspaceError
 
-from .config import (
-    _ws_kwargs,
-)
+from .config import _ws_kwargs
 from .session import (
     Db,
     Session,
     _visible,
 )
 from .summaries import _clean_description
-from .titles import (
-    DEFAULT_TITLE,
-)
+from .titles import DEFAULT_TITLE
 
 log = logging.getLogger(__name__)
 

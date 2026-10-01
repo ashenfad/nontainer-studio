@@ -105,7 +105,7 @@ in the terminal tool's description rather than being left to guess.
 
 `./scripts/fetch-appassets.sh` regenerates them (it needs node; users
 never do). Swap the whole directory with `NONTAINER_STUDIO_APP_ASSETS` —
-and if you do, update `FRONTEND_NOTES` in `nontainer_studio/sessions.py`
+and if you do, update `FRONTEND_NOTES` in `nontainer_studio/prompts.py`
 so the agent is told about *your* libraries. The bytes and the sentence
 describing them are one decision.
 
