@@ -1261,6 +1261,41 @@ def test_an_answer_wakes_the_parent_without_a_message(browser, waking_server):
         page.close()
 
 
+def test_the_strip_shows_a_delegate_at_work_until_its_answer_lands(page, server):
+    """A parent waiting on a delegate has ended its turn. The strip above
+    the composer says it is not done: the delegate's chip, its last
+    step, then its answer on the way, and nothing once the answer has
+    reached the parent. The rail badge says the same where the session
+    is not open."""
+    page.goto(f"{server}/?session=e2e-strip")
+    _title(server, "e2e-strip", "Striping")
+    sleepy = json.dumps({"code": "import time; time.sleep(5)"})
+    task = f"!tool run_python {sleepy}\n!text Slept on it."
+    ask = json.dumps({"action": "ask", "name": "scout", "task": task})
+    _send(page, f"!tool sessions {ask}\n!text Sent a scout.")
+
+    chip = page.locator(".delegate-strip .chip", has_text="scout")
+    expect(chip).to_be_visible(timeout=15000)
+    expect(chip).to_have_class(re.compile(r"\brunning\b"))
+    expect(chip).to_contain_text("Ran Python", timeout=10000)
+    row = page.locator(".rail .row", has_text="Striping")
+    expect(row.locator(".working")).to_be_visible(timeout=10000)
+    # the work line names what was done, not "sessions ask"
+    expect(page.locator(".agent-msg").last).to_contain_text("Asked 1 delegate")
+
+    # waking is off on this server: answered, and waiting for the human
+    expect(chip).to_have_class(re.compile(r"\banswered\b"), timeout=20000)
+    _send(page, "what did the scout say?")
+    expect(page.locator(".delegate-strip")).to_have_count(0, timeout=15000)
+
+    # a chip is a way in: the delegate's own transcript
+    _send(page, f"!tool sessions {ask.replace('scout', 'second')}\n!text Sent another.")
+    second = page.locator(".delegate-strip .chip", has_text="second")
+    expect(second).to_be_visible(timeout=15000)
+    second.click()
+    expect(page.locator(".delegate-bar")).to_be_visible(timeout=10000)
+
+
 def test_the_rail_lists_a_sessions_delegates_and_keeps_one(page, server):
     """A delegate is not a rail row, but its branch ages out on the
     studio's retention TTL — so the human can see what this session

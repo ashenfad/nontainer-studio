@@ -200,6 +200,18 @@
                                 onclick={(e) => toggleDelegates(s, e)}
                                 >⑂{s.delegates}</span
                             >
+                        {:else if s.delegates_running}
+                            <!-- Delegates at work: a parent waiting on
+                                 them has ended its turn, and its own dot
+                                 is quiet. This says it is not done. -->
+                            <span
+                                class="working"
+                                title="{s.delegates_running} delegate{s.delegates_running === 1
+                                    ? ''
+                                    : 's'} working — click to list them"
+                                onclick={(e) => toggleDelegates(s, e)}
+                                >⑂{s.delegates_running}</span
+                            >
                         {:else if s.delegate_count}
                             <!-- Nothing waiting, but the branches are
                                  still there and still ageing out: a way
@@ -587,6 +599,16 @@
         border-radius: 999px;
         color: var(--accent);
         background: color-mix(in srgb, var(--accent) 16%, transparent);
+    }
+    /* at work: the parent's own dot may be quiet while they run */
+    .working {
+        cursor: pointer;
+        flex-shrink: 0;
+        font-size: 0.62rem;
+        line-height: 1;
+        padding: 0.15rem 0.3rem;
+        color: var(--accent);
+        animation: pulse 1.2s ease-in-out infinite;
     }
     /* nothing waiting: a way into the list, not news */
     .forked {

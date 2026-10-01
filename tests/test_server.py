@@ -467,6 +467,7 @@ def test_a_message_sent_while_busy_is_queued_not_refused(studio):
                 "model": None,
                 "delegates": 0,
                 "delegate_count": 0,
+                "delegates_running": 0,
             }
         ]
 
@@ -2491,6 +2492,7 @@ def test_session_manifest_survives_restart(studio, tmp_path):
             "model": None,
             "delegates": 0,
             "delegate_count": 0,
+            "delegates_running": 0,
         }
     ]
     # and it opens lazily with its files intact
@@ -3786,6 +3788,7 @@ def test_delete_leaves_other_sessions_alone(studio):
             "model": None,
             "delegates": 0,
             "delegate_count": 0,
+            "delegates_running": 0,
         }
     ]
     assert registry.get("s2").ws.files.fs.read("mine.txt") == b"s2 data"
@@ -3851,6 +3854,7 @@ def test_model_switch_persists_and_notices(studio, tmp_path):
             "model": "dummy",
             "delegates": 0,
             "delegate_count": 0,
+            "delegates_running": 0,
         }
     ]
     reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
@@ -4745,6 +4749,7 @@ def test_v1_manifest_format_tolerated(studio, tmp_path):
         "model": None,
         "delegates": 0,
         "delegate_count": 0,
+        "delegates_running": 0,
     } in reborn.list()
     assert reborn.resolve("nope") is None
     reborn.close()
@@ -6438,6 +6443,12 @@ def test_opening_a_delegate_after_a_restart_leaves_it_one(tmp_path):
                 "touched": pytest.approx(
                     reborn._manifest()["delegates"][child]["touched"]
                 ),
+                # no job table after a restart: nothing to say about a run
+                "task": None,
+                "started": None,
+                "finished": None,
+                "delivered": True,
+                "step": None,
             }
             assert [
                 r["name"] for r in client.get("/api/sessions").json()["sessions"]

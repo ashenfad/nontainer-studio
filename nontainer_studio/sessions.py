@@ -100,6 +100,17 @@ from .titles import (
 log = logging.getLogger(__name__)
 
 
+def _running_delegates(session: Session | None) -> int:
+    """How many of ``session``'s delegates are running; 0 when it is not
+    open or delegates nothing."""
+    if session is None or session.delegates is None:
+        return 0
+    try:
+        return sum(1 for job in session.delegates.list() if job.status == "running")
+    except Exception:  # noqa: BLE001 - the rail asks often; a count can wait
+        return 0
+
+
 class Registry(
     ManifestMixin, TitlesMixin, SkillsMixin, DelegationMixin, PublishingMixin
 ):
@@ -295,6 +306,9 @@ class Registry(
                     # offer the listing on a session whose delegates
                     # have all been read (see `delegate_rows`).
                     "delegate_count": forked.get(name, 0),
+                    # Delegates at work right now: a parent waiting on
+                    # them has ended its turn, and would read as done.
+                    "delegates_running": _running_delegates(live),
                 }
             )
         rows.sort(key=lambda r: (-created.get(r["name"], 0), r["name"]))

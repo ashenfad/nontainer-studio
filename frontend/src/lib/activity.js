@@ -55,8 +55,30 @@ export function stepLine(tool) {
                 code: false,
             }
         }
-        case 'sessions':
-            return { verb: 'Sessions', subject: args.action ?? '', code: false }
+        case 'sessions': {
+            // Delegation in words: who was asked what, not "sessions ask".
+            const who = args.resume ?? args.name ?? 'a delegate'
+            switch (args.action) {
+                case 'ask':
+                    return {
+                        verb: args.resume ? `Asked ${who} again` : `Asked ${who}`,
+                        subject: first(args.task),
+                        code: false,
+                    }
+                case 'result':
+                    return { verb: `Read ${who}'s answer`, subject: '', code: false }
+                case 'list':
+                    return { verb: 'Checked on delegates', subject: '', code: false }
+                case 'cancel':
+                    return { verb: `Cancelled ${who}`, subject: '', code: false }
+                case 'keep':
+                    return { verb: `Kept ${who}`, subject: '', code: false }
+                case 'published':
+                    return { verb: 'Listed the published apps', subject: '', code: false }
+                default:
+                    return { verb: 'Sessions', subject: args.action ?? '', code: false }
+            }
+        }
         default:
             return { verb: `Used ${tool.name}`, subject: '', code: false }
     }
@@ -91,8 +113,11 @@ export function groupPhrases(tools) {
                 return ['Viewed', plural(n, 'image')]
             case 'test_app':
                 return ['Tested', n === 1 ? 'the app' : `the app ${n} times`]
-            case 'sessions':
+            case 'sessions': {
+                const asks = ts.filter((t) => toolArgs(t)?.action === 'ask').length
+                if (asks === n) return ['Asked', plural(n, 'delegate')]
                 return ['Used', n === 1 ? 'sessions' : `sessions ${n} times`]
+            }
             default:
                 return ['Used', n === 1 ? name : `${name} ${n} times`]
         }

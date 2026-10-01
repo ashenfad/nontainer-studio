@@ -38,3 +38,15 @@ test('a group counts files once however often they were written, JSON-string arg
         { verb: 'wrote', rest: '2 files' },
     ])
 })
+
+test('a sessions call says who was asked what', () => {
+    const ask = { name: 'sessions', args: { action: 'ask', name: 'intro', task: 'Scene 1: the title\nmore' } }
+    assert.deepEqual(stepLine(ask), { verb: 'Asked intro', subject: 'Scene 1: the title', code: false })
+    const again = { name: 'sessions', args: { action: 'ask', resume: 'boss.intro', task: 'shorter' } }
+    assert.equal(stepLine(again).verb, 'Asked boss.intro again')
+    assert.equal(stepLine({ name: 'sessions', args: { action: 'ask', task: 'x' } }).verb, 'Asked a delegate')
+    assert.equal(stepLine({ name: 'sessions', args: { action: 'list' } }).verb, 'Checked on delegates')
+    assert.deepEqual(groupPhrases([ask, ask, again]), [{ verb: 'Asked', rest: '3 delegates' }])
+    const mixed = [ask, { name: 'sessions', args: { action: 'list' } }]
+    assert.deepEqual(groupPhrases(mixed), [{ verb: 'Used', rest: 'sessions 2 times' }])
+})

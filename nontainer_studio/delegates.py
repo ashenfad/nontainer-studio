@@ -37,6 +37,7 @@ Three rules hold this together:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -390,6 +391,39 @@ class StudioRunner:
 #: answer before it looks again whether the studio is shutting down, in
 #: seconds. An answer ends the wait at once; this bounds only shutdown.
 _AWAIT_SLICE = 1.0
+
+
+def _clip(text: Any, limit: int) -> str | None:
+    """``text`` cut to ``limit`` characters, marked where it was cut."""
+    if text is None:
+        return None
+    text = str(text)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _trim_args(args: Any) -> Any:
+    """A tool call's arguments small enough to send every few seconds:
+    long strings clipped, a long list replaced by one of the same
+    length (a step line counts actions, it does not read them), and a
+    large object dropped."""
+    if not isinstance(args, dict):
+        return _clip(args, 200) if isinstance(args, str) else None
+    out: dict[str, Any] = {}
+    for key, value in args.items():
+        if isinstance(value, str):
+            out[key] = _clip(value, 200)
+        elif isinstance(value, list):
+            out[key] = (
+                value
+                if len(json.dumps(value, default=str)) <= 400
+                else [None] * len(value)
+            )
+        elif isinstance(value, dict):
+            if len(json.dumps(value, default=str)) <= 400:
+                out[key] = value
+        else:
+            out[key] = value
+    return out
 
 
 def _unwaited_text(text: str, names: list[str]) -> str:
@@ -901,12 +935,17 @@ class DelegationMixin:
                 live = {job.name: job for job in session.delegates.list()}
             except Exception:  # noqa: BLE001 - the record answers instead
                 live = {}
+        undelivered: set[str] = set()
+        if session is not None:
+            finished = [n for n, job in live.items() if job.status != "running"]
+            undelivered = session.undelivered(finished)
         rows = []
         for child, entry in manifest["delegates"].items():
             if entry["parent"] != name:
                 continue
             job = live.get(child)
             touched, kept = self._freshest(entry, job)
+            running = job is not None and job.status == "running"
             rows.append(
                 {
                     "name": child,
@@ -914,10 +953,42 @@ class DelegationMixin:
                     "known": job is not None,
                     "kept": kept,
                     "touched": touched,
+                    # What the strip above the composer shows while a
+                    # delegate is out: what it was asked, how long it
+                    # has been at it, whether its answer has reached
+                    # this session yet, and the last thing it did.
+                    "task": _clip(job.task, 400) if job is not None else None,
+                    "started": job.started if job is not None else None,
+                    "finished": job.finished if job is not None else None,
+                    "delivered": not running and child not in undelivered,
+                    "step": self._last_step(child) if running else None,
                 }
             )
         rows.sort(key=lambda r: (-r["touched"], r["name"]))
         return rows
+
+    def _last_step(self, child: str) -> dict | None:
+        """The last thing a running delegate did, from its live
+        transcript: its latest tool call (arguments trimmed: the strip
+        names the call, it does not show it), or that it is thinking or
+        writing. None when its session is not open here."""
+        session = self._sessions.get(child)
+        if session is None:
+            return None
+        for event in reversed(session.events):
+            kind = event.get("type")
+            if kind == "tool_start":
+                return {
+                    "name": event.get("name"),
+                    "args": _trim_args(event.get("args")),
+                }
+            if kind == "thinking":
+                return {"thinking": True}
+            if kind == "text":
+                return {"writing": True}
+            if kind in ("user", "wake"):
+                return None
+        return None
 
     def orphaned_delegates(self, session: Session) -> list[str]:
         """Delegates of ``session`` that no job table remembers and no

@@ -20,6 +20,7 @@ from nontainer.adapters.render import artifact_kind, parse_artifacts_note
 from nontainer.inbox import split
 
 from . import delegates
+from .config import _delegate_wakes
 
 log = logging.getLogger(__name__)
 
@@ -445,9 +446,12 @@ async def _maybe_wake(session: Any, registry: Any) -> bool:
 
 async def _note_spent_wakes(session: Any, registry: Any) -> None:
     """Tell the human, once, that answers are waiting for them because
-    the session has been woken as often as it may be without them."""
+    the session has been woken as often as it may be without them. Not
+    when waking is off: then waiting for the human is the setting, not a
+    budget running out."""
     if (
-        session.wake_cap_noted
+        _delegate_wakes() == 0
+        or session.wake_cap_noted
         or not session.wake_ok
         or session.wakes_left > 0
         or session.delegates is None
