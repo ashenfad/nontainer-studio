@@ -19,6 +19,7 @@ from nontainer.apps import request as nt_request
 from starlette.testclient import TestClient
 
 from nontainer_studio import config, prompts, server
+from nontainer_studio import session as session_mod
 from nontainer_studio import sessions as sessions_mod
 from nontainer_studio import summaries as summaries_mod
 from nontainer_studio.config import AGENT_PYTHON_TIMEOUT
@@ -2591,7 +2592,7 @@ def test_memory_window_drops_head_but_seqs_stay_monotonic(studio, monkeypatch):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    monkeypatch.setattr(sessions_mod, "MAX_EVENTS", 4)
+    monkeypatch.setattr(session_mod, "MAX_EVENTS", 4)
 
     async def spam():
         for i in range(10):
@@ -4933,7 +4934,7 @@ def test_dud_rung_bridges_the_db_host_object(tmp_path, monkeypatch):
     from nontainer import workspace
 
     monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "dud")
-    db = sessions_mod.Db(tmp_path / "dbs" / "smoke.sqlite")
+    db = session_mod.Db(tmp_path / "dbs" / "smoke.sqlite")
     ws = workspace(
         "smoke",
         store=tmp_path,
@@ -6158,7 +6159,7 @@ def test_python_config_drops_the_isolation_knob_on_a_dud_rung(tmp_path, monkeypa
     """The knob is the in-process sandbox's; a dud rung either exceeds
     it (a VM) or refuses it (subprocess), so the studio does not ask."""
     monkeypatch.setenv("NONTAINER_STUDIO_ISOLATION", "process")
-    db = sessions_mod.Db(tmp_path / "dbs" / "x.sqlite")
+    db = session_mod.Db(tmp_path / "dbs" / "x.sqlite")
     assert sessions_mod.Registry._python_config(db).isolation == "process"
     monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "dud")
     assert sessions_mod.Registry._python_config(db).isolation == "none"
@@ -6203,7 +6204,7 @@ def test_a_swept_delegates_name_will_not_open(studio):
     child = _delegate(registry)
     registry._store.delete(child, min_age=0)
 
-    with pytest.raises(sessions_mod.SweptSessionError) as raised:
+    with pytest.raises(session_mod.SweptSessionError) as raised:
         registry.open(child)
     assert child in str(raised.value) and "boss" in str(raised.value)
     assert registry.get(child) is None  # and nothing was minted on the way

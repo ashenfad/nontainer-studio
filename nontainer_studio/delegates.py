@@ -42,7 +42,8 @@ from nontainer import Answer
 from nontainer.sessions import render_answer
 
 if TYPE_CHECKING:
-    from .sessions import Registry, Session
+    from .session import Session
+    from .sessions import Registry
 
 DELEGATE_TURNS = 3
 """Turns a delegate may spend before its answer is CAPPED.

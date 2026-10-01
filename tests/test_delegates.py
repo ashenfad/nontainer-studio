@@ -17,6 +17,7 @@ from nontainer.errors import BranchExpired
 from nontainer.sessions import Sessions
 
 from nontainer_studio import config, delegates, prompts, server
+from nontainer_studio import session as session_mod
 from nontainer_studio import sessions as sessions_mod
 from nontainer_studio import summaries as summaries_mod
 from nontainer_studio.dummy import DummyModel
@@ -1558,7 +1559,7 @@ def test_the_note_stays_delivered_past_the_event_window(tmp_path, monkeypatch):
         first = _turn(parent, "where are we?", registry)
         assert [e["name"] for e in first if e["type"] == "delegate"] == ["boss.scout"]
 
-        monkeypatch.setattr(sessions_mod, "MAX_EVENTS", 2)
+        monkeypatch.setattr(session_mod, "MAX_EVENTS", 2)
         for _ in range(3):
             _turn(parent, "!text ok", registry)
         assert len(parent.events) <= 2
