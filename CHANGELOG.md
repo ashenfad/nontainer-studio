@@ -176,6 +176,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A video in the preview pane plays its narration.** The pane and the
+  published view now grant their frame `allow="autoplay"`. A video
+  player plays its narration one frame down from the click, and sound
+  may start only in a frame every frame above has granted it to. Without
+  the grant, pressing play before the video had loaded played the picture
+  in silence, while the same video in its own tab had sound.
+
 - **Claude no longer stops after thinking, before acting.** Sonnet 5.5
   would end a turn mid-task with OpenRouter reporting a stop reason of
   `length` after about 16k tokens.
