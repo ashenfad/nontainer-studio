@@ -21,6 +21,7 @@ from starlette.testclient import TestClient
 from nontainer_studio import config, prompts, server, titles
 from nontainer_studio import session as session_mod
 from nontainer_studio import sessions as sessions_mod
+from nontainer_studio import skills as studio_skills
 from nontainer_studio import summaries as summaries_mod
 from nontainer_studio.config import AGENT_PYTHON_TIMEOUT
 
@@ -7075,10 +7076,8 @@ def test_the_ecosystem_skill_carries_the_installed_readmes(studio, monkeypatch):
     other skill."""
     from importlib.metadata import version
 
-    from nontainer_studio import sessions
-
     monkeypatch.setattr(
-        sessions, "_ECOSYSTEM_PACKAGES", ("kvgit", "termish", "not-a-package-here")
+        studio_skills, "_ECOSYSTEM_PACKAGES", ("kvgit", "termish", "not-a-package-here")
     )
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
@@ -7109,7 +7108,6 @@ def test_generated_skill_files_follow_the_server(studio, monkeypatch):
     upgraded package's README replaces the old one, an uninstalled
     package's is removed, and a file the agent edited stays either
     way."""
-    from nontainer_studio import sessions
 
     installed = {"alpha": "1.0", "beta": "1.0", "gamma": "1.0"}
 
@@ -7119,7 +7117,9 @@ def test_generated_skill_files_follow_the_server(studio, monkeypatch):
             for name, v in installed.items()
         }
 
-    monkeypatch.setitem(sessions._GENERATED_SKILL_FILES, "nontainer-ecosystem", readmes)
+    monkeypatch.setitem(
+        studio_skills._GENERATED_SKILL_FILES, "nontainer-ecosystem", readmes
+    )
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
