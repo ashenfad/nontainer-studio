@@ -176,6 +176,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A scrubbed video keeps its narration.** nontainer 0.8.5 (now the
+  floor) serves app files in byte ranges. Without them a browser could
+  not seek a sound clip, so after a scrub the narration played from its
+  start, or stayed silent until playback crossed the clip's start again.
+  This covers the preview pane and published apps alike.
+
 - **A video in the preview pane plays its narration.** The pane and the
   published view now grant their frame `allow="autoplay"`. A video
   player plays its narration one frame down from the click, and sound

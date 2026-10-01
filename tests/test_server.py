@@ -6677,6 +6677,29 @@ def test_the_video_stack_serves_to_preview_and_publish(studio):
         assert client.get(f"{pub['url']}{path}").status_code == 200, path
 
 
+def test_a_videos_narration_seeks_in_preview_and_publish(studio):
+    """A clip a browser cannot fetch part of cannot be seeked, so a
+    scrubbed video's narration played from its start, or not at all,
+    until playback crossed the clip's start again. Both lifecycles
+    answer a byte range."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    _seed_app(ws)
+    clip = bytes(range(256)) * 8
+    ws.files.fs.makedirs("/workspace/app/audio", exist_ok=True)
+    ws.files.fs.write("/workspace/app/audio/voice.wav", clip)
+    ws.commit()
+
+    pub = client.post("/api/sessions/s1/publish").json()
+    for url in ("/preview/s1/audio/voice.wav", f"{pub['url']}audio/voice.wav"):
+        r = client.get(url, headers={"Range": "bytes=1000-1099"})
+        assert r.status_code == 206, url
+        assert r.content == clip[1000:1100], url
+        assert r.headers["content-range"] == "bytes 1000-1099/2048", url
+        assert r.headers["content-type"] == "audio/wav", url
+
+
 def test_every_vendor_file_a_skill_names_is_served():
     """A skill that tells an agent to load vendor/x.js when x.js is not
     in appassets sends it at a 404 with the skill's authority behind
