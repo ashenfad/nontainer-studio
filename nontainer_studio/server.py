@@ -1898,7 +1898,7 @@ def main() -> None:
     )
     # dud-vm: park warm VM(s) in the background so the first session
     # switch after startup doesn't pay a boot (no-op on other executors).
-    from .sessions import start_vm_prewarm
+    from .config import start_vm_prewarm
 
     start_vm_prewarm()
     port = int(os.getenv("NONTAINER_STUDIO_PORT", "8321"))

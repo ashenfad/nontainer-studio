@@ -18,9 +18,10 @@ from nontainer.apps import render_test_app
 from nontainer.apps import request as nt_request
 from starlette.testclient import TestClient
 
-from nontainer_studio import prompts, server
+from nontainer_studio import config, prompts, server
 from nontainer_studio import sessions as sessions_mod
 from nontainer_studio import summaries as summaries_mod
+from nontainer_studio.config import AGENT_PYTHON_TIMEOUT
 
 
 class FakeAgent:
@@ -647,7 +648,6 @@ def test_web_reaches_the_agent_and_never_a_published_app(studio, monkeypatch):
     gets it, with a timeout above a deep search, and a published
     snapshot, which serves anyone holding its link, does not. A fork is
     an agent session too."""
-    from nontainer_studio import sessions as sessions_mod
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "x")
     monkeypatch.delenv("NONTAINER_STUDIO_WEB", raising=False)
@@ -657,7 +657,7 @@ def test_web_reaches_the_agent_and_never_a_published_app(studio, monkeypatch):
     session = registry.get("s1")
     config = session.ws.runtime.python_config
     assert "web" in config.host_objects
-    assert config.timeout == sessions_mod.AGENT_PYTHON_TIMEOUT
+    assert config.timeout == AGENT_PYTHON_TIMEOUT
     # media writes into its own session's workspace, so each has its own
     assert config.host_objects["media"]._ws is session.ws
     fork = client.post("/api/sessions/s1/fork", json={}).json()
@@ -1831,7 +1831,7 @@ def test_reading_an_old_side_boots_no_executor(tmp_path, monkeypatch):
         built.append("executor")
         return LocalExecutor()
 
-    monkeypatch.setattr(sessions_mod, "_executor_factory", lambda: factory)
+    monkeypatch.setattr(config, "_executor_factory", lambda: factory)
     registry = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     try:
         session = registry.create()
@@ -4437,7 +4437,7 @@ def test_the_sessions_knob_brings_ws_git_with_it(studio, monkeypatch):
     session = registry.get("s1")
     agent = _real_agent(registry, "s1")
 
-    assert sessions_mod.wsgit_enabled() is True
+    assert config.wsgit_enabled() is True
     assert session.wsgit is True
     assert "ws-git" in session.ws.runtime.commands
     assert prompts.VERSIONING_PRIMER in agent.instructions
@@ -4818,43 +4818,43 @@ def test_executor_factory_guard(monkeypatch):
     historical LocalExecutor path). The dud/dud-vm branches import
     nontainer.executor_dud lazily, so they stay dormant until that lands."""
     monkeypatch.delenv("NONTAINER_STUDIO_EXECUTOR", raising=False)
-    assert sessions_mod._executor_factory() is None
+    assert config._executor_factory() is None
     monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "bogus")
-    assert sessions_mod._executor_factory() is None
+    assert config._executor_factory() is None
 
 
 def test_vm_prewarm_noop_outside_dud_vm(monkeypatch):
     """Prewarm must never fire (or import dud) outside dud-vm mode."""
     monkeypatch.delenv("NONTAINER_STUDIO_EXECUTOR", raising=False)
-    assert sessions_mod.start_vm_prewarm() is None  # would raise on dud
+    assert config.start_vm_prewarm() is None  # would raise on dud
 
 
 def test_vm_warm_zero_bakes_image_without_booting(monkeypatch):
     """VM_WARM=0 skips warm VMs but still eagerly builds the image, so
     the first session open pays boot-only, never build+boot."""
     baked = []
-    monkeypatch.setattr(sessions_mod, "_bake_image", baked.append)
+    monkeypatch.setattr(config, "_bake_image", baked.append)
     monkeypatch.setenv("NONTAINER_STUDIO_EXECUTOR", "dud-vm")
     monkeypatch.setenv("NONTAINER_STUDIO_VM_WARM", "0")
-    t = sessions_mod.start_vm_prewarm()
+    t = config.start_vm_prewarm()
     assert t is not None
     t.join(timeout=5)
-    assert len(baked) == 1 and baked[0] == sessions_mod._vm_config()
+    assert len(baked) == 1 and baked[0] == config._vm_config()
 
 
 def test_vm_config_pins_host_versions():
     import importlib.metadata as md
 
-    cfg = sessions_mod._vm_config()
+    cfg = config._vm_config()
     assert f"pandas=={md.version('pandas')}" in cfg["packages"]
     assert all("==" in p for p in cfg["packages"])
 
 
 def test_vm_config_medium_defaults_auto(monkeypatch):
     monkeypatch.delenv("NONTAINER_STUDIO_VM_MEDIUM", raising=False)
-    assert sessions_mod._vm_config()["medium"] == "auto"
+    assert config._vm_config()["medium"] == "auto"
     monkeypatch.setenv("NONTAINER_STUDIO_VM_MEDIUM", "initramfs")
-    assert sessions_mod._vm_config()["medium"] == "initramfs"
+    assert config._vm_config()["medium"] == "initramfs"
 
 
 def test_vm_config_guest_python_matches_host_minor():
@@ -4864,7 +4864,7 @@ def test_vm_config_guest_python_matches_host_minor():
     image build when a pin lacks a cp312 wheel)."""
     import sys
 
-    cfg = sessions_mod._vm_config()
+    cfg = config._vm_config()
     assert cfg["image"] == f"python:3.{sys.version_info.minor}-slim"
 
 
@@ -4876,12 +4876,12 @@ def test_dud_vm_defaults_the_pool_cap(monkeypatch):
 
     monkeypatch.delenv("DUD_VM_MAX_TOTAL", raising=False)
     try:
-        sessions_mod._ensure_vm_cap()
+        config._ensure_vm_cap()
         assert os.environ["DUD_VM_MAX_TOTAL"] == "4"
     finally:
         os.environ.pop("DUD_VM_MAX_TOTAL", None)
     monkeypatch.setenv("DUD_VM_MAX_TOTAL", "9")
-    sessions_mod._ensure_vm_cap()
+    config._ensure_vm_cap()
     assert os.environ["DUD_VM_MAX_TOTAL"] == "9"
 
 
@@ -4896,9 +4896,7 @@ def test_executor_factory_plumbed_on_open_and_resolve(tmp_path, monkeypatch):
     class MarkedExecutor(LocalExecutor):
         pass
 
-    monkeypatch.setattr(
-        sessions_mod, "_executor_factory", lambda: lambda: MarkedExecutor()
-    )
+    monkeypatch.setattr(config, "_executor_factory", lambda: lambda: MarkedExecutor())
     registry = sessions_mod.Registry(model_factory=lambda *a: None, store=tmp_path)
     try:
         session = registry.create()
@@ -4940,7 +4938,7 @@ def test_dud_rung_bridges_the_db_host_object(tmp_path, monkeypatch):
         "smoke",
         store=tmp_path,
         python=sessions_mod.Registry._python_config(db),
-        **sessions_mod._ws_kwargs(),
+        **config._ws_kwargs(),
     )
     try:
         r = ws.run_python(
@@ -5188,7 +5186,7 @@ def test_vendored_arrow_serves_to_preview_and_publish(studio):
     for path in ("vendor/arrow.min.js", "vendor/arrow.mjs"):
         assert client.get(f"{pub['url']}{path}").status_code == 200, path
 
-    loader = (sessions_mod.app_assets_dir() / "jsx-loader.js").read_text()
+    loader = (config.app_assets_dir() / "jsx-loader.js").read_text()
     assert '"apache-arrow": "./vendor/arrow.mjs"' in loader
 
 
@@ -5391,7 +5389,7 @@ def test_a_custom_csp_reaches_verification_not_just_serving(tmp_path, monkeypatc
     this one. An app could pass verification and be refused published --
     the divergence the single config exists to prevent."""
     monkeypatch.setenv("NONTAINER_STUDIO_CSP", "default-src 'self'; script-src 'self'")
-    registry = _custom_studio(tmp_path, sessions_mod.apps_config())
+    registry = _custom_studio(tmp_path, config.apps_config())
     try:
         with TestClient(server.build_app(registry)) as client:
             client.post("/api/sessions", json={"name": "s1"})
@@ -5411,7 +5409,7 @@ def test_a_custom_csp_reaches_verification_not_just_serving(tmp_path, monkeypatc
 
 def test_csp_none_disables_it_on_both_halves(tmp_path, monkeypatch):
     monkeypatch.setenv("NONTAINER_STUDIO_CSP", "none")
-    registry = _custom_studio(tmp_path, sessions_mod.apps_config())
+    registry = _custom_studio(tmp_path, config.apps_config())
     try:
         with TestClient(server.build_app(registry)) as client:
             client.post("/api/sessions", json={"name": "s1"})
@@ -6610,7 +6608,7 @@ def test_every_vendor_file_a_skill_names_is_served():
     in appassets sends it at a 404 with the skill's authority behind
     it."""
     skills = Path(__file__).parent.parent / "skills"
-    assets = sessions_mod.app_assets_dir()
+    assets = config.app_assets_dir()
     missing = []
     for path in skills.rglob("*"):
         if path.is_file() and path.suffix in (".md", ".html", ".jsx", ".js"):
