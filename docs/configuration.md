@@ -74,6 +74,14 @@ A skill whose workflow needs a knob that is off is not seeded: the
 `starting-from-published` skill needs the `ws-git` verb to read an origin
 tag, so a session without it never sees the skill.
 
+Within a `SKILL.md`, text between `<!--if:KEY-->` and `<!--endif-->` is
+kept only in sessions where KEY holds, and `<!--if:no-KEY-->` marks the
+other side. The keys are `commands`, for a terminal that is termish
+rather than a real shell, and `delegation`, for a session with the
+`sessions` tool and `ws-git`. A session's copy holds the resolved text,
+so an agent never reads a marker or a section it cannot follow. Blocks
+do not nest.
+
 One skill is partly built at seeding: `nontainer-ecosystem` ships only
 its `SKILL.md` overview, and its `references/` are the READMEs of the
 stack's packages, read from the metadata of the copies installed here.

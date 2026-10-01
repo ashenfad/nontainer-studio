@@ -1,0 +1,60 @@
+<!--
+  One narrated scene in a file of its own: the unit to build when a video
+  is split across files, or across delegates. Copy it to app/<id>.html and
+  change every "intro" to the scene's id. The composition loads it with
+
+    <div data-composition-id="intro" data-composition-src="intro.html"
+         data-start="12" data-duration="4.8"></div>
+
+  TIMING. Everything in here counts from the scene's own start, the
+  narration included: the clip below plays 0.4s after the scene begins,
+  wherever the scene is placed. CSS animations count the same way.
+  Anime.js and WAAPI do NOT: they run on the whole video's clock. A scene
+  built without knowing where it will go animates with CSS only.
+
+  LENGTH. The scene lasts as long as its narration plus room around it:
+  0.4s before the voice, about a second after. media.speech returned the
+  narration's `seconds` (3.4 here), so data-duration is 0.4 + 3.4 + 1.0
+  = 4.8, here and where the composition places the scene, and --out is
+  that minus 0.5.
+
+  PATHS. media.speech wrote app/audio/intro.wav: its paths count from
+  /workspace. This file is in app/, so the clip says audio/intro.wav.
+
+  STYLE. This scene lands in the same page as every other scene, so its
+  own rules are scoped to its id, and its keyframes carry the id in
+  their names. The wrappers (.scene, .scene-in, .scene-out), the fonts
+  and the colours are the composition's, shared by every scene.
+-->
+<template>
+  <div data-composition-id="intro" data-start="0" data-duration="4.8">
+    <style>
+      [data-composition-id="intro"] .intro-title {
+        font-size: 120px; font-weight: 800; letter-spacing: -3px;
+        animation: intro-rise 1.2s cubic-bezier(.2,.8,.2,1) both;
+      }
+      /* The narration's words, for a viewer with the sound off. */
+      [data-composition-id="intro"] .intro-caption {
+        position: absolute; left: 80px; right: 80px; bottom: 80px;
+        font-size: 40px; color: #cbd5e1; text-align: center;
+        animation: intro-rise 0.6s ease-out 0.4s both;
+      }
+      @keyframes intro-rise {
+        from { opacity: 0; transform: translateY(40px); }
+        to   { opacity: 1; transform: none; }
+      }
+    </style>
+
+    <!-- The narration: a clip like any other, timed from this scene's
+         start, with the crossorigin every sound clip needs. -->
+    <audio class="clip" id="intro-audio" src="audio/intro.wav"
+           data-start="0.4" data-duration="3.4" crossorigin></audio>
+
+    <div class="scene clip" data-start="0" data-duration="4.8">
+      <div class="scene-in"><div class="scene-out" style="--out: 4.3s">
+        <div class="intro-title">Meet nontainer-studio</div>
+        <div class="intro-caption">An agent, a workspace, and every turn a commit.</div>
+      </div></div>
+    </div>
+  </div>
+</template>

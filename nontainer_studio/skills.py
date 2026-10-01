@@ -30,6 +30,14 @@ def _can_start_from_published(wsgit: bool) -> bool:
     return sessions_tool_enabled() and wsgit
 
 
+def _can_delegate(wsgit: bool) -> bool:
+    """Whether a session can hand work to delegates and bring it back:
+    the ``sessions`` tool to ask, and ``ws-git`` to merge or check out
+    what a delegate did. Skill text in a ``delegation`` block is kept
+    only where this holds."""
+    return sessions_tool_enabled() and wsgit
+
+
 #: Starter skills whose subject is a studio feature that can be switched
 #: off, keyed by directory name: one is seeded only where its gate says
 #: the session can follow it. A SKILL.md is a file of text with no
@@ -154,7 +162,7 @@ class SkillsMixin:
         except Exception:
             pass
         try:
-            SkillsMixin._resolve_skill_conditionals(ws)
+            SkillsMixin._resolve_skill_conditionals(ws, delegation=_can_delegate(wsgit))
         except Exception:
             pass  # a skill that won't resolve is still better than none
 
@@ -282,38 +290,47 @@ class SkillsMixin:
         if not added:
             return
         try:
-            SkillsMixin._resolve_skill_conditionals(ws)
+            SkillsMixin._resolve_skill_conditionals(ws, delegation=_can_delegate(wsgit))
         except Exception:
             pass
         if ws.caps.versioned and ws.uncommitted:
             ws.commit(info={"tool": "skill", "skill": "top-up"})
 
-    # Conditional blocks in seeded SKILL.md files: a `commands` block is
-    # kept where the executor runs injected terminal builtins, a
-    # `no-commands` block where the terminal is a real shell that does
-    # not. Skill text that teaches a builtin on a rung without one costs
-    # the agent a turn to discover, so text about one is written in a
-    # block rather than unconditionally. The portable `ws-*` verbs are
-    # NOT this distinction — they ferry into a guest, so they answer on
-    # every rung and need no gate.
+    # Conditional blocks in seeded SKILL.md files, `<!--if:KEY-->` …
+    # `<!--endif-->`, or `<!--if:no-KEY-->` for the other side. Skill text
+    # that teaches what a session does not have costs the agent a turn to
+    # discover, so such text is written in a block rather than
+    # unconditionally. Blocks do not nest. The keys:
+    #
+    # - `commands`: the executor runs injected terminal builtins (termish);
+    #   `no-commands`, the terminal is a real shell that does not. The
+    #   portable `ws-*` verbs are NOT this distinction: they ferry into a
+    #   guest, so they answer on every rung and need no gate.
+    # - `delegation`: the session can delegate and bring the work back
+    #   (see `_can_delegate`).
     _IF_BLOCK = re.compile(
-        r"[ \t]*<!--if:(commands|no-commands)-->[ \t]*\n(.*?)[ \t]*<!--endif-->[ \t]*\n?",
+        r"[ \t]*<!--if:(no-)?(commands|delegation)-->[ \t]*\n(.*?)[ \t]*<!--endif-->[ \t]*\n?",
         re.DOTALL,
     )
 
     @staticmethod
-    def _resolve_skill_text(text: str, *, commands: bool) -> str:
-        """Keep the blocks matching this executor, drop the others."""
-        want = "commands" if commands else "no-commands"
+    def _resolve_skill_text(
+        text: str, *, commands: bool, delegation: bool = False
+    ) -> str:
+        """Keep the blocks this session has what they teach for, drop
+        the others."""
+        has = {"commands": commands, "delegation": delegation}
 
         def _pick(m: "re.Match[str]") -> str:
-            return m.group(2) if m.group(1) == want else ""
+            negated, key, body = m.group(1), m.group(2), m.group(3)
+            return body if has[key] != bool(negated) else ""
 
         return SkillsMixin._IF_BLOCK.sub(_pick, text)
 
     @staticmethod
-    def _resolve_skill_conditionals(ws: Workspace) -> None:
-        """Rewrite seeded SKILL.md files in place for this executor.
+    def _resolve_skill_conditionals(ws: Workspace, *, delegation: bool = False) -> None:
+        """Rewrite seeded SKILL.md files in place for this session: its
+        executor, and whether it can delegate.
 
         Post-install rather than pre-install because ``skills.install``
         takes a directory of bytes; rewriting the installed copy keeps
@@ -330,7 +347,9 @@ class SkillsMixin:
             if not ws.files.fs.exists(path):
                 continue
             text = ws.files.fs.read(path).decode("utf-8", "replace")
-            resolved = SkillsMixin._resolve_skill_text(text, commands=commands)
+            resolved = SkillsMixin._resolve_skill_text(
+                text, commands=commands, delegation=delegation
+            )
             if resolved != text:
                 ws.files.fs.write(path, resolved.encode())
                 changed = True

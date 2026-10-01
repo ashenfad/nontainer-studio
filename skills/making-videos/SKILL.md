@@ -43,6 +43,10 @@ scene in CSS, a bar chart that Anime.js grows, and a closing card, with
 a crossfade between each. Keep its scene structure when you change the
 content; it already does the things below that are easy to get wrong.
 
+A third, `narrated-scene.html`, is one scene in a file of its own,
+carrying its own narration: the shape to copy when a video is split into
+files (**Scenes in separate files**, below).
+
 What `vendor/` holds is listed in
 `/workspace/skills/building-apps/references/vendor.md`. For video:
 `hyperframes.runtime.js`, `hyperframes-player.js` and `anime.min.js`.
@@ -51,6 +55,7 @@ Two guides adapted from HyperFrames go deeper than this page:
 ```sh
 cat /workspace/skills/making-videos/references/hyperframes/animejs.md        # before writing Anime.js: v4 API, splitText, seeded random
 cat /workspace/skills/making-videos/references/hyperframes/css-animations.md # CSS keyframes: fill, delays, staggers, loops
+cat /workspace/skills/making-videos/references/narrated-scene.html           # a scene with its narration, in a file of its own
 ```
 
 ## The composition
@@ -215,12 +220,21 @@ narrated and illustrated.
       {"text": "Every turn is a commit.", "path": "app/audio/s2.wav"},
   ])
   ```
-  Each result's `seconds` is that line's length. Set each scene's
-  `data-duration` from it, with half a second or so to spare, so the
-  picture follows the voice rather than cutting it off.
+  `media.speech` writes each file itself, as WAV, so name it `*.wav`.
+  Each result's `seconds` is that line's length.
+- **Two path bases.** `media` paths count from `/workspace`
+  (`app/audio/s1.wav`); paths in the HTML count from the composition,
+  which is in `app/` (`audio/s1.wav`). Copying one into the other is a
+  missing file.
+- **The voice sets the length.** A scene lasts its line's `seconds`
+  plus about 0.4s before the voice starts and a second after it ends,
+  so the picture follows the voice rather than cutting it off.
 - **Place each line as a clip in its scene:** `<audio class="clip"
-  src="audio/s1.wav" data-start="0" data-duration="3.2" crossorigin>`,
-  with the `crossorigin` the rule above asks for.
+  src="audio/s1.wav" data-start="3.4" data-duration="3.2" crossorigin>`,
+  with the `crossorigin` the rule above asks for. In one file,
+  `data-start` is the video's time: 0.4s after its scene starts. In a
+  scene file of its own it counts from that scene's start, as
+  `narrated-scene.html` shows.
 - **Generate pictures with `transparent=True`** for anything that sits
   on a background: characters, icons, objects. Pass earlier images as
   `references` to keep a character the same from scene to scene, and
@@ -239,9 +253,58 @@ A composition can pull a scene from another file:
 
 where `chart.html` holds a `<template>` wrapping a `<div
 data-composition-id="chart" …>`. Prefer ONE file for a video under a
-minute or so. When you do split, remember the timing rule: CSS inside
-the sub-composition is timed from its start, but Anime.js and WAAPI
-inside it still use the video's absolute time (3000 for a scene at 3s).
+minute or so. When you do split, start from `narrated-scene.html`, and
+remember:
+
+- **Timing.** CSS animations and sound or video clips inside the scene
+  file count from the scene's start, wherever it is placed. Anime.js and
+  WAAPI inside it still use the video's time (3000 for a scene at 3s).
+  A scene written before its place is known animates with CSS only.
+- **Style.** Every scene file lands in the same page. Its own rules are
+  scoped to its id (`[data-composition-id="chart"] .title`) and its
+  keyframes carry the id in their names; the wrappers, fonts and
+  colours come from the composition.
+- **Length.** The scene's `data-duration` is written twice, in the file
+  and where the composition places it. Keep the two the same.
+
+<!--if:delegation-->
+## Long videos with delegates
+
+A video of more than a minute, or more than five or six scenes, can be
+built a scene per delegate, in parallel. Each delegate is a whole agent
+on your model, so use three to six of them, not twenty, and build a
+short video yourself.
+
+1. **Set what the scenes share, first.** Write the composition: its
+   styles (fonts, colours, the scene wrappers), the root, and a plan of
+   the scenes with their narration. Pick the voice. Delegates start from
+   your files as they are when you ask, so this has to be written
+   before you ask.
+2. **One delegate per scene, each owning its files:**
+   `app/<id>.html`, `app/audio/<id>*.wav`, `app/img/<id>*.png`. A
+   delegate must not touch the composition or another scene's files;
+   that is what keeps bringing the work back conflict-free.
+3. **A task that stands alone.** A delegate starts without this
+   conversation, so its task says everything: the scene's id and its
+   narration, the voice, that its file starts from
+   `skills/making-videos/references/narrated-scene.html`, to animate with
+   CSS only, to voice the line with `media.speech` and size the scene
+   from `seconds`, to check its scene with `test_app` (`goto` the
+   composition with the scene placed, or the scene file), and to reply
+   with the scene's length and the files it wrote.
+4. **Then end your turn,** saying what you are waiting for. Each answer
+   starts your next turn on its own; do not poll. As each arrives, take
+   its work with `ws-git merge <delegate>`: it touched only its own
+   files, so the merge is clean. (`ws-git checkout <delegate> --
+   <paths>` takes exactly the files it listed, and no more; naming a
+   folder makes that folder match the delegate's, which drops what the
+   other scenes put there.)
+5. **Stitch.** Place each scene in the composition with
+   `data-composition-src`, its `data-start` the running total of the
+   lengths before it less 0.5s for each crossfade, and set the root's
+   `data-duration` to the end of the last. Then check the whole video
+   as below.
+<!--endif-->
 
 ## Checking it
 
@@ -291,9 +354,31 @@ What to cover, with the times changed to your video's:
   mismatch means something is not a function of the time; the usual
   cause is two Anime.js steps on one property.
 
-A grid's frames are small. To read one frame in detail, take a plain
-`{"screenshot": true}` at that moment as well. Then `{"goto":
-"index.html"}` once, to see the player itself load.
+A grid's frames are small, and small text and emoji in them can look
+broken when they are fine. To read one frame in detail, take a plain
+`{"screenshot": true}` at that moment as well, before changing anything
+it shows. Then `{"goto": "index.html"}` once, to see the player itself
+load.
+
+**Narration** needs checking too, and a paused frame says nothing about
+it: after a seek, a clip's `currentTime` reads 0 even when it is fine.
+Check that each clip loaded, then play a moment of one scene and read
+where its voice is:
+
+```json
+[
+  {"eval": "[...document.querySelectorAll('audio.clip')].map(a => a.readyState === 4 && !a.error)"},
+  {"eval": "window.__player.seek(10.2); window.__player.play(); true"},
+  {"wait": 1000},
+  {"eval": "[window.__player.getTime(), document.querySelector('#intro-audio').currentTime]"},
+  {"eval": "window.__player.pause(); true"}
+]
+```
+
+Every clip should read `true`. The last answer is the video's time and
+the voice's, read at one moment, so they differ by where the voice
+starts: for a scene placed at 10s with its voice 0.4s in, by 10.4, as in
+`[11.4, 1.0]`.
 
 ## Done
 
@@ -305,3 +390,5 @@ A video is done when:
 2. The player page loads it with no rejected requests.
 3. Every animation is CSS, WAAPI or a registered Anime.js timeline, and
    the root's `data-duration` covers the last scene.
+4. If it is narrated, every clip loaded, and a played moment put the
+   voice where the scene's timing says.

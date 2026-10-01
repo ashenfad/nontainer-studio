@@ -74,8 +74,10 @@ TrendingDown TrendingUp Upload Visibility VisibilityOff Warning
 
 `<link rel="stylesheet" href="vendor/fonts.css">`, then name a family
 in `font-family`. Each is one variable font, so any weight in its range
-works, not only the hundreds. Latin characters only. System fonts differ
-from machine to machine; these look the same everywhere.
+works, not only the hundreds. They cover Latin characters; anything
+else, emoji included, falls back to the viewer's system fonts, so it
+shows but looks different from one machine to the next. System fonts
+differ from machine to machine; these look the same everywhere.
 
 | family | for | weights | styles | size |
 |---|---|---|---|---|
