@@ -323,7 +323,7 @@ async def _run_turn(session: Any, message: str | None, registry: Any = None) -> 
     the queue is empty, waiting answers start a woken turn when
     ``Registry.may_wake`` allows it. ``message`` None starts the chain
     with one: that is how an idle session is woken (see
-    ``_wake_idle_forever``).
+    ``_wake_on_answers``).
 
     ``registry`` is passed so the turn can write down what its
     delegates' job table now says, and so it can name the delegates a
@@ -369,6 +369,12 @@ async def _run_turn(session: Any, message: str | None, registry: Any = None) -> 
         # kept one during the turn, and both live only in a job table
         # until this writes them down.
         await asyncio.to_thread(_snapshot_delegates, session, registry)
+        # An answer that landed after the chain's last look but before
+        # the lock came free was passed over: the session was busy when
+        # it arrived. This is the look after, so none waits for the
+        # human for want of an idle moment.
+        if registry is not None:
+            await _maybe_wake(session, registry)
         # And after that, the session's own name, read off the
         # transcript this turn just extended. It is a second model run,
         # so it happens where it can cost nothing: the turn is over,
@@ -378,31 +384,35 @@ async def _run_turn(session: Any, message: str | None, registry: Any = None) -> 
             await _name_the_session(session, registry)
 
 
-#: How often idle sessions are checked for delegates' answers to wake
-#: them for, in seconds.
-WAKE_EVERY = 1.0
+async def _wake_on_answers(registry: Any) -> None:
+    """Start a turn on an idle session as soon as one of its delegates
+    answers.
 
-
-async def _wake_idle_forever(registry: Any, every: float = WAKE_EVERY) -> None:
-    """Start a turn on each idle session whose delegates have answered.
-
-    nontainer records an answer and calls nobody, so the studio looks:
-    a session in a turn reads its answers with its next tool result, or
-    on the chain ``_run_turn`` runs when the turn ends, and only an idle
-    one needs waking. One failing session is logged and skipped, so it
-    cannot stop the others being woken."""
-    while True:
-        await asyncio.sleep(every)
-        try:
-            live = registry.live_sessions()
-        except Exception:
-            log.warning("waking: listing the live sessions failed", exc_info=True)
-            continue
-        for session in live:
+    nontainer calls ``on_answer`` on the delegate's worker thread; the
+    registry passes the parent's name to the hook installed here, which
+    hands it to this loop. A session in a turn is passed over: it reads
+    the answer with its next tool result, or on the chain ``_run_turn``
+    runs when the turn ends, which looks once more after it lets go of
+    the session. A failure is logged and the next answer is still
+    heard. The hook comes out when this stops.
+    """
+    loop = asyncio.get_running_loop()
+    landed: asyncio.Queue[str] = asyncio.Queue()
+    registry.set_wake_hook(
+        lambda name: loop.call_soon_threadsafe(landed.put_nowait, name)
+    )
+    try:
+        while True:
+            name = await landed.get()
+            session = registry.get(name)
+            if session is None:
+                continue  # released since: its answers wait for it
             try:
                 await _maybe_wake(session, registry)
             except Exception:
-                log.warning("waking %s failed", session.name, exc_info=True)
+                log.warning("waking %s failed", name, exc_info=True)
+    finally:
+        registry.set_wake_hook(None)
 
 
 async def _maybe_wake(session: Any, registry: Any) -> bool:

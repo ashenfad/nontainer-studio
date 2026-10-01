@@ -1928,3 +1928,61 @@ def test_a_delegate_out_of_wakes_says_its_answer_lacks_its_delegates(registry):
     assert "Waiting on deep." in result
     assert "`boss.scout.deep`" in result
     assert "written without their answers" in result
+
+
+def test_an_answer_calls_the_wake_hook_with_the_parents_name(registry):
+    """nontainer says when an answer lands; the registry turns that into
+    the name of the session to wake."""
+    heard = []
+    registry.set_wake_hook(heard.append)
+    parent = registry.open("boss")
+    _turn(parent, ASK_ASYNC, registry)
+    _await_delegates(parent)
+    deadline = time.monotonic() + 10
+    while not heard and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert heard == ["boss"]
+
+
+def test_the_server_wakes_an_idle_parent_when_its_answer_lands(registry, monkeypatch):
+    """No watcher polls: the answer's arrival is the cue. The consumer
+    installs the hook, wakes the parent through it, and takes it out
+    again when it stops."""
+    parent = _idle_with_an_answer(registry, monkeypatch)
+
+    async def go():
+        consumer = asyncio.create_task(turns._wake_on_answers(registry))
+        await asyncio.sleep(0)  # let it install the hook
+        assert registry._wake_hook is not None
+        # the answer has already landed (and its hook call had no
+        # consumer to hear it); a later one says the same thing
+        registry._answer_landed("boss")
+        for _ in range(500):
+            if parent.turn_task is not None:
+                break
+            await asyncio.sleep(0.01)
+        await parent.turn_task
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+
+    since = parent.next_seq
+    asyncio.run(go())
+    kinds = [e["type"] for e in parent.events if e.get("seq", -1) >= since]
+    assert kinds[0] == "wake" and "delegate" in kinds
+    assert registry._wake_hook is None
+
+
+def test_a_turn_looks_for_answers_once_it_lets_the_session_go(registry, monkeypatch):
+    """An answer landing between the chain's last look and the lock's
+    release finds the session busy and is passed over; the turn looks
+    once more after it lets go."""
+    looked = []
+
+    async def maybe_wake(session, reg):
+        looked.append((session.name, session.turn_lock.locked(), session.in_turn))
+        return False
+
+    monkeypatch.setattr(turns, "_maybe_wake", maybe_wake)
+    parent = registry.open("boss")
+    _turn(parent, "!text hi", registry)
+    assert looked == [("boss", False, False)]

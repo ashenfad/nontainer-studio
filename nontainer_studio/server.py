@@ -36,7 +36,7 @@ from .session import ReservedSessionError, SweptSessionError
 from .sessions import Registry
 from .turns import (
     _run_turn,
-    _wake_idle_forever,
+    _wake_on_answers,
 )
 
 log = logging.getLogger(__name__)
@@ -1108,9 +1108,8 @@ def build_app(registry: Registry) -> Starlette:
             if registry.delegate_ttl > 0
             else None
         )
-        # Delegates' answers wake idle sessions. Always on: with no
-        # delegates it is a glance at each live session once a second.
-        waker = asyncio.create_task(_wake_idle_forever(registry))
+        # Delegates' answers wake idle sessions, as each one lands.
+        waker = asyncio.create_task(_wake_on_answers(registry))
         try:
             yield
         finally:

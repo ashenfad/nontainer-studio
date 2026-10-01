@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from nontainer import Answer
@@ -278,12 +279,7 @@ class StudioRunner:
     def _outstanding(child: "Session") -> list[str]:
         """The child's own delegates still working, or answered and not
         yet delivered to it."""
-        if child.delegates is None:
-            return []
-        running = [
-            job.name for job in child.delegates.list() if job.status == "running"
-        ]
-        return running + [job.name for job in child.answered_delegates()]
+        return child.delegates.outstanding() if child.delegates is not None else []
 
     def _await_own_answers(self, child: "Session") -> str:
         """Wait for one of the child's own delegates to answer.
@@ -294,16 +290,15 @@ class StudioRunner:
         ``"stopping"`` when the studio is shutting down. Between turns,
         so no turn of the child's is held while it waits.
         """
+        if not self._outstanding(child):
+            return "none"
         while True:
             if self._registry.stopping:
                 return "stopping"
-            if child.answered_delegates():
+            if child.delegates.wait(timeout=_AWAIT_SLICE):
                 return "answered" if child.wakes_left > 0 else "spent"
-            if child.delegates is None or not any(
-                job.status == "running" for job in child.delegates.list()
-            ):
+            if not self._outstanding(child):
                 return "none"
-            time.sleep(_AWAIT_EVERY)
 
     def _budget(self, budget: Any) -> int:
         """``budget`` as a turn count, or the registry's default.
@@ -391,9 +386,10 @@ class StudioRunner:
         return _reply(child, since)
 
 
-#: How often a delegate waiting on delegates of its own checks for an
-#: answer, in seconds.
-_AWAIT_EVERY = 0.1
+#: How long a delegate waiting on delegates of its own blocks for an
+#: answer before it looks again whether the studio is shutting down, in
+#: seconds. An answer ends the wait at once; this bounds only shutdown.
+_AWAIT_SLICE = 1.0
 
 
 def _unwaited_text(text: str, names: list[str]) -> str:
@@ -454,6 +450,25 @@ class DelegationMixin:
         The setting is hours because that is the unit the decision is
         made in; 0 means no sweep."""
         return self.delegate_ttl_hours * 3600
+
+    def set_wake_hook(self, hook: "Callable[[str], None] | None") -> None:
+        """Install what is called with a session's name when one of its
+        delegates answers, or None to remove it. The server installs one
+        that wakes the session if it is idle (see ``turns``). Called on
+        the delegate's worker thread, so a hook hands the name over to
+        wherever it does its work rather than doing it there."""
+        self._wake_hook = hook
+
+    def _answer_landed(self, parent: str) -> None:
+        """nontainer's ``on_answer`` for ``parent``'s delegates. Never
+        raises: the answer is recorded either way."""
+        hook = self._wake_hook
+        if hook is None:
+            return
+        try:
+            hook(parent)
+        except Exception:  # noqa: BLE001 - e.g. a loop that has closed
+            log.warning("waking %s for an answer failed", parent, exc_info=True)
 
     def may_wake(self, session: Session) -> bool:
         """Whether delegates' answers should start a turn on ``session``.

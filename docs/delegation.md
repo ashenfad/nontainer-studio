@@ -100,10 +100,14 @@ delegates are still working. The agent is told as much: after `sessions
 ask` it keeps working or ends its turn saying what it is waiting for,
 and never polls.
 
-- **Two ways in.** A turn that ends with answers waiting, ones that
-  landed after its last tool call, goes straight on into a woken turn,
-  on the same chain that runs the human's queued messages. And a watcher
-  checks idle sessions about once a second.
+- **No polling.** nontainer calls the session helper's `on_answer` the
+  moment an answer is recorded (nontainer 0.8.4), and an idle parent is
+  woken then. A parent in a turn is passed over, and picks the answer
+  up on its own: with its next tool result, or, for an answer that
+  landed after its last tool call, on the chain that runs the human's
+  queued messages, which goes straight on into a woken turn. The turn
+  looks once more after it lets go of the session, for an answer that
+  arrived in the moment between.
 - **A woken turn opens with a `wake` event,** not a `user` one: it is no
   message of the human's and no edit anchor. The model is sent the
   answers and a short note from the mechanism saying nobody spoke.
@@ -116,9 +120,9 @@ and never polls.
   nobody in the loop, so this bounds it. Every message the human sends
   refills it. When it runs out, the transcript says so once, and the
   answers wait for the human's next message, as they do with `0`.
-- **A delegate is woken by its runner, not the watcher.** A reply it
+- **A delegate is woken by its runner, not the server.** A reply it
   gives while delegates of its own are still out is it waiting, not its
-  answer: the runner waits for their answers, runs a woken turn with
+  answer: the runner blocks on its helper's `wait()` for their answers, runs a woken turn with
   them, and returns the reply it gives then. Those turns spend the
   delegate's own wake budget. If that runs out, or the studio shuts
   down, the answer says which of its delegates it never read.
