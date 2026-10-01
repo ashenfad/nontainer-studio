@@ -120,7 +120,7 @@ def generate_title(spec: str | None, transcript: str) -> str | None:
     """A 3-to-6-word name for the work, or ``None`` when the model
     answered with nothing usable. Raises whatever the model call
     raises — a caller decides what a failure costs."""
-    from .sessions import _clean_title
+    from .titles import _clean_title
 
     return _clean_title(_generate(spec, TITLE_PROMPT, transcript))
 

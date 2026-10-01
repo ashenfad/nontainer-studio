@@ -18,7 +18,7 @@ from nontainer.apps import render_test_app
 from nontainer.apps import request as nt_request
 from starlette.testclient import TestClient
 
-from nontainer_studio import config, prompts, server
+from nontainer_studio import config, prompts, server, titles
 from nontainer_studio import session as session_mod
 from nontainer_studio import sessions as sessions_mod
 from nontainer_studio import summaries as summaries_mod
@@ -4178,7 +4178,7 @@ def test_an_older_naming_run_never_overwrites_a_newer_one(titling, monkeypatch):
 
     # every turn is due, so the two runs below both get as far as the
     # model call they are racing in
-    monkeypatch.setattr(sessions_mod, "TITLE_TURNS", 0)
+    monkeypatch.setattr(titles, "TITLE_TURNS", 0)
     asked, release, answered = [], threading.Event(), []
 
     def racing(spec, transcript):
@@ -4594,7 +4594,7 @@ def test_edit_rewinds_the_generated_title(titling, monkeypatch):
     client, registry, titler = titling
     # every turn, so the two names the rewind is about are two turns
     # apart rather than ten
-    monkeypatch.setattr(sessions_mod, "TITLE_TURNS", 1)
+    monkeypatch.setattr(titles, "TITLE_TURNS", 1)
     titler.answers = ["First topic", "Second topic"]
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
@@ -4658,7 +4658,7 @@ def test_a_restored_name_nothing_can_date_is_read_again(titling, monkeypatch):
     cleared rather than guessed at, and a name nothing can date is read
     again at the next real exchange."""
     client, registry, titler = titling
-    monkeypatch.setattr(sessions_mod, "TITLE_TURNS", 1)
+    monkeypatch.setattr(titles, "TITLE_TURNS", 1)
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
     _named_turn(client, registry, "s1", "one")
@@ -4677,7 +4677,7 @@ def test_a_restored_name_nothing_can_date_is_read_again(titling, monkeypatch):
     # back to an interval the replacement turn is nowhere near: it is
     # named because the name it would replace cannot be dated, not
     # because enough turns have gone by
-    monkeypatch.setattr(sessions_mod, "TITLE_TURNS", 5)
+    monkeypatch.setattr(titles, "TITLE_TURNS", 5)
     _named_turn(client, registry, "s1", "redo")
     assert registry.title_of("s1") == "Name 3"
 
@@ -4702,7 +4702,7 @@ def test_edit_never_rewinds_the_humans_title(titling, monkeypatch):
     """The human's title isn't a conversational fact — an edit must not
     touch it."""
     client, registry, titler = titling
-    monkeypatch.setattr(sessions_mod, "TITLE_TURNS", 1)
+    monkeypatch.setattr(titles, "TITLE_TURNS", 1)
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
     _named_turn(client, registry, "s1", "one")
