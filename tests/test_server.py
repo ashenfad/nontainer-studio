@@ -3585,7 +3585,7 @@ def test_the_sweep_leaves_a_file_it_still_holds_open(studio, tmp_path, caplog):
     with registry._lock:
         registry._db_handle(stray).execute("CREATE TABLE t (v TEXT)")
 
-    with caplog.at_level("INFO", logger="nontainer_studio.sessions"):
+    with caplog.at_level("INFO", logger="nontainer_studio.manifest"):
         assert registry.sweep_dbs() == []
     assert stray in "\n".join(caplog.messages)
     assert (tmp_path / stray).exists()
