@@ -335,9 +335,10 @@ class StudioRunner:
         ``_run_turn`` is the studio's agent loop — the same streaming,
         the same transcript events, the same repair of an aborted run —
         so a delegate's session records what it did in the same shape
-        every other session does. Imported here because it lives beside
-        the routes that also drive it, and importing that module at load
-        time would close a cycle through the registry.
+        every other session does. Imported here rather than at load time
+        because ``turns`` imports this module for the messages that frame
+        an answer, and two modules importing each other at load would
+        close a cycle.
 
         Its own event loop: the runner is on a worker thread, and a
         delegate's turn must not depend on a server loop being there to
@@ -361,7 +362,7 @@ class StudioRunner:
         the child's: the parent's turn is running on the thread that
         asked, and reaching for its lock would deadlock it.
         """
-        from .server import _run_turn
+        from .turns import _run_turn
 
         child.turn_lock.acquire()  # _run_turn releases it
         since = child.next_seq

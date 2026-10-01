@@ -16,7 +16,7 @@ from agno.models.response import ModelResponse
 from nontainer.errors import BranchExpired
 from nontainer.sessions import Sessions
 
-from nontainer_studio import config, delegates, prompts, server
+from nontainer_studio import config, delegates, prompts, turns
 from nontainer_studio import session as session_mod
 from nontainer_studio import sessions as sessions_mod
 from nontainer_studio import summaries as summaries_mod
@@ -273,7 +273,7 @@ def _turn(session, message, registry=None):
     pass it, the rest run the turn without it."""
     session.turn_lock.acquire()  # _run_turn releases it
     since = session.next_seq
-    asyncio.run(server._run_turn(session, message, registry))
+    asyncio.run(turns._run_turn(session, message, registry))
     return [e for e in session.events if e.get("seq", -1) >= since]
 
 
@@ -369,7 +369,7 @@ def _edit(registry, session, seq, message):
 
     async def go():
         await session.emit({"type": "truncate", "to": seq})
-        await server._run_turn(session, message, registry)
+        await turns._run_turn(session, message, registry)
 
     asyncio.run(go())
     return [e for e in session.events if e.get("seq", -1) >= since]
@@ -783,13 +783,13 @@ def test_a_delegates_own_turn_is_run_with_the_registry(registry, monkeypatch):
     turn that ends — the runner releases the child, and the table, as
     soon as it answers."""
     seen = []
-    original = server._run_turn
+    original = turns._run_turn
 
     async def spy(session, message, reg=None):
         seen.append(reg)
         await original(session, message, reg)
 
-    monkeypatch.setattr(server, "_run_turn", spy)
+    monkeypatch.setattr(turns, "_run_turn", spy)
     parent = registry.open("boss")
 
     _delegate(registry, parent, WRITE_A_NOTE)
@@ -1656,15 +1656,13 @@ def test_closing_the_registry_does_not_wait_out_a_delegates_turn(tmp_path):
     errors = [
         {k: v for k, v in e.items() if k != "ts"} for e in cut if e["type"] == "error"
     ]
-    assert errors == [
-        {"type": "error", "message": server.STOPPED_AT_SHUTDOWN, "seq": 1}
-    ]
+    assert errors == [{"type": "error", "message": turns.STOPPED_AT_SHUTDOWN, "seq": 1}]
     assert cut[-1]["type"] == "done"  # the turn was closed out, not abandoned
 
     # and the job it belonged to resolved, in words
     answer = parent.delegates.result("boss.scout")
     assert answer.status == "failed"
-    assert answer.text == server.STOPPED_AT_SHUTDOWN
+    assert answer.text == turns.STOPPED_AT_SHUTDOWN
 
 
 # -- an answer that lands mid-turn -------------------------------------------
@@ -1758,7 +1756,7 @@ def _wake(session, registry):
     since = session.next_seq
 
     async def go():
-        started = await server._maybe_wake(session, registry)
+        started = await turns._maybe_wake(session, registry)
         if started:
             await session.turn_task
         return started
@@ -1849,7 +1847,7 @@ def test_a_stopped_or_errored_turn_is_not_followed_by_a_wake(registry, monkeypat
     async def stopped(*args, **kwargs):
         return False
 
-    monkeypatch.setattr(server, "_one_turn", stopped)
+    monkeypatch.setattr(turns, "_one_turn", stopped)
     _turn(parent, "!text hi", registry)
     monkeypatch.undo()  # the real turn again, for what follows
     monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")
@@ -1888,7 +1886,7 @@ def test_a_delegate_is_never_woken(registry, monkeypatch):
 def test_a_woken_turn_with_nothing_left_to_deliver_runs_nothing(registry):
     parent = registry.open("boss")
     since = parent.next_seq
-    assert asyncio.run(server._one_turn(parent, None, registry)) is None
+    assert asyncio.run(turns._one_turn(parent, None, registry)) is None
     assert [e for e in parent.events if e.get("seq", -1) >= since] == []
 
 
