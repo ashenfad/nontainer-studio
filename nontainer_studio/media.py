@@ -84,6 +84,20 @@ MAX_CONCURRENT = 8
 _OFF = ("0", "false", "no", "off")
 
 
+def make_client(
+    api_key: str, *, transport: httpx.BaseTransport | None = None
+) -> httpx.Client:
+    """An HTTP client for OpenRouter, to share across ``Media`` objects."""
+    return httpx.Client(
+        transport=transport,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://github.com/ashenfad/nontainer-studio",
+            "X-Title": "nontainer-studio",
+        },
+    )
+
+
 def media_enabled() -> bool:
     """Whether agent sessions get ``media``: an OpenRouter key is set
     and ``NONTAINER_STUDIO_MEDIA`` doesn't turn it off."""
@@ -96,21 +110,19 @@ class Media:
     """Generate images and speech into one session's workspace.
 
     Built before the workspace it writes to exists (a Python config is
-    part of opening one), so the session binds it once open."""
+    part of opening one), so the session binds it once open and unbinds
+    it at close. The HTTP client is the caller's, so every session can
+    share one connection pool rather than each holding its own."""
 
-    def __init__(self, api_key: str, *, transport: httpx.BaseTransport | None = None):
-        self._client = httpx.Client(
-            transport=transport,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "HTTP-Referer": "https://github.com/ashenfad/nontainer-studio",
-                "X-Title": "nontainer-studio",
-            },
-        )
+    def __init__(self, client: httpx.Client):
+        self._client = client
         self._ws: Any = None
 
     def _bind(self, ws: Any) -> None:
         self._ws = ws
+
+    def _unbind(self) -> None:
+        self._ws = None
 
     # -- images ----------------------------------------------------------
 

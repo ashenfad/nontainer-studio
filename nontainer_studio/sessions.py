@@ -1217,9 +1217,19 @@ def _agent_host_objects() -> dict[str, Any]:
         objects["web"] = _shared_web()
     if media_enabled():
         # One per session: it writes into the session's workspace, and
-        # is bound to it once that is open (see _bind_host_objects).
-        objects["media"] = Media(os.environ["OPENROUTER_API_KEY"])
+        # is bound to it once that is open (see _bind_host_objects). The
+        # connection pool is the process's.
+        objects["media"] = Media(_shared_media_client())
     return objects
+
+
+@functools.cache
+def _shared_media_client() -> Any:
+    """One OpenRouter client for every session's ``Media``, so a session
+    that closes leaves no connections of its own behind."""
+    from .media import make_client
+
+    return make_client(os.environ["OPENROUTER_API_KEY"])
 
 
 def _bind_host_objects(ws: Workspace) -> None:
@@ -1229,6 +1239,15 @@ def _bind_host_objects(ws: Workspace) -> None:
         bind = getattr(obj, "_bind", None)
         if callable(bind):
             bind(ws)
+
+
+def _unbind_host_objects(ws: Workspace) -> None:
+    """Take the workspace back from them as it closes, so a closed
+    session's workspace is not kept alive by its own config."""
+    for obj in ws.runtime.python_config.host_objects.values():
+        unbind = getattr(obj, "_unbind", None)
+        if callable(unbind):
+            unbind()
 
 
 @functools.cache
@@ -3792,6 +3811,7 @@ class Registry:
         close_runtime = getattr(session.runtime, "close", None)
         if callable(close_runtime):  # reap dispatch workers
             close_runtime()
+        _unbind_host_objects(session.ws)
         session.ws.close()
         # NOT the db: the handle belongs to the registry, because the
         # file behind it is named by other rows — a fork's, a
