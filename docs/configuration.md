@@ -263,9 +263,10 @@ cannot read it back, but the next call can.
 | `NONTAINER_STUDIO_DELEGATE_TTL` | `24` | hours a delegate's branch is kept after anyone last dealt with it; `0` turns the sweep off |
 | `NONTAINER_STUDIO_DELEGATE_DEPTH` | `2` | how deep delegation may nest, in hops from the session a human started; `0` turns the cap off |
 | `NONTAINER_STUDIO_DELEGATE_TOOL_CALLS` | `60` | tool calls one delegate turn may spend; `0` turns the cap off |
+| `NONTAINER_STUDIO_DELEGATE_WAKES` | `10` | turns delegates' answers may start on an idle session before the human writes again; `0` turns waking off |
 
-All three fall back to their defaults on an unparseable value rather than
-raising, and all three are clamped at zero.
+All four fall back to their defaults on an unparseable value rather than
+raising, and all four are clamped at zero.
 
 **`Registry(delegate_turns=...)` is not an environment knob.** The turn
 budget a delegate spends before its answer resolves as `capped` is a

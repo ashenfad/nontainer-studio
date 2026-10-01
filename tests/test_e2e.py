@@ -57,6 +57,19 @@ class _Server(str):
 
 @pytest.fixture(scope="module")
 def server(tmp_path_factory):
+    # Waking off: the rail tests below are about an answer that waits
+    # for the human, which is what it does when its budget is spent or
+    # the knob is 0. With waking on, it would be delivered within a
+    # second and there would be nothing waiting to show.
+    yield from _studio(tmp_path_factory, NONTAINER_STUDIO_DELEGATE_WAKES="0")
+
+
+@pytest.fixture(scope="module")
+def waking_server(tmp_path_factory):
+    yield from _studio(tmp_path_factory)
+
+
+def _studio(tmp_path_factory, **extra_env):
     port = _free_port()
     store = tmp_path_factory.mktemp("store")
     env = {
@@ -69,6 +82,7 @@ def server(tmp_path_factory):
         # given to an agent unless the studio is told to.
         "NONTAINER_STUDIO_SESSIONS": "1",
         "NONTAINER_STUDIO_WSGIT": "1",
+        **extra_env,
     }
     proc = subprocess.Popen(
         [sys.executable, "-m", "nontainer_studio"],
@@ -1218,6 +1232,33 @@ def test_a_delegates_answer_reaches_the_parent_next_turn(page, server):
     expect(card).to_contain_text("ws-git merge e2e-delegate.scout")
     # and delivering it clears the rail badge
     expect(page.locator(".rail .waiting")).to_have_count(0, timeout=20000)
+
+
+def test_an_answer_wakes_the_parent_without_a_message(browser, waking_server):
+    """With waking on, the delegate's answer starts the parent's next
+    turn by itself: the answer card appears, the agent replies to it,
+    and the human sent one message the whole time."""
+    page = browser.new_page()
+    try:
+        page.goto(f"{waking_server}/?session=e2e-wake")
+        _send(
+            page,
+            '!tool sessions {"action": "ask", "name": "scout", '
+            '"task": "!text Found it."}\n'
+            "!text Sent a scout.",
+        )
+        card = page.locator(".delegate")
+        expect(card).to_be_visible(timeout=20000)
+        expect(card).to_contain_text("e2e-wake.scout")
+        expect(card).to_contain_text("Found it.")
+        # the woken turn's reply follows the card (the dummy echoes what
+        # it was sent, which opens with the answer)
+        expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+            "dummy: [delegate", timeout=15000
+        )
+        expect(page.locator(".user-bubble")).to_have_count(1)
+    finally:
+        page.close()
 
 
 def test_the_rail_lists_a_sessions_delegates_and_keeps_one(page, server):

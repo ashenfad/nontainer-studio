@@ -149,6 +149,19 @@ def orphan_message(name: str, *, versioning: bool) -> str:
     )
 
 
+WAKE_MESSAGE = (
+    "[the studio's delegation mechanism speaking, not the person at the "
+    "keyboard: they have said nothing new. This turn started because the "
+    "delegate answers above arrived after your last turn ended. Act on "
+    "them as your plan calls for: review and merge what is ready, ask "
+    "again for what failed. If other delegates are still working, end "
+    "the turn saying what you are waiting for: each answer wakes you "
+    "again. If there is nothing to do, end the turn.]"
+)
+"""What a turn that delegates' answers started is sent in the slot a
+person's message occupies, after the answers themselves."""
+
+
 def answer_message(name: str, answer: Answer) -> str:
     """A delegate's answer as it reaches the session that asked.
 

@@ -574,7 +574,7 @@ def _snapshot_delegates(session: Any, registry: Any) -> None:
         registry.snapshot_delegates(session.name)
 
 
-async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
+async def _run_turn(session: Any, message: str | None, registry: Any = None) -> None:
     """The human's message, and every turn it leads to, as one
     server-side task DECOUPLED from any HTTP request: events land in
     the session's buffer, subscribers follow from a cursor.
@@ -587,6 +587,13 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
     nobody to hand it to. So the lock is held across the chain: what is
     still queued when a turn finishes normally starts the next turn, as
     an ordinary message of the human's, until the queue is empty.
+
+    Delegates' answers ride the same chain. One that landed after the
+    turn's last tool call has no tool result to ride out on, so once
+    the queue is empty, waiting answers start a woken turn when
+    ``Registry.may_wake`` allows it. ``message`` None starts the chain
+    with one: that is how an idle session is woken (see
+    ``_wake_idle_forever``).
 
     ``registry`` is passed so the turn can write down what its
     delegates' job table now says, and so it can name the delegates a
@@ -603,15 +610,22 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
     from_queue: list[str] = []
     try:
         while True:
-            if not await _one_turn(session, message, registry, from_queue):
+            ran = await _one_turn(session, message, registry, from_queue)
+            if ran is False:
                 # Stopped or errored. Whatever is queued stays queued,
                 # for the human's next explicit send: a turn they
                 # stopped must stay stopped, and starting another one
-                # with their words in it would take the stop back.
+                # with their words in it would take the stop back. So
+                # does waking, for the same reason.
+                session.wake_ok = False
                 break
             queued = session.inbox.drain()
             if not queued:
-                break
+                if ran is None or registry is None or not registry.may_wake(session):
+                    break
+                session.wakes_left -= 1
+                message, from_queue = None, []
+                continue
             # A drained note is delivered-but-unsettled, which the next
             # turn's pre hook would put back in the queue. These are
             # not going to a tool result — they ARE the next turn's
@@ -635,16 +649,85 @@ async def _run_turn(session: Any, message: str, registry: Any = None) -> None:
             await _name_the_session(session, registry)
 
 
+#: How often idle sessions are checked for delegates' answers to wake
+#: them for, in seconds.
+WAKE_EVERY = 1.0
+
+
+async def _wake_idle_forever(registry: Any, every: float = WAKE_EVERY) -> None:
+    """Start a turn on each idle session whose delegates have answered.
+
+    nontainer records an answer and calls nobody, so the studio looks:
+    a session in a turn reads its answers with its next tool result, or
+    on the chain ``_run_turn`` runs when the turn ends, and only an idle
+    one needs waking. One failing session is logged and skipped, so it
+    cannot stop the others being woken."""
+    while True:
+        await asyncio.sleep(every)
+        for session in registry.live_sessions():
+            try:
+                await _maybe_wake(session, registry)
+            except Exception:
+                log.warning("waking %s failed", session.name, exc_info=True)
+
+
+async def _maybe_wake(session: Any, registry: Any) -> bool:
+    """Start a woken turn on ``session`` if it is idle and may be woken;
+    True when one started."""
+    if session.in_turn or session.turn_lock.locked():
+        return False
+    if not registry.may_wake(session):
+        await _note_spent_wakes(session, registry)
+        return False
+    if not session.turn_lock.acquire(blocking=False):
+        return False
+    session.in_turn = True
+    session.wakes_left -= 1
+    session.turn_task = asyncio.create_task(_run_turn(session, None, registry))
+    return True
+
+
+async def _note_spent_wakes(session: Any, registry: Any) -> None:
+    """Tell the human, once, that answers are waiting for them because
+    the session has been woken as often as it may be without them."""
+    if (
+        session.wake_cap_noted
+        or not session.wake_ok
+        or session.wakes_left > 0
+        or session.delegates is None
+        or not session.answered_delegates()
+        or registry.is_delegate(session.name)
+    ):
+        return
+    session.wake_cap_noted = True
+    await session.emit(
+        {
+            "type": "notice",
+            "text": (
+                "Delegates have answered, but their answers have already "
+                "started as many turns as they may since your last message. "
+                "The agent will read them when you next write."
+            ),
+        }
+    )
+
+
 async def _one_turn(
     session: Any,
-    message: str,
+    message: str | None,
     registry: Any = None,
     from_queue: "list[str] | tuple[str, ...]" = (),
-) -> bool:
+) -> bool | None:
     """One agent turn; True when it finished normally.
 
     False means the run was cancelled or errored — the two endings
     after which nothing may start another turn on the human's behalf.
+
+    ``message`` None is a turn delegates' answers started rather than
+    the human: it opens with a `wake` event instead of a `user` one, so
+    it is no edit anchor and no message of theirs, and the model is sent
+    the answers and ``WAKE_MESSAGE``. None comes back when there turned
+    out to be no answer left to deliver, and no turn ran.
 
     ``from_queue`` names the queued messages this turn was started
     with, when it was: the shell has them on screen as waiting, and
@@ -654,11 +737,18 @@ async def _one_turn(
     def snapshot() -> None:
         _snapshot_delegates(session, registry)
 
+    woken = message is None
+    if woken and not session.answered_delegates():
+        # Cancelled or swept since the wake was decided.
+        return None
     state = _RunState()
     try:
         # head here = the workspace BEFORE this turn: the user event's
         # stamp is the undo anchor (check it out = unwind this turn)
-        opening = {"type": "user", "text": message, "head": session.ws.head}
+        if woken:
+            opening = {"type": "wake", "head": session.ws.head}
+        else:
+            opening = {"type": "user", "text": message, "head": session.ws.head}
         if from_queue:
             opening["from_queue"] = list(from_queue)
         await session.emit(opening)
@@ -710,7 +800,7 @@ async def _one_turn(
         prompt = "\n\n".join(
             [delegates.answer_message(n, a) for n, a in answers]
             + [note for _, note in notes]
-            + [message]
+            + [delegates.WAKE_MESSAGE if woken else message]
         )
         await _follow_run(
             session,
@@ -1009,6 +1099,9 @@ def build_app(registry: Registry) -> Starlette:
         message = (body.get("message") or "").strip()
         if not message:
             return JSONResponse({"error": "empty message"}, status_code=400)
+        # Queued or not, the human is back: delegates' answers may wake
+        # the session again, on a fresh budget.
+        session.human_spoke()
         if not session.turn_lock.acquire(blocking=False):
             if not session.in_turn:
                 # The lock is held as a reservation rather than by a
@@ -1067,6 +1160,7 @@ def build_app(registry: Registry) -> Starlette:
             )
         if not session.turn_lock.acquire(blocking=False):
             return JSONResponse({"error": "a turn is already running"}, status_code=409)
+        session.human_spoke()
         try:
             await anyio.to_thread.run_sync(registry.rewind_to_event, session, seq)
         except Exception as e:
@@ -1674,9 +1768,14 @@ def build_app(registry: Registry) -> Starlette:
             if registry.delegate_ttl > 0
             else None
         )
+        # Delegates' answers wake idle sessions. Always on: with no
+        # delegates it is a glance at each live session once a second.
+        waker = asyncio.create_task(_wake_idle_forever(registry))
         try:
             yield
         finally:
+            waker.cancel()
+            await asyncio.gather(waker, return_exceptions=True)
             if sweeper is not None:
                 sweeper.cancel()
                 await asyncio.gather(sweeper, return_exceptions=True)

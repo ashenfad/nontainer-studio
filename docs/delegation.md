@@ -91,6 +91,34 @@ is sent, because it arrived first and the message is the instruction.
 Either way the transcript gets the same `delegate` event, so the rail's
 waiting count and the delivery record read one fact rather than two.
 
+## Waking the parent
+
+An answer does not wait for the human to say something. When one lands
+and the parent is idle, it starts the parent's next turn itself, so the
+parent can merge what is done and ask again for what failed while other
+delegates are still working. The agent is told as much: after `sessions
+ask` it keeps working or ends its turn saying what it is waiting for,
+and never polls.
+
+- **Two ways in.** A turn that ends with answers waiting, ones that
+  landed after its last tool call, goes straight on into a woken turn,
+  on the same chain that runs the human's queued messages. And a watcher
+  checks idle sessions about once a second.
+- **A woken turn opens with a `wake` event,** not a `user` one: it is no
+  message of the human's and no edit anchor. The model is sent the
+  answers and a short note from the mechanism saying nobody spoke.
+  Answers that land together start one turn.
+- **A stopped or errored turn turns waking off** until the human sends a
+  message. A turn they stopped stays stopped.
+- **The budget is `NONTAINER_STUDIO_DELEGATE_WAKES`,** 10 by default:
+  how many turns answers may start before the human speaks again. A
+  woken turn can delegate again, and that answer wakes it again with
+  nobody in the loop, so this bounds it. Every message the human sends
+  refills it. When it runs out, the transcript says so once, and the
+  answers wait for the human's next message, as they do with `0`.
+- **Only sessions a human started are woken.** A delegate's runner
+  already drives its turns to a reply on its own budget.
+
 The text says whose answer it is and that this is the delegation
 mechanism rather than the person at the keyboard: an answer is evidence
 to weigh, not an instruction from a principal. A delegate's conversation

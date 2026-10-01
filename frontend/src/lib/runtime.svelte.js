@@ -9,6 +9,10 @@
 //                                    — head = pre-turn workspace commit (edit
 //                                      anchor); from_queue names the queued
 //                                      messages this turn was started with
+//   {type:'wake',   head}            — a turn delegates' answers started,
+//                                      with no message from the human: the
+//                                      `delegate` events after it are what
+//                                      it is for. No bubble, no edit anchor
 //   {type:'text',   delta}           — streamed reply tokens
 //   {type:'thinking', delta}         — native model reasoning (when the
 //                                      model/provider exposes it)
@@ -180,7 +184,7 @@ export async function createSession() {
 const ARTIFACT_NOTE = /\[ui artifacts: ([^\]]+)\]/
 const IMAGE_PATHS = /\/[\w./-]+\.(?:png|jpe?g|gif|webp)\b/g
 
-const ENDS_THINKING = new Set(['text', 'tool_start', 'tool_end', 'interject', 'user', 'error', 'done'])
+const ENDS_THINKING = new Set(['text', 'tool_start', 'tool_end', 'interject', 'user', 'wake', 'error', 'done'])
 
 export class SessionRuntime {
     messages = $state([])
@@ -301,6 +305,13 @@ export class SessionRuntime {
                 head: ev.head ?? null,
                 seq: ev.cursor ?? null, // its event-log position: the edit handle
             })
+        } else if (ev.type === 'wake') {
+            // A turn starts, as for a message, but nobody spoke: the
+            // delegate answers that follow are its opening.
+            this.busy = true
+            this.#turnArts = []
+            const open = this.messages.at(-1)
+            if (open?.role === 'agent') open.streaming = false
         } else if (ev.type === 'interject') {
             // A queued message reached the model, appended to a tool
             // result. It stops waiting and becomes an ordinary user
