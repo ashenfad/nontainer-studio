@@ -51,7 +51,7 @@ def _media(handler):
         sent.append((str(request.url), body))
         return handler(str(request.url), body)
 
-    m = Media("key", transport=httpx.MockTransport(respond))
+    m = Media(media_mod.make_client("key", transport=httpx.MockTransport(respond)))
     ws = _Ws()
     m._bind(ws)
     return m, ws, sent

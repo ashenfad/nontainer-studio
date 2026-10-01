@@ -665,6 +665,10 @@ def test_web_reaches_the_agent_and_never_a_published_app(studio, monkeypatch):
     forked = child.ws.runtime.python_config
     assert "web" in forked.host_objects
     assert forked.host_objects["media"]._ws is child.ws
+    # one connection pool for every session, and none left bound at close
+    parent_media = config.host_objects["media"]
+    child_media = forked.host_objects["media"]
+    assert parent_media._client is child_media._client
 
     session.ws.files.fs.write("/workspace/app/index.html", b"<p>hi</p>")
     session.ws.commit()
@@ -674,6 +678,10 @@ def test_web_reaches_the_agent_and_never_a_published_app(studio, monkeypatch):
     assert "media" not in served.host_objects
     assert "db" in served.host_objects
     assert served.timeout == 30.0
+
+    registry.close()
+    registry._sessions.clear()
+    assert parent_media._ws is None and child_media._ws is None
 
 
 def test_without_web_the_agent_is_neither_given_nor_told_of_it(studio, monkeypatch):
