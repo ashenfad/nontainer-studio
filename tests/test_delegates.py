@@ -39,6 +39,11 @@ def delegation_on(monkeypatch):
     """
     monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")
     monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
+    # And answers wait for the next turn, as they do with waking off:
+    # a scripted delegate can finish before or after its parent's turn
+    # ends, and a test about delivery must not depend on which. The
+    # tests about waking turn it on themselves.
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_WAKES", "0")
 
 
 @pytest.fixture
@@ -1743,3 +1748,146 @@ def test_an_answer_that_lands_mid_turn_is_delivered_once(registry, thinking_mode
     assert parent.take_delegate_answers() == []
     assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [0]
     assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok", registry))
+
+
+# -- waking: answers that arrive while nobody is talking ----------------------
+
+
+def _wake(session, registry):
+    """What the server's watcher does for an idle session, once: start a
+    woken turn if one may start, and see it through."""
+    since = session.next_seq
+
+    async def go():
+        started = await server._maybe_wake(session, registry)
+        if started:
+            await session.turn_task
+        return started
+
+    started = asyncio.run(go())
+    return started, [e for e in session.events if e.get("seq", -1) >= since]
+
+
+def _idle_with_an_answer(registry, monkeypatch, wakes="10"):
+    """A parent whose delegate answered after its turn ended: asked with
+    waking off, so nothing has delivered the answer yet, then given a
+    budget as a human message would."""
+    parent = registry.open("boss")
+    _turn(parent, ASK_ASYNC, registry)
+    _await_delegates(parent)
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_WAKES", wakes)
+    parent.human_spoke()
+    return parent
+
+
+def test_an_answer_wakes_an_idle_parent(registry, monkeypatch):
+    """Nobody has to nudge the parent: the answer starts a turn, which
+    opens with a `wake` event rather than a message of the human's."""
+    parent = _idle_with_an_answer(registry, monkeypatch)
+    started, events = _wake(parent, registry)
+    assert started
+    kinds = [e["type"] for e in events]
+    assert kinds[0] == "wake"
+    assert "user" not in kinds
+    assert kinds.count("done") == 1
+    answer = next(e for e in events if e["type"] == "delegate")
+    assert answer["name"] == "boss.scout"
+    # the model is sent the answer and the mechanism's note, nothing of
+    # the human's (the dummy echoes what it was sent)
+    reply = "".join(e["delta"] for e in events if e["type"] == "text")
+    assert reply.startswith("dummy: [delegate `boss.scout` answered")
+    stored = registry.db.get_session("boss")
+    sent = next(
+        str(m.content) for m in stored.runs[-1].messages or [] if m.role == "user"
+    )
+    assert "Found it." in sent
+    assert sent.endswith(delegates.WAKE_MESSAGE)
+    assert parent.wakes_left == 9
+
+    # delivered once: nothing is left to wake for
+    assert parent.answered_delegates() == []
+    assert _wake(parent, registry) == (False, [])
+
+
+def test_an_answer_after_the_last_tool_call_wakes_the_same_chain(registry, monkeypatch):
+    """The gap waking closes: an answer landing while the model writes
+    its final reply has no tool result left to ride out on. The turn's
+    own chain picks it up as soon as the turn ends."""
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_WAKES", "10")
+    parent = registry.open("boss")
+    plain = DummyModel.ainvoke_stream
+
+    async def reply_once_answered(self, messages, **kwargs):
+        plan = DummyModel._plan(messages)
+        if not plan.tool_calls and "SLOW-REPLY" in str(plan.content or ""):
+            deadline = time.monotonic() + 20
+            while not parent.answered_delegates() and time.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+        async for chunk in plain(self, messages, **kwargs):
+            yield chunk
+
+    monkeypatch.setattr(DummyModel, "ainvoke_stream", reply_once_answered)
+    events = _turn(
+        parent,
+        '!tool sessions {"action": "ask", "name": "scout", "task": "!text Found it."}\n'
+        "!text SLOW-REPLY Sent a scout.",
+        registry,
+    )
+    kinds = [e["type"] for e in events]
+    assert kinds.count("done") == 2
+    first_done = kinds.index("done")
+    assert kinds[first_done + 1] == "wake"
+    assert kinds.index("delegate") > first_done
+    assert parent.wakes_left == 9
+
+
+def test_a_stopped_or_errored_turn_is_not_followed_by_a_wake(registry, monkeypatch):
+    """A turn the human stopped must stay stopped: an answer arriving
+    afterwards waits for their next message instead of taking the stop
+    back."""
+    parent = _idle_with_an_answer(registry, monkeypatch)
+
+    async def stopped(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(server, "_one_turn", stopped)
+    _turn(parent, "!text hi", registry)
+    monkeypatch.undo()  # the real turn again, for what follows
+    monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")
+    monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
+    monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_WAKES", "10")
+    assert parent.wake_ok is False
+    assert not registry.may_wake(parent)
+    assert _wake(parent, registry) == (False, [])
+
+    parent.human_spoke()  # what /chat and /edit do
+    assert registry.may_wake(parent)
+
+
+def test_a_spent_wake_budget_leaves_answers_for_the_human_and_says_so(
+    registry, monkeypatch
+):
+    parent = _idle_with_an_answer(registry, monkeypatch, wakes="0")
+    started, events = _wake(parent, registry)
+    assert not started
+    assert [e["type"] for e in events] == ["notice"]
+    assert "when you next write" in events[0]["text"]
+    # said once
+    assert _wake(parent, registry) == (False, [])
+    # and the answer is still there for the human's next message
+    assert parent.answered_delegates()
+
+
+def test_a_delegate_is_never_woken(registry, monkeypatch):
+    """A delegate's runner drives its turns to a reply on a budget of its
+    own; a turn woken under it would run outside that budget."""
+    parent = _idle_with_an_answer(registry, monkeypatch)
+    monkeypatch.setattr(registry, "is_delegate", lambda name, manifest=None: True)
+    assert not registry.may_wake(parent)
+
+
+def test_a_woken_turn_with_nothing_left_to_deliver_runs_nothing(registry):
+    parent = registry.open("boss")
+    since = parent.next_seq
+    assert asyncio.run(server._one_turn(parent, None, registry)) is None
+    assert [e for e in parent.events if e.get("seq", -1) >= since] == []

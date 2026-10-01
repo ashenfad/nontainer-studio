@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A delegate's answer wakes its parent.** Before, an answer that
+  arrived after the parent's turn ended waited for the human's next
+  message, so "build three scenes, then put them together" stalled until
+  someone nudged it.
+  - **Now the answer starts the parent's next turn itself.** That
+    happens straight after a turn ends, for answers that landed after its
+    last tool call, and within about a second for an idle session. While
+    the parent is working, answers still ride in on its next tool result.
+  - **A woken turn opens with a new `wake` event** instead of a message
+    from the human, so it is no edit anchor. The model gets the answers
+    plus a note from the mechanism saying nobody spoke.
+  - **Guards:** a stopped or errored turn turns waking off until the
+    human writes. `NONTAINER_STUDIO_DELEGATE_WAKES` (default 10, `0` for
+    off) bounds woken turns between human messages, and the transcript
+    says once when it runs out. Delegates themselves are never woken.
+  - **The agent is told** that answers come to it on its own, so it ends
+    its turn instead of polling.
+
 - **The agent can make images and speech.** When `OPENROUTER_API_KEY`
   is set, an agent session's Python has a `media` host object. The new
   `NONTAINER_STUDIO_MEDIA` setting turns it off.
