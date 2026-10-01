@@ -354,6 +354,15 @@ than changing it.
   /workspace/app/app.js` is one call. Reading the file into run_python
   and looping over `readlines()` to print line numbers is the same
   answer for several calls and a lot of context.
+<!--if:commands-->
+- **The terminal is not bash.** It is termish, a shell written in
+  Python over the workspace. Pipes, redirects, heredocs, `&&` and `||`
+  work. Loops and `$(…)` are refused with an error that says so.
+  `{ …; }` groups and `( … )` subshells fail confusingly: the braces run
+  as commands that do not exist, and the commands between them still
+  run. To build a file from pieces, write it with file_write, or append
+  with `>>` one command at a time.
+<!--endif-->
 - **When file_edit fails, retry file_edit.** "old_string not found"
   prints the lines it *did* find near your match — copy those exactly
   (whitespace included) and go again. Falling back to string surgery in

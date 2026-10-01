@@ -4,12 +4,14 @@ lifecycle, preview/publish, time travel — exercised with a fake agent
 
 import ast
 import asyncio
+import io
 import json
 import re
 import shutil
 import sqlite3
 import threading
 import time
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -389,6 +391,35 @@ def test_skill_conditionals_resolve_for_a_command_less_executor():
         assert "<!--if:" not in out and "<!--endif-->" not in out
         assert out.startswith("1. read the log\n")
         assert out.endswith("tail line\n")  # surrounding text survives
+
+
+def test_skill_conditionals_resolve_on_delegation_too():
+    """A `delegation` block is kept where the session can delegate and
+    bring the work back, a `no-delegation` one where it cannot, and the
+    executor's `commands` blocks resolve beside them."""
+    src = (
+        "top\n"
+        "<!--if:delegation-->\n"
+        "ask a delegate per scene\n"
+        "<!--endif-->\n"
+        "<!--if:no-delegation-->\n"
+        "build every scene yourself\n"
+        "<!--endif-->\n"
+        "<!--if:commands-->\n"
+        "termish\n"
+        "<!--endif-->\n"
+        "tail\n"
+    )
+    resolve = sessions_mod.Registry._resolve_skill_text
+    both = resolve(src, commands=True, delegation=True)
+    assert "ask a delegate" in both and "termish" in both
+    assert "build every scene yourself" not in both
+    neither = resolve(src, commands=False, delegation=False)
+    assert "build every scene yourself" in neither
+    assert "ask a delegate" not in neither and "termish" not in neither
+    for out in (both, neither):
+        assert "<!--" not in out
+        assert out.startswith("top\n") and out.endswith("tail\n")
 
 
 def test_compression_and_usage_events_reach_the_transcript(studio):
@@ -4548,6 +4579,31 @@ def test_the_published_skill_is_seeded_only_where_it_can_be_followed(
     assert "starting-from-published" in both.ws.files.fs.list("/workspace/skills")
 
 
+def test_the_video_skill_teaches_delegation_only_where_it_can_be_followed(
+    studio, monkeypatch
+):
+    """The long-video recipe asks delegates and merges their scenes
+    back, so a session without the `sessions` tool and ws-git is not
+    taught it; one with them is. No marker survives either way."""
+    client, registry = studio
+
+    def skill(name, which="making-videos"):
+        fs = registry.get(name).ws.files.fs
+        return fs.read(f"/workspace/skills/{which}/SKILL.md").decode()
+
+    client.post("/api/sessions", json={"name": "solo"})
+    assert "## Long videos with delegates" not in skill("solo")
+
+    monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")  # brings ws-git with it
+    client.post("/api/sessions", json={"name": "director"})
+    assert "## Long videos with delegates" in skill("director")
+
+    for name in ("solo", "director"):
+        assert "<!--if:" not in skill(name) and "<!--endif" not in skill(name)
+        # the default executor's terminal is termish, and the skill says so
+        assert "The terminal is not bash" in skill(name, "building-apps")
+
+
 def test_the_published_skill_follows_the_verb_the_session_got(studio, monkeypatch):
     """The gate reads the session's own ws-git answer, not the knob that
     asked for it: an executor that cannot carry the verb leaves the
@@ -6734,6 +6790,88 @@ def test_the_skills_check_passes_on_the_reference_video(studio):
     # allow-same-origin ... can escape its sandboxing": noise in every
     # video check, and a warning an agent would go and "fix".
     assert not [line for line in result.console if "sandbox" in line.lower()]
+
+
+def _narration_check_steps() -> list:
+    """The narration steps the skill's "Checking it" section prints."""
+    skill = (VIDEO_SKILL / "SKILL.md").read_text()
+    section = skill.split("**Narration** needs checking too", 1)[1]
+    block = re.search(r"```json\n(.*?)```", section, re.S).group(1)
+    return json.loads(block)
+
+
+def _silent_wav(seconds: float) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(b"\0\0" * int(24000 * seconds))
+    return buf.getvalue()
+
+
+def test_the_narrated_scene_plays_where_the_skill_says(studio):
+    """The narrated-scene reference, placed twice in the reference video
+    as the long-video recipe places scenes, and checked with the
+    narration steps the skill prints: both clips load, the voice sits
+    0.4s into its scene wherever the scene is placed, and each scene's
+    styles stay its own although both land in one page."""
+    pytest.importorskip("playwright")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    fs = session.ws.files.fs
+    refs = VIDEO_SKILL / "references"
+    fs.makedirs("/workspace/app/audio", exist_ok=True)
+    fs.write("/workspace/app/index.html", (refs / "index.html").read_bytes())
+    scene = (refs / "narrated-scene.html").read_text()
+    fs.write("/workspace/app/intro.html", scene.encode())
+    # a second scene from the same template, told apart by its styles
+    outro = scene.replace("intro", "outro").replace(
+        "font-size: 120px", "font-size: 60px"
+    )
+    fs.write("/workspace/app/outro.html", outro.encode())
+    for name in ("intro", "outro"):
+        fs.write(f"/workspace/app/audio/{name}.wav", _silent_wav(3.4))
+    video = (
+        (refs / "video.html")
+        .read_text()
+        .replace('data-duration="10"', 'data-duration="19.1"', 1)
+    )
+    end = video.rindex("</div>")
+    video = (
+        video[:end]
+        + '  <div data-composition-id="intro" data-composition-src="intro.html"'
+        ' data-start="10" data-duration="4.8"></div>\n'
+        '  <div data-composition-id="outro" data-composition-src="outro.html"'
+        ' data-start="14.3" data-duration="4.8"></div>\n' + video[end:]
+    )
+    fs.write("/workspace/app/video.html", video.encode())
+    session.ws.commit()
+
+    steps = (
+        [{"goto": "video.html"}, {"assert": "window.__playerReady === true"}]
+        + _narration_check_steps()
+        + [
+            {"eval": "window.__player.seek(11.5); true"},
+            {
+                "eval": "[getComputedStyle(document.querySelector('.intro-title')).fontSize, "
+                "getComputedStyle(document.querySelector('.outro-title')).fontSize]"
+            },
+        ]
+    )
+    result = session.runtime.test_app(steps, viewport="hd")
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)  # no chromium
+    assert result.ok, result
+    values = [r.value for r in result.results if "eval" in r.action]
+    loaded, _, timing, _, _, sizes = values
+    assert "True" in loaded and "False" not in loaded  # both clips loaded
+    video_time, voice_time = (float(n) for n in re.findall(r"\d+\.?\d*", timing))
+    assert 11.0 < video_time < 12.5  # a second of play, and the driver's own time
+    # 0.4s into a scene placed at 10s: the voice counts from the scene
+    assert voice_time == pytest.approx(video_time - 10 - 0.4, abs=0.15)
+    assert "120px" in sizes and "60px" in sizes  # scoped, not shared
 
 
 def test_the_server_module_defines_everything_before_its_main_guard():

@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The video skill covers narration and long videos.**
+  - **A narrated-scene template** (`references/narrated-scene.html`):
+    one scene in a file of its own, carrying its narration. Inside a
+    scene file, sound clips and CSS animations are timed from the
+    scene's start (checked in the browser), while Anime.js and WAAPI
+    run on the video's clock, so a scene built before its place is
+    known animates with CSS only. Its styles are scoped to its id, since
+    every scene lands in one page.
+  - **The narration section** says `media.speech` writes the file
+    itself, as WAV (so name it `*.wav`); that `media` paths count from
+    `/workspace` while HTML paths count from `app/`; and that the voice
+    sets a scene's length.
+  - **A narration check:** each clip loaded, and a played moment puts
+    the voice where the scene's timing says. A paused seek leaves a
+    clip's `currentTime` at 0, so the check plays.
+  - **"Long videos with delegates":** a scene per delegate. Set the
+    shared composition first, give each delegate its own files and a
+    task that stands alone, end the turn and let answers wake you,
+    merge each scene back, and stitch. The section is shown only to
+    sessions that can delegate.
+- **Skill text can depend on delegation.** `<!--if:delegation-->` blocks,
+  beside the executor's `<!--if:commands-->` ones, are kept only in
+  sessions with the `sessions` tool and `ws-git`.
+
 - **You can see delegates at work.** A parent waiting on its delegates
   has ended its turn, and nothing said it was not done unless you
   thought to open the ⑂ listing.
@@ -112,6 +136,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     the agent edited is left alone.
 
 ### Changed
+
+- **The building-apps skill says the terminal is not bash** (on the
+  default executor): which shell features termish has, and that
+  `{ …; }` groups and subshells fail confusingly. Agents hit this twice
+  while writing files.
+- **The fonts note no longer says "Latin characters only."** Other
+  characters, emoji included, fall back to the viewer's system fonts;
+  an agent had read the old wording as "emoji will not show" and removed
+  them. The video skill also says small text and emoji can look broken
+  in a grid's small frames when they are fine.
 
 - **Waking a parent no longer polls.** Delegates' answers wake an idle
   parent the moment they are recorded, through the session helper's
