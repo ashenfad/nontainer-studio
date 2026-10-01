@@ -212,11 +212,17 @@
             <!-- allow-modals: agent apps use alert()/confirm() for
                  error surfacing; a localhost demo pane gains nothing
                  by muting them. Still NO allow-same-origin — the app
-                 stays an opaque origin, unable to reach the studio API. -->
+                 stays an opaque origin, unable to reach the studio API.
+                 allow="autoplay": sound may start only in a frame every
+                 frame above has granted it to, and an app may play it
+                 from a frame of its own (a video player plays a
+                 composition's narration one frame down). Without it the
+                 picture plays and the sound stays silent. -->
             <iframe
                 title="app preview"
                 {src}
                 sandbox="allow-scripts allow-forms allow-modals"
+                allow="autoplay"
             ></iframe>
         {/key}
     {:else}

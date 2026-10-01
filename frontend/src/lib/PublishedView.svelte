@@ -24,8 +24,14 @@
          surfacing. Still NO allow-same-origin — the app stays an
          opaque origin, unable to reach the studio API. What makes the
          app's own assets load from an opaque origin is the CORS header
-         the /apps mount adds (see cors_for_apps). -->
-    <iframe title="published app" {src} sandbox="allow-scripts allow-forms allow-modals"
+         the /apps mount adds (see cors_for_apps). allow="autoplay":
+         sound may start only in a frame every frame above has granted
+         it to, and a video player plays its narration one frame down. -->
+    <iframe
+        title="published app"
+        {src}
+        sandbox="allow-scripts allow-forms allow-modals"
+        allow="autoplay"
     ></iframe>
 {/key}
 <PublishedPanel {app} {onSwitch} {onChanged} />

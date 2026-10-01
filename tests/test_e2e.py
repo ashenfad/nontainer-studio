@@ -533,6 +533,125 @@ def _video_frames(page):
     raise AssertionError(f"no composition frame: {[f.url for f in page.frames]}")
 
 
+def test_a_videos_narration_plays_in_the_preview_pane(page, browser, server):
+    """Sound may start only in a frame every frame above has granted it
+    to, and a video player plays its composition's narration one frame
+    down from the click. Without the preview granting autoplay the
+    picture played and the narration stayed silent, while the same
+    video opened in its own tab had sound, whenever play was pressed
+    before the composition loaded. Real autoplay rules: the browser here
+    is launched with no override."""
+    import io
+    import urllib.request
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(b"\0\0" * 24000 * 3)
+    urllib.request.urlopen(
+        urllib.request.Request(
+            f"{server}/api/sessions",
+            data=json.dumps({"name": "e2e-voice"}).encode(),
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+    ).read()
+    page.goto(f"{server}/?session=e2e-voice")
+    urllib.request.urlopen(
+        urllib.request.Request(
+            f"{server}/api/sessions/e2e-voice/upload?name=voice.wav",
+            data=buf.getvalue(),
+            method="POST",
+        )
+    ).read()
+    refs = SKILLS / "making-videos" / "references"
+    video = (
+        (refs / "video.html")
+        .read_text()
+        .replace(
+            '<div class="scene clip" id="scene-title"',
+            '<audio class="clip" id="vo" src="audio/voice.wav" data-start="3.5"'
+            ' data-duration="3" crossorigin></audio>\n    '
+            '<div class="scene clip" id="scene-title"',
+            1,
+        )
+    )
+    _send(
+        page,
+        "!tool terminal "
+        + json.dumps(
+            {"command": "mkdir -p app/audio && cp uploads/voice.wav app/audio/"}
+        )
+        + "\n!tool file_write "
+        + json.dumps(
+            {
+                "path": "/workspace/app/index.html",
+                "content": (refs / "index.html").read_text(),
+            }
+        )
+        + "\n!tool file_write "
+        + json.dumps({"path": "/workspace/app/video.html", "content": video})
+        + "\n!text Narrated video is up.",
+    )
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Narrated video is up.", timeout=15000
+    )
+    # Watched from a page that has done nothing but load the video, as a
+    # human coming back to it would. Play is pressed as soon as the
+    # player shows, before the composition has loaded, which is when it
+    # went silent: the player holds the click until the video is ready,
+    # and by then sound may start only in a frame granted autoplay.
+    watcher = browser.new_page()
+    # Hold the composition back until play is pressed, so the click
+    # always lands before the video has loaded rather than by a race.
+    held = []
+
+    def hold(route):
+        held.append(route)
+
+    watcher.route("**/video.html", hold)
+    watcher.goto(f"{server}/?session=e2e-voice")
+    host = None
+    for _ in range(200):
+        host = next(
+            (
+                f
+                for f in watcher.frames
+                if "/preview/e2e-voice" in f.url and not f.url.endswith("/video.html")
+            ),
+            None,
+        )
+        if host is not None:
+            break
+        watcher.wait_for_timeout(50)
+    assert host is not None, [f.url for f in watcher.frames]
+    host.locator("hyperframes-player").click()
+    for _ in range(200):
+        if held:
+            break
+        watcher.wait_for_timeout(50)
+    for route in held:
+        route.continue_()
+    watcher.unroute("**/video.html")
+    # Watched from the player's side: Playwright runs a script with a
+    # user gesture, and a script run in the composition before the
+    # narration starts would grant it the sound this is about. The
+    # narration is read once, after it should have begun.
+    host.wait_for_function(
+        "document.querySelector('hyperframes-player').currentTime > 5", timeout=20000
+    )
+    _, video_frame = _video_frames(watcher)
+    voice = video_frame.evaluate(
+        "(() => { const a = document.getElementById('vo');"
+        " return {time: a.currentTime, paused: a.paused}; })()"
+    )
+    assert not voice["paused"] and voice["time"] > 0.5, voice
+    watcher.close()
+
+
 def test_the_reference_video_plays_in_the_sandboxed_frame(page, server):
     """The making-videos skill's reference, copied into an app and shown
     where a human watches it: the preview pane. That frame is an opaque
