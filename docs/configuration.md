@@ -240,7 +240,7 @@ for a deep one, and a tenth of a cent for a fetch.
 |---|---|---|
 | `NONTAINER_STUDIO_MEDIA` | on when `OPENROUTER_API_KEY` is set | gives agent sessions the `media` host object; `0`, `false`, `no` or `off` withholds it |
 
-`media` lets the agent's Python make images and speech through
+`media` lets the agent's Python make images, speech and music through
 OpenRouter, on the operator's key, and writes each file into the
 session's workspace:
 
@@ -256,8 +256,16 @@ session's workspace:
   `[whispers]` in the text, and returns its length in seconds. Gemini
   speech comes back only as raw PCM, so it is wrapped as 24kHz mono WAV,
   about 48KB a second.
+- `media.music(prompt, path, length="clip")` writes an MP3 from Lyria 3:
+  `google/lyria-3-clip-preview` for a clip of about 30s ($0.04, about
+  10s), or `google/lyria-3-pro-preview` for `length="song"`, whose length
+  follows the prompt only roughly ($0.08, about 25s). It returns the
+  length in seconds, read from the MP3's frames, and a vocal track's
+  lyrics with the time each line starts. Lyria answers only streamed,
+  as 44.1kHz stereo MP3, and only when asked for audio before text; an
+  answer without music is reported as an error rather than written.
 
-Both take a list of dicts of their arguments to make several at once.
+All three take a list of dicts of their arguments to make several at once.
 Relative paths are taken from `/workspace`, not the agent's cwd, and
 nothing is written outside it. Only agent sessions get `media`, for the
 same reason as `web`, and each session's is bound to its own workspace.

@@ -458,7 +458,8 @@ WEB_PRIMER = (
 
 
 MEDIA_PRIMER = (
-    "`media` makes images and speech and writes them into the workspace. "
+    "`media` makes images, speech and music and writes them into the "
+    "workspace. "
     "Paths are relative to /workspace (not your cwd). "
     '`media.image(prompt, path, transparent=False, aspect="1:1", '
     'quality="low", references=None)` writes a PNG and returns '
@@ -479,7 +480,14 @@ MEDIA_PRIMER = (
     "default), Puck (upbeat), Charon (informative), Zephyr (bright), "
     "Fenrir (excitable), Leda (youthful), Aoede (breezy), Sulafat "
     "(warm), Achernar (soft), Algenib (gravelly), among 30. WAV is "
-    "about 48KB a second, so keep clips to what is used. What comes "
+    "about 48KB a second, so keep clips to what is used. "
+    '`media.music(prompt, path, length="clip")` writes an MP3 and returns '
+    '{"path", "seconds", "lyrics", "cost"}. A clip is about 30s ($0.04, '
+    'about 10s to make); length="song" follows the length the prompt asks '
+    "for, roughly ($0.08, about 25s), so read seconds back. Name the genre, "
+    'instruments, tempo and mood, and say "no vocals" for a bed under '
+    'narration. A vocal track\'s lyrics come back as [{"at", "line"}], '
+    "when each sung line starts. What comes "
     "back is read from the file written, so there is nothing to "
     "re-check. Each takes a "
     "list of dicts of its arguments by name and makes them all at once, "

@@ -6,9 +6,11 @@ import ast
 import asyncio
 import io
 import json
+import math
 import re
 import shutil
 import sqlite3
+import struct
 import threading
 import time
 import wave
@@ -6900,6 +6902,99 @@ def test_the_narrated_scene_plays_where_the_skill_says(studio):
     # 0.4s into a scene placed at 10s: the voice counts from the scene
     assert voice_time == pytest.approx(video_time - 10 - 0.4, abs=0.15)
     assert "120px" in sizes and "60px" in sizes  # scoped, not shared
+
+
+# Taps everything the page sends to its speakers, so a test can read
+# how loud the video plays: the runtime routes clips through Web Audio,
+# where a clip's volume never shows on the element itself.
+_AUDIO_TAP = """<script>
+(() => {
+  const connect = AudioNode.prototype.connect;
+  AudioNode.prototype.connect = function (dest, ...rest) {
+    if (dest instanceof AudioDestinationNode) {
+      window.__tap ??= Object.assign(dest.context.createAnalyser(), {fftSize: 2048});
+      connect.call(this, window.__tap);
+    }
+    return connect.call(this, dest, ...rest);
+  };
+})();
+</script>"""
+
+_LOUDNESS = (
+    "(async () => { let sum = 0; for (let i = 0; i < 10; i++) {"
+    " const b = new Float32Array(2048); window.__tap.getFloatTimeDomainData(b);"
+    " sum += Math.sqrt(b.reduce((s, x) => s + x * x, 0) / b.length);"
+    " await new Promise(r => setTimeout(r, 30)); } return sum / 10; })()"
+)
+
+
+def _steady_tone_wav(seconds: float) -> bytes:
+    """A steady 440Hz tone, so loudness reads the same at every moment."""
+    rate = 24000
+    frames = b"".join(
+        struct.pack("<h", int(8000 * math.sin(2 * math.pi * 440 * i / rate)))
+        for i in range(int(rate * seconds))
+    )
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(frames)
+    return buf.getvalue()
+
+
+def test_the_music_bed_plays_as_quietly_as_the_skill_says(studio):
+    """The skill's music-bed clip, copied from SKILL.md into the
+    reference video: it plays, at its data-volume against the same clip
+    at full volume, and fades in. A runtime that dropped the attribute
+    would put the music over the narration at full volume."""
+    pytest.importorskip("playwright")
+    skill = (VIDEO_SKILL / "SKILL.md").read_text()
+    bed = re.search(r'<audio class="clip" src="audio/bed\.mp3".*?>', skill, re.S)
+    bed = re.sub(r"\s+", " ", bed.group(0)).replace("bed.mp3", "bed.wav")
+    volume = float(re.search(r'data-volume="([\d.]+)"', bed).group(1))
+    assert 'data-fade-in="' in bed and "crossorigin" in bed
+
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    fs = session.ws.files.fs
+    fs.makedirs("/workspace/app/audio", exist_ok=True)
+    fs.write("/workspace/app/audio/bed.wav", _steady_tone_wav(10))
+    video = (VIDEO_SKILL / "references" / "video.html").read_text()
+    video = video.replace("<head>", "<head>" + _AUDIO_TAP, 1)
+    end = video.rindex("</div>")
+    for name, clip in (
+        ("quiet", bed),
+        ("full", re.sub(r' data-volume="[\d.]+"', "", bed)),
+    ):
+        page = video[:end] + "  " + clip + "\n" + video[end:]
+        fs.write(f"/workspace/app/{name}.html", page.encode())
+    session.ws.commit()
+
+    def loudness(name):
+        result = session.runtime.test_app(
+            [
+                {"goto": f"{name}.html"},
+                {"assert": "window.__playerReady === true"},
+                {"eval": "window.__player.play(); true"},
+                {"wait": 150},
+                {"eval": _LOUDNESS},  # inside the fade-in
+                {"wait": 2500},
+                {"eval": _LOUDNESS},  # past it
+            ]
+        )
+        if result.load_error and "unavailable" in result.load_error:
+            pytest.skip(result.load_error)  # no chromium
+        assert result.ok, result
+        return [float(r.value) for r in result.results[-3::2]]
+
+    quiet_in, quiet = loudness("quiet")
+    full_in, full = loudness("full")
+    assert full > 0.05  # the tone plays
+    assert quiet / full == pytest.approx(volume, abs=0.05)
+    assert quiet_in < quiet * 0.8 and full_in < full * 0.8  # fading in
 
 
 def test_the_server_module_defines_everything_before_its_main_guard():

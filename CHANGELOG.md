@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The agent can make music.** `media.music(prompt, path,
+  length="clip")` composes with Google's Lyria 3 on OpenRouter and writes
+  an MP3. A clip is about 30 seconds for $0.04; `length="song"` follows
+  the length the prompt asks for, roughly, for $0.08. It returns the
+  music's length in seconds, read from the file, and a vocal track's
+  lyrics with the second each line starts. Like the other `media` calls,
+  a list makes several at once. The video skill says how to lay a bed
+  under the narration: a quiet clip (`data-volume`) that fades in and
+  out.
 - **The video skill covers narration and long videos.**
   - **A narrated-scene template** (`references/narrated-scene.html`):
     one scene in a file of its own, carrying its narration. Inside a
