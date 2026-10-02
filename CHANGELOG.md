@@ -13,7 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   an MP3. A clip is about 30 seconds for $0.04; `length="song"` follows
   the length the prompt asks for, roughly, for $0.08. It returns the
   music's length in seconds, read from the file, and a vocal track's
-  lyrics with the second each line starts. Like the other `media` calls,
+  lyrics line by line, with the second each starts where Lyria times
+  them (a clip's lines; a song's come untimed). Like the other `media` calls,
   a list makes several at once. The video skill says how to lay a bed
   under the narration: a quiet clip (`data-volume`) that fades in and
   out.

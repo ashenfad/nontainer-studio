@@ -487,7 +487,8 @@ MEDIA_PRIMER = (
     "for, roughly ($0.08, about 25s), so read seconds back. Name the genre, "
     'instruments, tempo and mood, and say "no vocals" for a bed under '
     'narration. A vocal track\'s lyrics come back as [{"at", "line"}], '
-    "when each sung line starts. What comes "
+    "every sung line in order; at is when it starts, in seconds, for a "
+    "clip's lines, and None for a song's, which come untimed. What comes "
     "back is read from the file written, so there is nothing to "
     "re-check. Each takes a "
     "list of dicts of its arguments by name and makes them all at once, "
