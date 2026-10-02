@@ -207,7 +207,7 @@ and then scrubs wrong:
 - `<video>` and `<audio>` are timed by the runtime when they are clips
   with `data-start`; do not call `.play()` on them yourself.
 
-## Narration and generated images
+## Narration, music and generated images
 
 If your Python has `media` (the primer describes it), a video can be
 narrated and illustrated.
@@ -235,6 +235,26 @@ narrated and illustrated.
   `data-start` is the video's time: 0.4s after its scene starts. In a
   scene file of its own it counts from that scene's start, as
   `narrated-scene.html` shows.
+- **Music goes under the voice, not over it.** Compose a bed with
+  `media.music`, naming the genre, instruments, tempo and mood, and "no
+  vocals" when it plays under narration:
+  ```python
+  bed = media.music("Warm lo-fi bed for a product video: soft keys, "
+                    "brushed drums, 85 bpm, no vocals", "app/audio/bed.mp3")
+  ```
+  It writes an MP3, so name it `*.mp3`. A clip is about 30 seconds. For
+  a longer video, pass `length="song"` and ask for the video's length in
+  the prompt ("a 90-second instrumental"). What comes back is only
+  roughly that long, so use the `seconds` it returns.
+- **Place the bed as a quiet clip across the video,** fading in and out:
+  `<audio class="clip" src="audio/bed.mp3" data-start="0"
+  data-duration="24" data-volume="0.25" data-fade-in="1"
+  data-fade-out="2" crossorigin>`. `data-volume` runs from 0 to 1, and
+  about 0.25 keeps the voice clear over it. The fades are in seconds. A
+  `data-duration` shorter than the music ends it there, after its fade.
+- **A song with vocals comes back with its lyrics,** each with the
+  second it starts (`{"at": 2.2, "line": "..."}`), ready to time
+  captions to.
 - **Generate pictures with `transparent=True`** for anything that sits
   on a background: characters, icons, objects. Pass earlier images as
   `references` to keep a character the same from scene to scene, and

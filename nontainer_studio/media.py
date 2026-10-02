@@ -1,4 +1,4 @@
-"""The ``media`` host object: images and speech through OpenRouter.
+"""The ``media`` host object: images, speech and music through OpenRouter.
 
 Handed to an agent session's Python, never to a published app (see
 ``Registry._python_config``). Each call writes its file into the
@@ -13,8 +13,10 @@ call already holds.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import posixpath
+import re
 import struct
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -23,6 +25,7 @@ import httpx
 
 IMAGES_URL = "https://openrouter.ai/api/v1/images"
 SPEECH_URL = "https://openrouter.ai/api/v1/audio/speech"
+CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 #: Real transparency (an alpha channel, not a painted checkerboard) is
 #: an OpenAI image-model feature on OpenRouter; Gemini's image models and
@@ -71,6 +74,17 @@ VOICES = {
     "Zubenelgenubi": "casual",
 }
 
+#: Lyria 3 on OpenRouter: a clip is about 30s for $0.04; a song follows
+#: the length its prompt asks for, roughly (45s asked, 57s made), for
+#: $0.08. Both answer with a 44.1kHz stereo MP3, in about 10s and 25s.
+MUSIC_MODELS = {
+    "clip": "google/lyria-3-clip-preview",
+    "song": "google/lyria-3-pro-preview",
+}
+#: Audio first: asked for ["text", "audio"], Lyria answers with its text
+#: alone, and an empty stop.
+MUSIC_MODALITIES = ["audio", "text"]
+
 # Gemini speech arrives as raw 16-bit PCM; the response's content type
 # names the rate and channels, and these are what it said when measured.
 _PCM_RATE = 24_000
@@ -78,6 +92,7 @@ _PCM_CHANNELS = 1
 
 IMAGE_TIMEOUT = 150.0
 SPEECH_TIMEOUT = 120.0
+MUSIC_TIMEOUT = 150.0
 #: The most items one list call generates at once.
 MAX_CONCURRENT = 8
 
@@ -107,7 +122,7 @@ def media_enabled() -> bool:
 
 
 class Media:
-    """Generate images and speech into one session's workspace.
+    """Generate images, speech and music into one session's workspace.
 
     Built before the workspace it writes to exists (a Python config is
     part of opening one), so the session binds it once open and unbinds
@@ -273,6 +288,63 @@ class Media:
             "_bytes": _wav(pcm, rate, channels),
         }
 
+    # -- music -----------------------------------------------------------
+
+    def music(
+        self,
+        prompt: str | list[dict],
+        path: str | None = None,
+        length: str = "clip",
+    ) -> dict | list[dict]:
+        """Compose music from ``prompt`` and write an MP3 to ``path``.
+
+        ``length="clip"`` is about 30 seconds; ``"song"`` follows the
+        length the prompt asks for, roughly. The prompt names the genre,
+        instruments, tempo and mood, and says "no vocals" for an
+        instrumental. Returns ``{"path", "seconds", "lyrics", "cost"}``,
+        where ``lyrics`` is ``[{"at", "line"}]``: when each sung line
+        starts, in seconds, and empty for an instrumental.
+
+        A list of dicts, each with this call's arguments by name, is
+        composed concurrently and returns a list in the same order; one
+        that fails holds ``{"path", "error"}`` in its slot."""
+        if isinstance(prompt, (list, tuple)):
+            return self._batch(self._music, prompt, "media.music")
+        return self._single(self._music(prompt=prompt, path=path, length=length))
+
+    def _music(
+        self, prompt: Any = None, path: Any = None, length: Any = "clip"
+    ) -> dict:
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            raise ValueError("media.music: the prompt is empty")
+        dest = self._dest("media.music", path, ".mp3")
+        if length not in MUSIC_MODELS:
+            raise ValueError(f"media.music: length is one of {', '.join(MUSIC_MODELS)}")
+        audio, text, usage = self._post_stream(
+            "media.music",
+            CHAT_URL,
+            {
+                "model": MUSIC_MODELS[length],
+                "messages": [{"role": "user", "content": prompt}],
+                "modalities": MUSIC_MODALITIES,
+                "stream": True,
+            },
+            MUSIC_TIMEOUT,
+        )
+        if not audio:
+            raise RuntimeError(
+                "media.music: the model answered without music; reword the "
+                "prompt and try again"
+            )
+        return {
+            "path": dest,
+            "seconds": _mp3_seconds(audio),
+            "lyrics": _lyrics(text),
+            "cost": _cost({"usage": usage}),
+            "_bytes": audio,
+        }
+
     # -- plumbing --------------------------------------------------------
 
     def _batch(self, one: Any, items: Any, label: str) -> list[dict]:
@@ -353,6 +425,48 @@ class Media:
             raise RuntimeError(f"{label}: HTTP {r.status_code}: {r.text[:300]}")
         return r
 
+    def _post_stream(
+        self, label: str, url: str, body: dict, timeout: float
+    ) -> tuple[bytes, str, dict]:
+        """A streamed chat completion, gathered: its audio, its text and
+        its usage. Audio output is only offered streamed."""
+        audio: list[str] = []
+        text: list[str] = []
+        usage: dict = {}
+        try:
+            with self._client.stream("POST", url, json=body, timeout=timeout) as r:
+                if r.status_code != 200:
+                    r.read()
+                    raise RuntimeError(f"{label}: HTTP {r.status_code}: {r.text[:300]}")
+                for line in r.iter_lines():
+                    if not line.startswith("data: ") or line == "data: [DONE]":
+                        continue
+                    try:
+                        event = json.loads(line[6:])
+                    except ValueError:
+                        continue
+                    if event.get("error"):
+                        err = event["error"]
+                        msg = err.get("message") if isinstance(err, dict) else err
+                        raise RuntimeError(f"{label}: {msg}")
+                    usage = event.get("usage") or usage
+                    for choice in event.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        if delta.get("content"):
+                            text.append(delta["content"])
+                        data = (delta.get("audio") or {}).get("data")
+                        if data:
+                            audio.append(data)
+        except httpx.TimeoutException:
+            raise RuntimeError(f"{label}: no answer within {timeout:.0f}s") from None
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"{label}: network error: {e}") from None
+        try:
+            data = base64.b64decode("".join(audio))
+        except ValueError:
+            raise RuntimeError(f"{label}: the audio could not be decoded") from None
+        return data, "".join(text), usage
+
     def _post_json(self, label: str, url: str, body: dict, timeout: float) -> dict:
         r = self._post(label, url, body, timeout)
         try:
@@ -395,6 +509,72 @@ def _wav(pcm: bytes, rate: int, channels: int) -> bytes:
         + struct.pack("<I", len(pcm))
         + pcm
     )
+
+
+# MPEG audio, by version bits: bitrates (kbps) for Layer III by index,
+# sample rates by index, and samples in a frame.
+_MP3_BITRATES = {
+    3: (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320),
+    2: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160),
+}
+_MP3_RATES = {
+    3: (44100, 48000, 32000),
+    2: (22050, 24000, 16000),
+    0: (11025, 12000, 8000),
+}
+
+
+def _mp3_seconds(mp3: bytes) -> float | None:
+    """An MP3's length, from walking its Layer III frames: each holds
+    1152 samples (576 below MPEG-1). A leading ID3v2 tag is skipped, and
+    so is an encoder's Xing or Info frame, which holds no sound."""
+    pos = 0
+    if mp3[:3] == b"ID3" and len(mp3) >= 10:
+        size = 0
+        for b in mp3[6:10]:  # syncsafe: seven bits a byte
+            size = (size << 7) | (b & 0x7F)
+        pos = 10 + size
+    samples = 0
+    rate = None
+    first = True
+    while pos + 4 <= len(mp3):
+        h = int.from_bytes(mp3[pos : pos + 4], "big")
+        version = (h >> 19) & 3
+        layer = (h >> 17) & 3
+        bitrate_i = (h >> 12) & 0xF
+        rate_i = (h >> 10) & 3
+        if (h >> 21) != 0x7FF or version == 1 or layer != 1:
+            if samples:
+                break  # the sound ends here: a trailing tag or padding
+            pos += 1  # not a frame yet: look for the first one
+            continue
+        if bitrate_i in (0, 15) or rate_i == 3:
+            break
+        kbps = _MP3_BITRATES[3 if version == 3 else 2][bitrate_i]
+        rate = _MP3_RATES[version][rate_i]
+        per_frame = 1152 if version == 3 else 576
+        size = per_frame // 8 * kbps * 1000 // rate + ((h >> 9) & 1)
+        frame = mp3[pos : pos + size]
+        if not (first and (b"Xing" in frame[:64] or b"Info" in frame[:64])):
+            samples += per_frame
+        first = False
+        pos += size
+    if not samples or rate is None:
+        return None
+    return round(samples / rate, 2)
+
+
+_LYRIC = re.compile(r"\[(\d+(?:\.\d+)?):\]\s*(.*\S)")
+
+
+def _lyrics(text: str) -> list[dict]:
+    """The sung lines in Lyria's text, ``[12.5:] a line`` each, as
+    ``{"at", "line"}``. An instrumental's text holds no such lines (it
+    says ``<instrumental>``, or marks sections like ``[[A0]]``)."""
+    return [
+        {"at": float(m.group(1)), "line": m.group(2)}
+        for m in _LYRIC.finditer(text or "")
+    ]
 
 
 def _cost(data: dict) -> float | None:
