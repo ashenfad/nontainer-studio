@@ -302,8 +302,10 @@ class Media:
         length the prompt asks for, roughly. The prompt names the genre,
         instruments, tempo and mood, and says "no vocals" for an
         instrumental. Returns ``{"path", "seconds", "lyrics", "cost"}``,
-        where ``lyrics`` is ``[{"at", "line"}]``: when each sung line
-        starts, in seconds, and empty for an instrumental.
+        where ``lyrics`` is ``[{"at", "line"}]``, every sung line in
+        order, and empty for an instrumental. ``at`` is when the line
+        starts, in seconds, or None where the model gave no time: a
+        clip's lines come timed, a song's usually do not.
 
         A list of dicts, each with this call's arguments by name, is
         composed concurrently and returns a list in the same order; one
@@ -564,15 +566,18 @@ def _mp3_seconds(mp3: bytes) -> float | None:
     return round(samples / rate, 2)
 
 
-_LYRIC = re.compile(r"\[(\d+(?:\.\d+)?):\]\s*(.*\S)")
+_LYRIC = re.compile(r"^\[(\d+(?:\.\d+)?)?:\][ \t]*(.*\S)", re.M)
 
 
 def _lyrics(text: str) -> list[dict]:
-    """The sung lines in Lyria's text, ``[12.5:] a line`` each, as
-    ``{"at", "line"}``. An instrumental's text holds no such lines (it
-    says ``<instrumental>``, or marks sections like ``[[A0]]``)."""
+    """The sung lines in Lyria's text, as ``{"at", "line"}``. A line
+    reads ``[12.5:] words`` when the model timed it and ``[:] words``
+    when it did not (``at`` is None): a clip's lines come timed, a
+    song's measured untimed throughout. An instrumental's text holds no
+    such lines (it says ``<instrumental>``, or marks sections like
+    ``[[A0]]``)."""
     return [
-        {"at": float(m.group(1)), "line": m.group(2)}
+        {"at": float(m.group(1)) if m.group(1) else None, "line": m.group(2)}
         for m in _LYRIC.finditer(text or "")
     ]
 

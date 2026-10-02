@@ -209,6 +209,28 @@ def test_music_is_written_timed_and_its_lyrics_read():
     assert sent[1][1]["model"] == "google/lyria-3-pro-preview"
 
 
+def test_every_sung_line_is_kept_timed_or_not():
+    """A clip's lines come timed; a song's came untimed throughout, as
+    ``[:]`` lines between section markers. Dropping those returned a
+    vocal song as an instrumental."""
+    song = (
+        "[[A0]]\n[[B1]]\n[:] I press a key and watch the system come alive\n"
+        "[:] An intricate machine\n[[C2]]\n[:] Every revision is recorded!\n"
+    )
+    assert media_mod._lyrics(song) == [
+        {"at": None, "line": "I press a key and watch the system come alive"},
+        {"at": None, "line": "An intricate machine"},
+        {"at": None, "line": "Every revision is recorded!"},
+    ]
+    mixed = "[10.9:] Walking through the neon glow,\n[:] city lights reflect below,\n"
+    assert media_mod._lyrics(mixed) == [
+        {"at": 10.9, "line": "Walking through the neon glow,"},
+        {"at": None, "line": "city lights reflect below,"},
+    ]
+    assert media_mod._lyrics("<instrumental>") == []
+    assert media_mod._lyrics("[[A0]]\n[[B1]]\n[[C2]]") == []
+
+
 def test_an_mp3s_length_is_read_from_its_frames():
     assert media_mod._mp3_seconds(_mp3(441)) == 11.52
     assert media_mod._mp3_seconds(_mp3(441, info=False)) == 11.52

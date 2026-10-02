@@ -261,7 +261,8 @@ session's workspace:
   10s), or `google/lyria-3-pro-preview` for `length="song"`, whose length
   follows the prompt only roughly ($0.08, about 25s). It returns the
   length in seconds, read from the MP3's frames, and a vocal track's
-  lyrics with the time each line starts. Lyria answers only streamed,
+  lyrics line by line: timed for a clip, untimed (`"at": None`) for a
+  song, as Lyria gives them. Lyria answers only streamed,
   as 44.1kHz stereo MP3, and only when asked for audio before text; an
   answer without music is reported as an error rather than written.
 

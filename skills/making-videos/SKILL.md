@@ -252,9 +252,10 @@ narrated and illustrated.
   data-fade-out="2" crossorigin>`. `data-volume` runs from 0 to 1, and
   about 0.25 keeps the voice clear over it. The fades are in seconds. A
   `data-duration` shorter than the music ends it there, after its fade.
-- **A song with vocals comes back with its lyrics,** each with the
-  second it starts (`{"at": 2.2, "line": "..."}`), ready to time
-  captions to.
+- **Music with vocals comes back with its lyrics,** every sung line in
+  order. A clip's lines carry the second each starts (`{"at": 2.2,
+  "line": "..."}`), ready to time captions to. A song's come with `"at":
+  None`, so captions for a song are timed by hand.
 - **Generate pictures with `transparent=True`** for anything that sits
   on a background: characters, icons, objects. Pass earlier images as
   `references` to keep a character the same from scene to scene, and
