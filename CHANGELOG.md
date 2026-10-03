@@ -168,8 +168,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   raggedly, jumped between rows each time a step changed, and broke a
   hyphenated name across two lines. Each is now a card in a grid of
   equal columns: name and time on top, the step under them, cut short
-  rather than widening the card. A line above counts them ("3 delegates
-  working · 1 answered").
+  rather than widening the card. A line above counts them by status ("3
+  delegates working · 1 answered · 1 failed").
 
 - **Delegation says what a delegate starts from, and whose store it
   writes.** An agent that delegated a game forked its delegates before

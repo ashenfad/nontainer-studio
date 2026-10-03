@@ -31,14 +31,21 @@
             (r) => r.status === 'running' || (r.known && !r.delivered && DELIVERABLE.has(r.status)),
         ),
     )
-    const working = $derived(out.filter((r) => r.status === 'running').length)
-    const running = $derived(working > 0)
-    const label = $derived.by(() => {
-        const back = out.length - working
-        const n = (k) => `${k} delegate${k === 1 ? '' : 's'}`
-        if (!working) return `${n(back)} answered`
-        return back ? `${n(working)} working · ${back} answered` : `${n(working)} working`
-    })
+    const running = $derived(out.some((r) => r.status === 'running'))
+
+    // "2 delegates working · 1 answered · 1 failed": a count per status,
+    // in this order, so a failure is never counted as an answer
+    const COUNTED = [
+        ['running', 'working'],
+        ['answered', 'answered'],
+        ['failed', 'failed'],
+        ['capped', 'out of turns'],
+    ]
+    const counts = $derived(
+        COUNTED.map(([status, word]) => [out.filter((r) => r.status === status).length, word])
+            .filter(([k]) => k)
+            .map(([k, word], i) => (i ? `${k} ${word}` : `${k} delegate${k === 1 ? '' : 's'} ${word}`)),
+    )
 
     // The poll and an event can overlap. Only the newest request's rows
     // are shown: an older one answering last would bring back a card the
@@ -107,7 +114,9 @@
 
 {#if out.length}
     <div class="delegate-strip" aria-live="polite">
-        <span class="label">⑂ {label}</span>
+        <span class="label"
+            >⑂ {#each counts as count, i}{#if i}{' · '}{/if}<span class="count">{count}</span>{/each}</span
+        >
         <div class="cards">
             {#each out as r (r.name)}
                 <button
@@ -139,9 +148,15 @@
         color: var(--text-muted);
         font-size: 0.7rem;
     }
+    /* a narrow pane wraps the label between counts, never inside one */
+    .count {
+        white-space: nowrap;
+    }
     .cards {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+        /* a narrow chat pane gets one column that fits it, not a 15rem
+           card spilling into the panel beside it */
+        grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
         gap: 0.35rem;
     }
     .card {

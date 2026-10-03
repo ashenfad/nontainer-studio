@@ -258,7 +258,7 @@ its own transcript says it is not done. Three things do:
   thing it did ("Ran Python …", "thinking"), or that it answered, failed
   or ran out of turns. The cards share a grid of equal columns, so they
   stay put as their steps change, and a line above counts them ("3
-  delegates working · 1 answered"). A card opens the delegate's own
+  delegates working · 1 answered · 1 failed"). A card opens the delegate's own
   transcript, which streams live. The strip refreshes when the parent asks, when an
   answer arrives, and every two seconds only while one is running.
 - **The rail.** A session whose delegates are running shows a pulsing
