@@ -252,12 +252,14 @@ seeded only into sessions that have the verb.
 A parent waiting on its delegates has ended its turn, so nothing about
 its own transcript says it is not done. Three things do:
 
-- **The strip above the composer.** One chip per delegate that is out,
+- **The strip above the composer.** One card per delegate that is out,
   from the moment it is asked for until its answer has reached the
-  parent: its name, how long it has been at it, and the last thing it
-  did ("Ran Python …", "thinking"), or that it answered, failed or ran
-  out of turns. A chip opens the delegate's own transcript, which
-  streams live. The strip refreshes when the parent asks, when an
+  parent: its name, how long it has been at it, and under them the last
+  thing it did ("Ran Python …", "thinking"), or that it answered, failed
+  or ran out of turns. The cards share a grid of equal columns, so they
+  stay put as their steps change, and a line above counts them ("3
+  delegates working · 1 answered"). A card opens the delegate's own
+  transcript, which streams live. The strip refreshes when the parent asks, when an
   answer arrives, and every two seconds only while one is running.
 - **The rail.** A session whose delegates are running shows a pulsing
   ⑂ count, whatever its own dot says.

@@ -1,9 +1,13 @@
 <script>
-    // The session's delegates while they are out: one chip each, from the
+    // The session's delegates while they are out: one card each, from the
     // moment one is asked for until its answer has reached this session.
     // A parent waiting on delegates has ended its turn and would read as
-    // done; this is where it shows that it is not. A chip opens the
+    // done; this is where it shows that it is not. A card opens the
     // delegate's own transcript, which streams live.
+    //
+    // Cards sit in a grid of equal columns, so a step line changing on
+    // every poll changes only its own text: sized to their contents, the
+    // cards reflowed between rows as their steps came and went.
     //
     // Rows come from the delegates endpoint: on open, whenever the
     // runtime says the delegates likely changed (an ask, an answer, a
@@ -20,17 +24,24 @@
     let now = $state(Date.now() / 1000)
 
     // Statuses that carry an answer to deliver; a cancelled or swept job
-    // has none, so it never holds a chip open waiting for one.
+    // has none, so it never holds a card open waiting for one.
     const DELIVERABLE = new Set(['answered', 'failed', 'capped'])
     const out = $derived(
         rows.filter(
             (r) => r.status === 'running' || (r.known && !r.delivered && DELIVERABLE.has(r.status)),
         ),
     )
-    const running = $derived(out.some((r) => r.status === 'running'))
+    const working = $derived(out.filter((r) => r.status === 'running').length)
+    const running = $derived(working > 0)
+    const label = $derived.by(() => {
+        const back = out.length - working
+        const n = (k) => `${k} delegate${k === 1 ? '' : 's'}`
+        if (!working) return `${n(back)} answered`
+        return back ? `${n(working)} working · ${back} answered` : `${n(working)} working`
+    })
 
     // The poll and an event can overlap. Only the newest request's rows
-    // are shown: an older one answering last would bring back a chip the
+    // are shown: an older one answering last would bring back a card the
     // newer one had already seen delivered.
     const fetchRows = latestOnly(loadDelegates)
 
@@ -96,19 +107,23 @@
 
 {#if out.length}
     <div class="delegate-strip" aria-live="polite">
-        <span class="label">⑂ {running ? 'working' : 'answered'}</span>
-        {#each out as r (r.name)}
-            <button
-                class="chip {r.status}"
-                title={r.task ? `${r.name}: ${r.task}` : r.name}
-                onclick={() => onSwitch(r.name)}
-            >
-                <span class="dot"></span>
-                <span class="who">{leaf(r.name)}</span>
-                <span class="when">{elapsed(r)}</span>
-                <span class="doing">{doing(r)}</span>
-            </button>
-        {/each}
+        <span class="label">⑂ {label}</span>
+        <div class="cards">
+            {#each out as r (r.name)}
+                <button
+                    class="card {r.status}"
+                    title={r.task ? `${r.name}: ${r.task}` : r.name}
+                    onclick={() => onSwitch(r.name)}
+                >
+                    <span class="head">
+                        <span class="dot"></span>
+                        <span class="who">{leaf(r.name)}</span>
+                        <span class="when">{elapsed(r)}</span>
+                    </span>
+                    <span class="doing">{doing(r)}</span>
+                </button>
+            {/each}
+        </div>
     </div>
 {/if}
 
@@ -116,33 +131,43 @@
     .delegate-strip {
         flex-shrink: 0;
         display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 0.35rem;
+        flex-direction: column;
+        gap: 0.3rem;
         padding: 0.45rem 1rem 0;
     }
     .label {
         color: var(--text-muted);
         font-size: 0.7rem;
-        margin-right: 0.15rem;
     }
-    .chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.4rem;
-        max-width: 22rem;
+    .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+        gap: 0.35rem;
+    }
+    .card {
+        display: flex;
+        flex-direction: column;
+        gap: 0.1rem;
+        min-width: 0;
         background: var(--surface);
         border: 1px solid var(--border);
-        border-radius: 999px;
+        border-radius: 0.5rem;
         color: var(--text-muted);
         font-family: inherit;
         font-size: 0.7rem;
-        padding: 0.15rem 0.65rem 0.15rem 0.5rem;
+        text-align: left;
+        padding: 0.3rem 0.6rem;
         cursor: pointer;
     }
-    .chip:hover {
+    .card:hover {
         color: var(--text);
         border-color: var(--text-muted);
+    }
+    .head {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        min-width: 0;
     }
     .dot {
         width: 0.45rem;
@@ -151,31 +176,38 @@
         flex-shrink: 0;
         background: var(--text-muted);
     }
-    .chip.running .dot {
+    .card.running .dot {
         background: var(--accent);
         animation: pulse 1.4s ease-in-out infinite;
     }
-    .chip.answered .dot {
+    .card.answered .dot {
         background: var(--success);
     }
-    .chip.failed .dot {
+    .card.failed .dot {
         background: var(--error);
     }
-    .chip.capped .dot {
+    .card.capped .dot {
         background: var(--warning);
     }
     .who {
         color: var(--text);
         font-weight: 600;
-    }
-    .when {
-        font-variant-numeric: tabular-nums;
-    }
-    .doing {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
         min-width: 0;
+    }
+    .when {
+        margin-left: auto;
+        flex-shrink: 0;
+        font-variant-numeric: tabular-nums;
+    }
+    .doing {
+        /* under the name, lined up with it past the dot */
+        padding-left: 0.85rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
     @keyframes pulse {
         50% {
@@ -183,7 +215,7 @@
         }
     }
     @media (prefers-reduced-motion: reduce) {
-        .chip.running .dot {
+        .card.running .dot {
             animation: none;
         }
     }

@@ -163,6 +163,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **A handler sees the same request headers** from `ws-curl`,
     ws-pytest's `call` and the served app.
 
+- **Delegates at work line up.** The strip above the composer showed a
+  pill per delegate, as wide as its last step, so several of them wrapped
+  raggedly, jumped between rows each time a step changed, and broke a
+  hyphenated name across two lines. Each is now a card in a grid of
+  equal columns: name and time on top, the step under them, cut short
+  rather than widening the card. A line above counts them ("3 delegates
+  working · 1 answered").
+
 - **Delegation says what a delegate starts from, and whose store it
   writes.** An agent that delegated a game forked its delegates before
   writing the frontend they built against, then concluded that a fork
