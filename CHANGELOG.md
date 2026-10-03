@@ -147,6 +147,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Requires nontainer 0.8.7** (termish 0.2.1, monkeyfs 0.2.5).
+  - **Merging a delegate's work holds up.** `cd /workspace && ws-git
+    merge x` in one call lands rather than being refused with advice
+    for the host. A delegate left in the middle of an unresolved merge
+    is refused, naming the files that still carry conflict markers,
+    where before its markers were merged in as content.
+  - **`ws-git add`** works under git's name: `add -A`, `add .` and
+    `add <paths>`.
+  - **The shell is closer to GNU.** `>/dev/null` discards, grep and
+    sed read basic regexes without `-E` (`\+`, `\(...\)`), grep exits
+    1 when nothing matches, and `[ -f x ] && ...` works. `rm -r`
+    removes the directories it empties, and `mkdir` refuses a path
+    that exists.
+  - **A handler sees the same request headers** from `ws-curl`,
+    ws-pytest's `call` and the served app.
+
 - **Delegation says what a delegate starts from, and whose store it
   writes.** An agent that delegated a game forked its delegates before
   writing the frontend they built against, then concluded that a fork
