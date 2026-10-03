@@ -147,6 +147,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A delegate need not think about ws-git.** Its brief used to explain
+  that its work arrived as a named commit only if it ran `ws-git
+  commit`, that anything written after was left out, and that a merge
+  would be refused. nontainer 0.8.6 (now the floor) commits whatever a
+  delegate wrote past its last commit when it answers, and never counts
+  app logs or test_app screenshots as work. So the brief now says
+  everything it writes is its answer, its own commits are checkpoints,
+  and its logs and screenshots stay with it. A delegate that checked its
+  scene with test_app after committing used to have its merge refused;
+  it merges cleanly now.
 - **A delegate's answer is one line in its parent's transcript.** It
   says whose it is (the short name its parent gave it), what became of
   it, how long it worked and the first line of its answer, and opens the
