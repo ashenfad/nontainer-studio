@@ -147,6 +147,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A delegate's answer is one line in its parent's transcript.** It
+  says whose it is (the short name its parent gave it), what became of
+  it, how long it worked and the first line of its answer, and opens the
+  delegate's own view, as a chip above the composer does. The whole
+  answer was inlined before, and in a transcript long enough to scroll
+  each card was squeezed to a sliver with a scroll area of its own. Once
+  the retention sweep has taken a delegate there is no view to open, so
+  its card says it expired and unfolds the answer it left instead.
+- **The way back from a delegate's view is plain:** a `←` before the
+  breadcrumb, and "← back to <parent>" in the bar where the composer
+  would be.
+- **`keep` says what it is for.** Beside it, the bar says when the
+  retention sweep may take the delegate ("expires in 23h"); a kept one
+  reads "kept". With the sweep off, neither is shown. Delegate rows
+  carry the time as `expires`.
 - **The building-apps skill says the terminal is not bash** (on the
   default executor): which shell features termish has, and that
   `{ …; }` groups and subshells fail confusingly. Agents hit this twice

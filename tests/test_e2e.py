@@ -69,9 +69,9 @@ def waking_server(tmp_path_factory):
     yield from _studio(tmp_path_factory)
 
 
-def _studio(tmp_path_factory, **extra_env):
+def _studio(tmp_path_factory, store=None, **extra_env):
     port = _free_port()
-    store = tmp_path_factory.mktemp("store")
+    store = store or tmp_path_factory.mktemp("store")
     env = {
         **os.environ,
         "NONTAINER_STUDIO_MODEL": "dummy",
@@ -1343,12 +1343,12 @@ def test_a_delegates_answer_reaches_the_parent_next_turn(page, server):
     expect(page.locator(".rail .item", has_text="scout")).to_have_count(0)
 
     _send(page, "what did the scout say?")
-    card = page.locator(".delegate")
+    # one line: the handle its parent gave it, and the gist of its answer
+    card = page.locator(".delegate-card")
     expect(card).to_be_visible(timeout=15000)
-    expect(card).to_contain_text("e2e-delegate.scout")
+    expect(card).to_contain_text("scout")
+    expect(card).to_contain_text("answered")
     expect(card).to_contain_text("Found it.")
-    # the next step, spelled for the terminal
-    expect(card).to_contain_text("ws-git merge e2e-delegate.scout")
     # and delivering it clears the rail badge
     expect(page.locator(".rail .waiting")).to_have_count(0, timeout=20000)
 
@@ -1366,9 +1366,9 @@ def test_an_answer_wakes_the_parent_without_a_message(browser, waking_server):
             '"task": "!text Found it."}\n'
             "!text Sent a scout.",
         )
-        card = page.locator(".delegate")
+        card = page.locator(".delegate-card")
         expect(card).to_be_visible(timeout=20000)
-        expect(card).to_contain_text("e2e-wake.scout")
+        expect(card).to_contain_text("scout")
         expect(card).to_contain_text("Found it.")
         # the woken turn's reply follows the card (the dummy echoes what
         # it was sent, which opens with the answer)
@@ -1466,8 +1466,11 @@ def test_a_delegate_opens_read_only_and_the_crumb_leads_back(page, server):
 
     bar = page.locator(".delegate-bar")
     expect(bar).to_be_visible(timeout=20000)
-    expect(bar).to_contain_text("delegate of e2e-drill")
+    expect(bar).to_contain_text("back to driller")
     expect(bar).to_contain_text("answered")
+    # when the sweep may take it, beside the keep that stops it
+    expect(bar.locator(".expiry")).to_contain_text("expires in 23h")
+    expect(bar.locator("button.keep")).to_have_text("keep")
     # no composer, and no handle that would rewind the transcript: there
     # is nothing here for a human to say
     expect(page.locator(".input-wrap")).to_have_count(0)
@@ -1483,7 +1486,7 @@ def test_a_delegate_opens_read_only_and_the_crumb_leads_back(page, server):
 
     # parent title › child, and the rail keeps the ancestor highlighted
     # (there is no row for the delegate itself)
-    crumbs = page.locator(".crumbs .crumb")
+    crumbs = page.locator(".crumbs .crumb:not(.back)")
     expect(crumbs).to_have_count(2)
     expect(crumbs.first).to_have_text("driller")
     expect(crumbs.last).to_have_text("scout")
@@ -1495,6 +1498,102 @@ def test_a_delegate_opens_read_only_and_the_crumb_leads_back(page, server):
     expect(page.locator("textarea")).to_have_count(1)
     # the parent is drivable again, publish included
     expect(page.get_by_role("button", name="publish", exact=True)).to_have_count(1)
+
+
+def test_an_answer_card_is_one_line_that_opens_its_delegate(page, server):
+    """An answer is one line in the parent's transcript, whose it is and
+    its gist; the whole of it is in the delegate's own view, which the
+    card opens, and the way back is plain. The card keeps its height in
+    a transcript long enough to scroll: a flex child that clips its
+    overflow was squeezed to a sliver there."""
+    page.set_viewport_size({"width": 1280, "height": 700})
+    page.goto(f"{server}/?session=e2e-card")
+    _title(server, "e2e-card", "carded")
+    long = "\n\n".join(f"Paragraph {i} of a long reply." for i in range(40))
+    _send(
+        page,
+        '!tool sessions {"action": "ask", "name": "scout", '
+        '"task": "!text Found it, in detail."}\n'
+        "!text " + json.dumps(long)[1:-1],
+    )
+    expect(
+        page.locator(".rail .row", has_text="carded").locator(".waiting")
+    ).to_be_visible(timeout=20000)
+    _send(page, "!text " + json.dumps(long)[1:-1])
+    card = page.locator("button.delegate-card")
+    expect(card).to_be_visible(timeout=15000)
+    expect(card).to_contain_text("scout")
+    expect(card).to_contain_text("Found it, in detail.")
+    expect(card).to_be_enabled(timeout=10000)
+    card.scroll_into_view_if_needed()
+    assert card.bounding_box()["height"] >= 24  # one whole line, not a sliver
+
+    card.click()
+    bar = page.locator(".delegate-bar")
+    expect(bar).to_be_visible(timeout=10000)
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Found it, in detail.", timeout=15000
+    )
+    # back, from the header or from the bar
+    page.locator(".crumb.back").click()
+    expect(page.locator(".delegate-bar")).to_have_count(0, timeout=10000)
+    expect(page.locator("header .session-name")).to_have_text("carded")
+    page.locator("button.delegate-card").click()
+    bar.locator("button.back").click()
+    expect(page.locator(".delegate-bar")).to_have_count(0, timeout=10000)
+    expect(page.locator("textarea")).to_have_count(1)
+
+
+def test_a_swept_delegates_card_unfolds_its_answer_in_place(browser, tmp_path_factory):
+    """Once the retention sweep takes a delegate there is no view to
+    open, and opening its name would make a new, empty session of it.
+    So its card says it expired and unfolds the answer it left in the
+    parent's transcript instead. The sweep runs when the studio starts,
+    so a restart past a tiny TTL takes it."""
+    env = {
+        "NONTAINER_STUDIO_DELEGATE_TTL": "0.0002",
+        "NONTAINER_STUDIO_DELEGATE_WAKES": "0",
+    }
+    first = _studio(tmp_path_factory, **env)
+    server = next(first)
+    page = browser.new_page()
+    try:
+        page.goto(f"{server}/?session=e2e-swept")
+        _send(
+            page,
+            '!tool sessions {"action": "ask", "name": "scout", '
+            '"task": "!text Found it before the sweep."}\n'
+            "!text Sent a scout.",
+        )
+        expect(page.locator(".rail .waiting")).to_be_visible(timeout=20000)
+        _send(page, "what did the scout say?")
+        expect(page.locator("button.delegate-card")).to_be_visible(timeout=15000)
+    finally:
+        page.close()
+        next(first, None)  # stop it
+
+    time.sleep(1.0)  # past the TTL
+    second = _studio(tmp_path_factory, store=server.store, **env)
+    server = next(second)
+    page = browser.new_page()
+    try:
+        page.goto(f"{server}/?session=e2e-swept")
+        card = page.locator("details.delegate-card.gone")
+        expect(card).to_be_visible(timeout=15000)
+        expect(card).to_contain_text("expired")
+        expect(card).to_contain_text("Found it before the sweep.")
+        expect(page.locator("button.delegate-card")).to_have_count(0)
+        card.locator("summary").click()
+        expect(card.locator(".delegate-answer")).to_contain_text(
+            "Found it before the sweep."
+        )
+        # and nothing made a session of the swept name
+        assert "e2e-swept.scout" not in page.evaluate(
+            "fetch('/api/sessions').then(r => r.text())"
+        )
+    finally:
+        page.close()
+        next(second, None)
 
 
 def test_the_rail_listing_opens_a_delegate(page, server):
@@ -1516,7 +1615,7 @@ def test_the_rail_listing_opens_a_delegate(page, server):
     listed.locator("button.delegate-name").click()
 
     expect(page.locator(".delegate-bar")).to_contain_text(
-        "delegate of e2e-open", timeout=20000
+        "back to opener", timeout=20000
     )
     expect(page.locator(".crumbs .crumb").last).to_have_text("scout")
 

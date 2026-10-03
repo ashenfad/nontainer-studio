@@ -6506,6 +6506,10 @@ def test_opening_a_delegate_after_a_restart_leaves_it_one(tmp_path):
                 "touched": pytest.approx(
                     reborn._manifest()["delegates"][child]["touched"]
                 ),
+                "expires": pytest.approx(
+                    reborn._manifest()["delegates"][child]["touched"]
+                    + reborn.delegate_ttl
+                ),
                 # no job table after a restart: nothing to say about a run
                 "task": None,
                 "started": None,

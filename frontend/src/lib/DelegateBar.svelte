@@ -3,11 +3,15 @@
     // delegate: a window, not a lever. The parent agent writes this
     // session's prompts, judges its branch and integrates it — so there
     // is nothing here to type into, only what it is (status, whose it
-    // is), the `keep` that exempts its branch from the retention sweep,
-    // and a way further down when it delegated in turn.
+    // is, and the way back to that parent), when the retention sweep
+    // may take its branch and the `keep` that exempts it, and a way
+    // further down when it delegated in turn.
+    import { expiresIn, leaf } from './delegates.js'
     import { loadDelegates, setDelegateKept } from './runtime.svelte.js'
 
-    let { name, delegate, onSwitch, onRefresh } = $props()
+    let { name, delegate, parentLabel, onSwitch, onRefresh } = $props()
+
+    const left = $derived(expiresIn(delegate.expires))
 
     // No local copy of the row: `delegate` is re-read as the session's
     // status moves, and a copy kept here would freeze a running
@@ -43,11 +47,6 @@
         }
     }
 
-    // `boss.scout` under `boss` reads as `scout` — the handle its
-    // parent gave it, which is all an agent-forked session is called
-    const leaf = (child, parent) =>
-        child.startsWith(parent + '.') ? child.slice(parent.length + 1) : child
-
     function ago(seconds) {
         if (!seconds) return ''
         const mins = Math.round((Date.now() / 1000 - seconds) / 60)
@@ -70,19 +69,30 @@
                   : 'no job table survived the last restart — this is what the record knows'}
             >{delegate.status}</span
         >
-        <span class="of">delegate of <b>{delegate.parent}</b></span>
+        <button class="back" onclick={() => onSwitch(delegate.parent)}
+            >← back to <b>{parentLabel ?? delegate.parent}</b></button
+        >
         <span class="when">{ago(delegate.touched)}</span>
         <span class="grow"></span>
-        <span class="readonly">read-only — the parent drives it</span>
-        <button
-            class="keep"
-            class:on={delegate.kept}
-            disabled={saving || delegate.status === 'expired'}
-            title={delegate.kept
-                ? 'kept — the sweep leaves this branch alone; click to let it age out'
-                : 'keep this branch from the retention sweep'}
-            onclick={toggleKeep}>keep</button
+        <span class="readonly" title="the parent agent drives this session; you can read it, not type into it"
+            >read-only</span
         >
+        {#if delegate.kept}
+            <button
+                class="keep on"
+                disabled={saving}
+                title="kept: the retention sweep leaves this delegate alone. Click to let it expire again, a while after anyone last dealt with it."
+                onclick={toggleKeep}>kept</button
+            >
+        {:else if left}
+            <span class="expiry">expires in {left} ·</span>
+            <button
+                class="keep"
+                disabled={saving}
+                title="a delegate's branch and transcript are swept a while after anyone last dealt with it; keep exempts this one"
+                onclick={toggleKeep}>keep</button
+            >
+        {/if}
     </div>
     {#if error}
         <div class="note error">{error}</div>
@@ -109,6 +119,7 @@
     }
     .line {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         gap: 0.5rem;
         background: var(--input-bg);
@@ -132,13 +143,29 @@
     .status.expired {
         color: var(--warning);
     }
-    .of b {
+    .back {
+        background: none;
+        border: none;
+        padding: 0.1rem 0.45rem;
+        border-radius: 6px;
+        font-family: inherit;
+        font-size: inherit;
+        color: var(--text-muted);
+        cursor: pointer;
+        white-space: nowrap;
+    }
+    .back b {
         color: var(--text);
         font-weight: 600;
     }
+    .back:hover {
+        background: color-mix(in srgb, var(--accent) 16%, transparent);
+    }
     .when,
-    .readonly {
+    .readonly,
+    .expiry {
         font-size: 0.7rem;
+        white-space: nowrap;
     }
     .keep {
         background: none;

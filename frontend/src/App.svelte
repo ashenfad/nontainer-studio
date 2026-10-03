@@ -292,6 +292,12 @@
             <!-- parent title › child: where in somebody else's work
                  this transcript sits, and the way back up -->
             <span class="crumbs">
+                <button
+                    class="crumb back"
+                    title={`back to ${trail.at(-2).label}`}
+                    aria-label={`back to ${trail.at(-2).label}`}
+                    onclick={() => switchTo(trail.at(-2).name)}>←</button
+                >
                 {#each trail as c, i (c.name)}
                     {#if i}<span class="sep">›</span>{/if}
                     {#if i < trail.length - 1}
@@ -347,12 +353,13 @@
                 <SplitPane>
                     {#snippet left()}
                         <div class="chat">
-                            <MessageList {rt} readonly={!!delegate} />
+                            <MessageList {rt} readonly={!!delegate} onSwitch={switchTo} />
                             <DelegateStrip {rt} name={active} onSwitch={switchTo} />
                             {#if delegate}
                                 <DelegateBar
                                     name={active}
                                     {delegate}
+                                    parentLabel={trail.at(-2)?.label}
                                     onSwitch={switchTo}
                                     onRefresh={refreshInfo}
                                 />
@@ -400,12 +407,13 @@
             {:else}
                 <!-- full-width mode: cap the column so lines stay readable -->
                 <div class="chat solo">
-                    <MessageList {rt} readonly={!!delegate} />
+                    <MessageList {rt} readonly={!!delegate} onSwitch={switchTo} />
                     <DelegateStrip {rt} name={active} onSwitch={switchTo} />
                     {#if delegate}
                         <DelegateBar
                             name={active}
                             {delegate}
+                            parentLabel={trail.at(-2)?.label}
                             onSwitch={switchTo}
                             onRefresh={refreshInfo}
                         />
@@ -480,6 +488,16 @@
     .crumb:hover {
         color: var(--accent);
         text-decoration: underline;
+    }
+    .crumb.back {
+        margin-right: 0.3rem;
+        padding: 0 0.35rem;
+        border-radius: 6px;
+        color: var(--text);
+    }
+    .crumb.back:hover {
+        background: color-mix(in srgb, var(--accent) 16%, transparent);
+        text-decoration: none;
     }
     .crumb.here {
         color: var(--text);
