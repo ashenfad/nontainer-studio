@@ -1724,18 +1724,39 @@ def thinking_model(monkeypatch):
     monkeypatch.setattr(DummyModel, "ainvoke_stream", slow_first_call)
 
 
-def test_an_answer_that_lands_mid_turn_is_delivered_once(registry, thinking_model):
+def test_an_answer_that_lands_mid_turn_is_delivered_once(
+    registry, thinking_model, monkeypatch
+):
     """A delegate that answers after a turn has begun reaches the
     parent THERE, appended to the next tool result, instead of waiting
     for the turn after. It is the same fact either way, so it is the
     same `delegate` event — and that event is the delivery record, so
     nothing carries the answer a second time."""
+    # The scout answers only once let go. Left to itself it answers in
+    # about a tenth of a second, which on a slow machine is before the
+    # turn that asked for it has ended, and the answer then waits for
+    # the next turn instead of landing inside it.
+    release = threading.Event()
+    thinking = DummyModel.ainvoke_stream
+
+    async def held_scout(self, messages, **kwargs):
+        last_user = next((m for m in reversed(messages) if m.role == "user"), None)
+        if str(getattr(last_user, "content", "")).startswith("[delegated by"):
+            await asyncio.to_thread(release.wait, 30)
+        async for chunk in thinking(self, messages, **kwargs):
+            yield chunk
+
+    monkeypatch.setattr(DummyModel, "ainvoke_stream", held_scout)
+
     parent = registry.open("boss")
     _turn(parent, ASK_A_SCOUT, registry)
     # deliberately NOT awaited: the next turn begins while the scout is
     # still working, so the between-turns path has nothing to hand over
     # and the answer has to arrive mid-turn or not at all
     assert parent.answered_delegates() == []
+    # let go now: it answers while the next turn's model is still
+    # deciding on its first tool call
+    release.set()
 
     events = _turn(parent, WRITE_SOMETHING, registry)
     kinds = [e["type"] for e in events]
