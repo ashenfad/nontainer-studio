@@ -2728,6 +2728,39 @@ def _run_ids(registry, name: str) -> list[str]:
     return [run.run_id for run in (record.runs or [])] if record is not None else []
 
 
+def test_the_agent_remembers_every_earlier_turn(tmp_path):
+    """Past agno's default window of three runs, the first turn is still
+    in what the model is sent. With that default, an agent asked about
+    work it had delegated five runs earlier no longer had the turns in
+    which it asked."""
+    from nontainer_studio.dummy import DummyModel
+
+    class Recording(DummyModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen: list[list[str]] = []
+
+        async def ainvoke_stream(self, messages, **kwargs):
+            if kwargs.get("tools"):  # the agent's turn, not the naming pass
+                self.seen.append(
+                    [str(m.content) for m in messages if m.role == "user"]
+                )
+            async for chunk in super().ainvoke_stream(messages, **kwargs):
+                yield chunk
+
+    model = Recording()
+    registry = sessions_mod.Registry(
+        model_factory=lambda spec=None: model, store=tmp_path
+    )
+    with TestClient(server.build_app(registry)) as client:
+        client.post("/api/sessions", json={"name": "s1"})
+        for i in range(5):
+            _run(client, "s1", f"turn {i}")
+    registry.close()
+
+    assert model.seen[-1] == [f"turn {i}" for i in range(5)]
+
+
 def test_edit_rewinds_files_and_memory_in_one_restore(scripted):
     """Editing an earlier prompt restores the workspace to that turn's
     pre-turn head — and the conversation lives in the same branch, so

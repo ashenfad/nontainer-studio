@@ -255,6 +255,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The agent remembers the whole conversation.** It was sent only its
+  last three runs, agno's default, and a delegate's answer wakes the
+  parent as a run of its own. After one round of delegation the agent no
+  longer had the turns in which it asked: asked how delegation went, it
+  said it had never delegated, and pieced the story back together from
+  `ws-git log`. The window also moved on every run, which changed the
+  start of the prompt, so from the fifth run on none hit the prompt
+  cache, not even a wake seconds after the run before it. Every earlier run is sent
+  now. Tool-result compression still starts at the model's watermark,
+  and compacting older turns into a summary is planned as the next step.
+
 - **An edit to before a delegate was asked for unsays it.** Rewinding to
   an earlier message took back the agent's turns after it but not the
   delegates they asked for. Their chips stayed above the composer and
