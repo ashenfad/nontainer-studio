@@ -832,7 +832,10 @@ class Registry(
             # out and then dropped. agno runs pre hooks when a run
             # starts and not when a run is continued, so a turn resumed
             # after a provider error does not come through here.
-            pre_hooks=[toolkit.begin_turn],
+            # `hold_session` lets compression keep what it does to an
+            # earlier run's tool result (see compression.py).
+            pre_hooks=[toolkit.begin_turn]
+            + ([compression.hold_session] if compression is not None else []),
             # `end_turn` commits nothing here — the session db owns the
             # commit — so all it does is settle the notes this turn
             # delivered: the turn that read them is over, and nothing
