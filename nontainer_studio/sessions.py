@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -871,6 +872,14 @@ class Registry(
             db=self.db,
             session_id=name,
             add_history_to_context=True,
+            # Every earlier run, not agno's default of the last 3. A
+            # window that slides each run forgets the start of the
+            # conversation, and a delegate's answer wakes the parent as
+            # a run of its own, so after one round of delegation the
+            # agent no longer remembered asking. It also changes the
+            # prompt's prefix on every run, so no turn hit the prompt
+            # cache. agno slices `runs[-n:]`; the largest int is all.
+            num_history_runs=sys.maxsize,
             markdown=True,
             # No run-level retry (agno's `retries` stays at its default
             # of 0). A run-level retry restarts the run from the user
