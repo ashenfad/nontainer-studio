@@ -941,6 +941,7 @@ class DelegationMixin:
         undelivered: set[str] = set()
         if session is not None:
             undelivered = {job.name for job in session.answered_delegates()}
+        ttl = self.delegate_ttl
         rows = []
         for child, entry in manifest["delegates"].items():
             if entry["parent"] != name:
@@ -948,13 +949,22 @@ class DelegationMixin:
             job = live.get(child)
             touched, kept = self._freshest(entry, job)
             running = job is not None and job.status == "running"
+            status = job.status if job is not None else "answered"
             rows.append(
                 {
                     "name": child,
-                    "status": job.status if job is not None else "answered",
+                    "status": status,
                     "known": job is not None,
                     "kept": kept,
                     "touched": touched,
+                    # When the sweep may take it, if nobody deals with it
+                    # first: None while it runs, once it is gone, when it
+                    # is kept, or with the sweep off.
+                    "expires": (
+                        touched + ttl
+                        if ttl > 0 and not kept and not running and status != "expired"
+                        else None
+                    ),
                     # What the strip above the composer shows while a
                     # delegate is out: what it was asked, how long it
                     # has been at it, whether its answer has reached

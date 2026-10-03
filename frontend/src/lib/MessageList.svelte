@@ -5,12 +5,44 @@
     // from there. One mental model: everything below gets replaced.
     import AgentMessage from './AgentMessage.svelte'
     import Markdown from './Markdown.svelte'
-    import { published } from './runtime.svelte.js'
+    import { answerPreview, leaf, said, workedFor } from './delegates.js'
+    import { latestOnly } from './latest.js'
+    import { loadDelegates, published } from './runtime.svelte.js'
     import { viewFile } from './viewer.svelte.js'
 
     // `readonly` is a delegate's transcript: the parent agent drives
     // that session, so the handles that would rewind it are not offered.
-    let { rt, readonly = false } = $props()
+    // `onSwitch` opens another session: a delegate's answer card opens
+    // the delegate's own view.
+    let { rt, readonly = false, onSwitch } = $props()
+
+    // What this session delegated, by name, or null until asked. A card
+    // opens its delegate's view only while there is one to open: a
+    // swept delegate's branch and transcript are gone, so its card
+    // shows the answer it left here instead.
+    let delegateRows = $state(null)
+    const hasCards = $derived(rt.messages.some((m) => m.role === 'delegate'))
+    const fetchDelegates = latestOnly(loadDelegates)
+    // Which session the rows are for. Plain, not state: the effect
+    // below writes the rows, and reading them there would make the
+    // effect its own trigger.
+    let rowsFor = null
+
+    $effect(() => {
+        const who = rt.name
+        rt.delegateTick // an ask, an answer or a sweep may have moved them
+        if (rowsFor !== who) {
+            delegateRows = null
+            rowsFor = who
+        }
+        if (!hasCards) return
+        fetchDelegates(who)
+            .then((rows) => {
+                if (rows === latestOnly.SUPERSEDED || rowsFor !== who) return
+                delegateRows = new Map(rows.map((r) => [r.name, r]))
+            })
+            .catch(() => {}) // the cards wait, unopenable, for the next refresh
+    })
 
     // The composer prepends "[attached: /a, /b]" for the AGENT's
     // benefit; humans get chips. Split it back out for display.
@@ -208,16 +240,38 @@
                 {/if}
             </div>
         {:else if msg.role === 'delegate'}
-            <!-- A peer's answer, framed as one. It arrived in the slot a
-                 person's message occupies, so the card says whose it is
-                 and the text keeps its own provenance header. -->
-            <div class="delegate">
-                <div class="delegate-head">
-                    delegate <strong>{msg.name}</strong>
-                    {msg.status ?? 'answered'}
-                </div>
-                <Markdown text={msg.text} />
-            </div>
+            <!-- A peer's answer, as one line: whose it is, what became
+                 of it, its gist. The whole of it is in the delegate's
+                 own view, which the card opens, as a strip chip does.
+                 Once the delegate is swept there is no view left, so
+                 the answer it left here unfolds in place. -->
+            {@const row = delegateRows?.get(msg.name)}
+            {@const worked = workedFor(row)}
+            {#if delegateRows && (!row || row.status === 'expired')}
+                <details class="delegate-card gone">
+                    <summary>
+                        <span class="mark">⑂</span>
+                        <strong class="who">{leaf(msg.name, rt.name)}</strong>
+                        <span class="what">{said(msg.status)}</span>
+                        <span class="gist">{answerPreview(msg.text)}</span>
+                        <span class="tag" title="the retention sweep took its branch">expired</span>
+                    </summary>
+                    <div class="delegate-answer"><Markdown text={msg.text} /></div>
+                </details>
+            {:else}
+                <button
+                    class="delegate-card"
+                    disabled={!row}
+                    title={`open ${msg.name}`}
+                    onclick={() => onSwitch?.(msg.name)}
+                >
+                    <span class="mark">⑂</span>
+                    <strong class="who">{leaf(msg.name, rt.name)}</strong>
+                    <span class="what">{said(msg.status)}{worked ? ` · ${worked}` : ''}</span>
+                    <span class="gist">{answerPreview(msg.text)}</span>
+                    <span class="open">open →</span>
+                </button>
+            {/if}
         {:else if msg.role === 'notice'}
             <div class="notice">{msg.text}</div>
         {:else if msg.role === 'error'}
@@ -406,30 +460,81 @@
         flex-shrink: 0;
         opacity: 0.7;
     }
-    .delegate {
+    /* One line in the transcript. It never shrinks: the transcript is a
+       scrolling flex column, where a child that clips its own overflow
+       may otherwise be squeezed to a sliver once the column overflows. */
+    .delegate-card {
+        flex-shrink: 0;
         align-self: stretch;
         border: 1px solid var(--border);
         border-left: 3px solid var(--accent);
         border-radius: 8px;
         background: var(--surface);
-        padding: 0.5rem 0.8rem;
         margin: 0.3rem 0;
-        font-size: 0.82rem;
+        font-family: inherit;
+        font-size: 0.8rem;
         color: var(--text-muted);
-        overflow-x: auto;
+        text-align: left;
     }
-    .delegate-head {
-        font-size: 0.65rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: var(--text-muted);
-        margin-bottom: 0.3rem;
+    button.delegate-card,
+    .delegate-card summary {
+        display: flex;
+        align-items: baseline;
+        gap: 0.5rem;
+        width: 100%;
+        min-width: 0;
+        padding: 0.45rem 0.8rem;
     }
-    .delegate-head strong {
+    button.delegate-card {
+        cursor: pointer;
+    }
+    button.delegate-card:hover:not(:disabled) {
+        border-color: var(--text-muted);
+        border-left-color: var(--accent);
+    }
+    button.delegate-card:hover:not(:disabled) .open {
         color: var(--accent);
+    }
+    button.delegate-card:disabled {
+        cursor: default;
+    }
+    .delegate-card summary {
+        cursor: pointer;
+        list-style: none;
+    }
+    .delegate-card summary::-webkit-details-marker {
+        display: none;
+    }
+    .delegate-card.gone {
+        border-left-color: var(--border);
+    }
+    .delegate-card .mark {
+        color: var(--accent);
+    }
+    .delegate-card .who {
+        color: var(--text);
         font-weight: 600;
-        text-transform: none;
-        letter-spacing: 0;
+        white-space: nowrap;
+    }
+    .delegate-card .what {
+        white-space: nowrap;
+        font-size: 0.72rem;
+    }
+    .delegate-card .gist {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .delegate-card .open,
+    .delegate-card .tag {
+        flex-shrink: 0;
+        font-size: 0.7rem;
+    }
+    .delegate-answer {
+        padding: 0 0.8rem 0.5rem;
+        overflow-x: auto;
     }
     .notice {
         align-self: center;

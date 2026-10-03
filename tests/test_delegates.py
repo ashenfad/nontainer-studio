@@ -1027,6 +1027,32 @@ def test_a_delivered_answer_counts_as_dealing_with_the_delegate(tmp_path):
         registry.close()
 
 
+def test_a_row_says_when_the_sweep_may_take_it(tmp_path):
+    """What the delegate's view shows beside `keep`, so the button says
+    what it is for: an idle delegate expires a TTL after it was last
+    dealt with, and a kept one does not."""
+    registry = _tiny_ttl(tmp_path, hours=24)
+    try:
+        parent = registry.open("boss")
+        _turn(parent, ASK_ASYNC, registry)
+        _await_delegates(parent)
+        row = registry.delegate_rows("boss")[0]
+        assert row["expires"] == pytest.approx(row["touched"] + 24 * 3600)
+
+        registry.keep_delegate("boss", "boss.scout", True)
+        assert registry.delegate_rows("boss")[0]["expires"] is None
+        registry.keep_delegate("boss", "boss.scout", False)
+        assert registry.delegate_rows("boss")[0]["expires"] is not None
+    finally:
+        registry.close()
+
+    off = _tiny_ttl(tmp_path, hours=0)  # no sweep, so nothing expires
+    try:
+        assert off.delegate_rows("boss")[0]["expires"] is None
+    finally:
+        off.close()
+
+
 def test_un_keeping_is_the_manifest_and_it_outranks_the_live_job(tmp_path):
     """nontainer has no un-keep: a job it flagged stays flagged for as
     long as its session lives. So the record carries the later stamp
