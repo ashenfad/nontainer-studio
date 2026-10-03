@@ -1596,6 +1596,46 @@ def test_a_swept_delegates_card_unfolds_its_answer_in_place(browser, tmp_path_fa
         next(second, None)
 
 
+def test_a_card_whose_delegate_went_away_does_not_open_it(page, server):
+    """The sweep takes a delegate on a timer, and nothing tells an open
+    transcript, so its card can still look openable. Opening a name that
+    is gone would make a new, empty session of it; the card asks the
+    server first, and finding the delegate gone, unfolds in place."""
+    page.goto(f"{server}/?session=e2e-stale")
+    _send(
+        page,
+        '!tool sessions {"action": "ask", "name": "scout", '
+        '"task": "!text Found it, then went away."}\n'
+        "!text Sent a scout.",
+    )
+    _title(server, "e2e-stale", "staler")
+    row = page.locator(".rail .row", has_text="staler")
+    expect(row.locator(".waiting")).to_be_visible(timeout=20000)
+    _send(page, "what did the scout say?")
+    card = page.locator("button.delegate-card")
+    expect(card).to_be_enabled(timeout=15000)
+
+    # gone behind the transcript's back, as a sweep would take it
+    urllib.request.urlopen(
+        urllib.request.Request(
+            f"{server}/api/sessions/e2e-stale.scout", method="DELETE"
+        )
+    ).read()
+
+    card.click()
+    gone = page.locator("details.delegate-card.gone")
+    expect(gone).to_be_visible(timeout=10000)
+    expect(gone).to_contain_text("Found it, then went away.")
+    expect(page.locator(".delegate-bar")).to_have_count(0)
+    names = [
+        r["name"]
+        for r in json.loads(urllib.request.urlopen(f"{server}/api/sessions").read())[
+            "sessions"
+        ]
+    ]
+    assert "e2e-stale.scout" not in names
+
+
 def test_the_rail_listing_opens_a_delegate(page, server):
     """The way in: the ⑂ listing's names are the drill-down's handles."""
     page.goto(f"{server}/?session=e2e-open")

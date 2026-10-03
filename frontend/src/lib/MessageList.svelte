@@ -44,6 +44,29 @@
             .catch(() => {}) // the cards wait, unopenable, for the next refresh
     })
 
+    // Open a delegate's view only once the server has said, just now,
+    // that it is still there. The rows above can be stale: the sweep
+    // takes a delegate on a timer, with no event for this transcript to
+    // hear, and opening a swept name would make a new, empty session of
+    // it. A delegate found gone turns its card into the expired one.
+    let opening = $state(null)
+
+    async function openDelegate(name) {
+        const who = rt.name
+        opening = name
+        try {
+            const rows = await loadDelegates(who)
+            if (rowsFor !== who) return
+            delegateRows = new Map(rows.map((r) => [r.name, r]))
+            const row = delegateRows.get(name)
+            if (row && row.status !== 'expired') onSwitch?.(name)
+        } catch {
+            // unreachable just now: stay here rather than guess
+        } finally {
+            opening = null
+        }
+    }
+
     // The composer prepends "[attached: /a, /b]" for the AGENT's
     // benefit; humans get chips. Split it back out for display.
     function splitAttached(text) {
@@ -261,9 +284,9 @@
             {:else}
                 <button
                     class="delegate-card"
-                    disabled={!row}
+                    disabled={!row || opening === msg.name}
                     title={`open ${msg.name}`}
-                    onclick={() => onSwitch?.(msg.name)}
+                    onclick={() => openDelegate(msg.name)}
                 >
                     <span class="mark">⑂</span>
                     <strong class="who">{leaf(msg.name, rt.name)}</strong>
