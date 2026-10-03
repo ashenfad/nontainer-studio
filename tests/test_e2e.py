@@ -1382,7 +1382,7 @@ def test_an_answer_wakes_the_parent_without_a_message(browser, waking_server):
 
 def test_the_strip_shows_a_delegate_at_work_until_its_answer_lands(page, server):
     """A parent waiting on a delegate has ended its turn. The strip above
-    the composer says it is not done: the delegate's chip, its last
+    the composer says it is not done: the delegate's card, its last
     step, then its answer on the way, and nothing once the answer has
     reached the parent. The rail badge says the same where the session
     is not open."""
@@ -1393,23 +1393,26 @@ def test_the_strip_shows_a_delegate_at_work_until_its_answer_lands(page, server)
     ask = json.dumps({"action": "ask", "name": "scout", "task": task})
     _send(page, f"!tool sessions {ask}\n!text Sent a scout.")
 
-    chip = page.locator(".delegate-strip .chip", has_text="scout")
-    expect(chip).to_be_visible(timeout=15000)
-    expect(chip).to_have_class(re.compile(r"\brunning\b"))
-    expect(chip).to_contain_text("Ran Python", timeout=10000)
+    card = page.locator(".delegate-strip .card", has_text="scout")
+    expect(card).to_be_visible(timeout=15000)
+    expect(card).to_have_class(re.compile(r"\brunning\b"))
+    expect(card).to_contain_text("Ran Python", timeout=10000)
+    label = page.locator(".delegate-strip .label")
+    expect(label).to_have_text("⑂ 1 delegate working")
     row = page.locator(".rail .row", has_text="Striping")
     expect(row.locator(".working")).to_be_visible(timeout=10000)
     # the work line names what was done, not "sessions ask"
     expect(page.locator(".agent-msg").last).to_contain_text("Asked 1 delegate")
 
     # waking is off on this server: answered, and waiting for the human
-    expect(chip).to_have_class(re.compile(r"\banswered\b"), timeout=20000)
+    expect(card).to_have_class(re.compile(r"\banswered\b"), timeout=20000)
+    expect(label).to_have_text("⑂ 1 delegate answered")
     _send(page, "what did the scout say?")
     expect(page.locator(".delegate-strip")).to_have_count(0, timeout=15000)
 
-    # a chip is a way in: the delegate's own transcript
+    # a card is a way in: the delegate's own transcript
     _send(page, f"!tool sessions {ask.replace('scout', 'second')}\n!text Sent another.")
-    second = page.locator(".delegate-strip .chip", has_text="second")
+    second = page.locator(".delegate-strip .card", has_text="second")
     expect(second).to_be_visible(timeout=15000)
     second.click()
     expect(page.locator(".delegate-bar")).to_be_visible(timeout=10000)
@@ -1639,7 +1642,7 @@ def test_a_card_whose_delegate_went_away_does_not_open_it(page, server):
 def test_an_edit_before_the_ask_takes_the_delegate_out_of_view(page, server):
     """Rewinding to a message from before a delegate was asked for
     unsays it, as it unsays the agent's own turns after that message:
-    its chip leaves the strip, the rail's badge goes, and the edited
+    its card leaves the strip, the rail's badge goes, and the edited
     turn is not handed its answer."""
     page.goto(f"{server}/?session=e2e-undo")
     _title(server, "e2e-undo", "undoer")
@@ -1654,8 +1657,8 @@ def test_an_edit_before_the_ask_takes_the_delegate_out_of_view(page, server):
     )
     row = page.locator(".rail .row", has_text="undoer")
     expect(row.locator(".waiting")).to_be_visible(timeout=20000)
-    chip = page.locator(".delegate-strip .chip", has_text="scout")
-    expect(chip).to_be_visible(timeout=15000)
+    card = page.locator(".delegate-strip .card", has_text="scout")
+    expect(card).to_be_visible(timeout=15000)
 
     first = page.locator(".user-row").first
     first.hover()
