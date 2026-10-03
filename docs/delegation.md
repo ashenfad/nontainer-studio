@@ -158,6 +158,15 @@ branch, and that asking again is `sessions ask` rather than `resume`.
 Delivery is a fact of the transcript like every other, so a rewind past
 the note brings it back and a second restart does not repeat it.
 
+An edit that rewinds to a message from before a delegate was asked for
+unsays the delegate along with the turns after that message. Its answer
+is never delivered, a running one is cancelled so its answer is dropped
+when it lands, and it leaves the strip, the rail and the waiting count.
+Its branch stays and ages out like any other. Asking it again by name
+(`resume`) brings it back into the conversation. A rewind to after the
+ask but before the answer is the other case: the ask still stands, so
+the next turn delivers the answer again.
+
 Shutting the studio down does not wait for a delegate. Each delegate turn
 runs on a loop the registry can reach, and closing asks every turn in
 flight to stop before it joins the workers. A stopped turn is kept like

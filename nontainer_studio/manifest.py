@@ -111,7 +111,9 @@ class ManifestMixin:
     @staticmethod
     def _as_delegates(record: Any, created: Any) -> dict[str, dict]:
         """The delegates record in its shape: ``{child: {"parent",
-        "touched", "kept"}}``, whatever the file held.
+        "touched", "kept"}}``, whatever the file held, plus ``asked``
+        (when it was asked for) and ``undone`` (an edit unsaid it) where
+        a record carries them.
 
         It began as ``{child: parent}``, which says who forked whom and
         nothing about retention. Read one of those and the delegate
@@ -149,6 +151,11 @@ class ManifestMixin:
                 # at all is one of those.
                 "kept": kept if kept is None else bool(kept),
             }
+            asked = entry.get("asked")
+            if isinstance(asked, (int, float)) and not isinstance(asked, bool):
+                out[child]["asked"] = float(asked)
+            if entry.get("undone") is True:
+                out[child]["undone"] = True
         return out
 
     def _load_manifest(self) -> set[str]:

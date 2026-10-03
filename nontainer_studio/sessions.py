@@ -651,6 +651,12 @@ class Registry(
         # After the session exists, because what a delivery records is
         # a transcript event on it.
         inbox.on_delivered = _record_delivery(session)
+        # What an edit unsaid stays unsaid across a restart.
+        session.undone_delegates = {
+            child
+            for child, entry in self._manifest()["delegates"].items()
+            if entry["parent"] == name and entry.get("undone")
+        }
         return session
 
     _load_events = staticmethod(_load_events)
@@ -1187,6 +1193,7 @@ class Registry(
         and the redo is the same verb said about the commit this one
         stepped off.
         """
+        cut = next((e for e in session.events if e.get("seq") == seq), None)
         surviving = None
         prior = [e for e in session.events if e["seq"] < seq]
         for _, ev in self._visible(prior):
@@ -1198,6 +1205,11 @@ class Registry(
             if ev.get("type") == "title" and (ev.get("agent") or ev.get("title")):
                 surviving = ev
         session.ws.checkout(head)
+        # The delegates asked for after the edited message go with the
+        # conversation that asked for them. A message from before events
+        # were stamped with a time cannot place them, so none is unsaid.
+        if cut is not None and cut.get("ts") is not None:
+            self.undo_delegates_since(session, cut["ts"])
         # Best-effort within the event window: revert to the last name
         # generated BEFORE the cut. None surviving is ambiguous — never
         # named, or named so long ago the event front-trimmed out

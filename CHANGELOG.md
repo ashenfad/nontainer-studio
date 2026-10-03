@@ -211,6 +211,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **An edit to before a delegate was asked for unsays it.** Rewinding to
+  an earlier message took back the agent's turns after it but not the
+  delegates they asked for. Their chips stayed above the composer and
+  their answers counted as waiting. Worse, the edited turn was handed
+  the answer to a task that, in the conversation that now existed,
+  nobody had given. Now delegates asked at or after the edited message
+  are recorded as undone. They are never delivered, a running one is
+  cancelled, and they vanish from the strip, the rail and its badge,
+  across restarts too. Their branches stay and age out as usual, and
+  resuming one by name brings it back. Each delegate's record now notes
+  when it was asked for.
 - **Speech direction is no longer read aloud.** The primer told agents
   to steer `media.speech` with bracketed direction in the text
   ("[whispers] It's here."). Gemini 3.8 reads its input as a verbatim

@@ -294,9 +294,12 @@ export class SessionRuntime {
 
     #apply(ev) {
         if (typeof ev.cursor === 'number') this.cursor = ev.cursor + 1
+        // An edit counts too: it unsays the delegates asked after the
+        // message it rewound to, so they leave the strip and the rail.
         if (
             ev.type === 'delegate' ||
             ev.type === 'wake' ||
+            ev.type === 'truncate' ||
             (ev.type === 'tool_end' && ev.name === 'sessions')
         )
             this.delegateTick++
@@ -395,6 +398,7 @@ export class SessionRuntime {
             )
             if (at !== -1) this.messages.splice(at)
             this.version++
+            refreshSessions() // the rail's waiting count may have changed
         } else if (ev.type === 'publish') {
             // a landmark, not a notice: it names a version that still
             // exists, so it stays openable and stays restorable
