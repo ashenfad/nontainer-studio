@@ -147,6 +147,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Delegation says what a delegate starts from, and whose store it
+  writes.** An agent that delegated a game forked its delegates before
+  writing the frontend they built against, then concluded that a fork
+  sees only what is committed. One delegate tried its endpoint with
+  `ws-curl` and left a row on its parent's leaderboard.
+  - **The primer** says a delegate starts from your tree as it is the
+    moment you ask, committed or not, so write what it builds against
+    first. It also says a delegate shares your `db`, and when to choose
+    `inherit="fresh"` (a separable piece, built to a contract in the
+    task) over `"full"` (this conversation up to your last finished turn,
+    for a second attempt at something you have been working through).
+  - **Every delegate's brief** says its `db` is its parent's own store,
+    not a copy, and to test with `call(..., db=testdb)` rather than a
+    `ws-curl` request that writes.
+  - **A delegate forked with `inherit="full"`** opens on its parent's
+    conversation, where the task reads like one more message from the
+    person. Its brief now says first that the conversation above is its
+    parent's, that the parent is speaking, not the person, and that it
+    should neither address the person nor carry on the plan above. A
+    resumed delegate, and a `fresh` one, are not told this.
 - **A delegate need not think about ws-git.** Its brief used to explain
   that its work arrived as a named commit only if it ran `ws-git
   commit`, that anything written after was left out, and that a merge

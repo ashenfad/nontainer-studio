@@ -44,6 +44,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from nontainer import Answer
+from nontainer.planes import CONVERSATION_SESSION_KEY
 from nontainer.sessions import render_answer
 
 if TYPE_CHECKING:
@@ -106,17 +107,62 @@ VERSIONING = (
 )
 
 
-def brief(parent: str, commit: str | None, *, versioning: bool) -> str:
+def shared_db(parent: str) -> str:
+    """What a delegate's ``db`` is.
+
+    The child's row names its parent's db file (see
+    :meth:`DelegationMixin.open_delegate`), so the store is the one the
+    parent is looking at. A delegate that tried an endpoint with
+    ``ws-curl`` wrote a row the parent then found on its leaderboard:
+    said here, it tests against ``testdb`` instead.
+    """
+    return (
+        f"Your `db` is `{parent}`'s own store, not a copy: a row you write "
+        f"there is a row `{parent}` reads. Test with `testdb` — "
+        "`call(..., db=testdb)` — and not with a `ws-curl` request that "
+        "writes, which goes to that store.\n\n"
+    )
+
+
+def inherited_conversation(parent: str) -> str:
+    """The role a delegate forked with ``inherit="full"`` takes up.
+
+    Such a delegate opens on ``parent``'s conversation — a person's
+    requests and the parent's replies — and this message arrives as one
+    more user turn. Left there, it reads as the person asking: it
+    answers them, carries on the plan above, or delegates the way the
+    conversation shows "it" doing. So the change of principal is said
+    before the task, in the message rather than the system prompt, which
+    stays the parent's and keeps its cached prefix.
+    """
+    return (
+        f"The conversation above is `{parent}`'s, as of the commit you were "
+        f"forked at: its person's requests and its own replies. You are not "
+        f"continuing it. You are a delegate of `{parent}` with one task, "
+        f"below; this message is `{parent}` speaking, not its person, and "
+        f"your answer goes back to `{parent}`. Do not address the person, do "
+        "not carry on with the plan above beyond what the task asks, and do "
+        "not hand the plan above to delegates of your own.\n\n"
+    )
+
+
+def brief(
+    parent: str, commit: str | None, *, versioning: bool, inherited: bool = False
+) -> str:
     """The whole frame a delegated task carries, ready to prepend.
 
     ``versioning`` is whether the delegate can type ``ws-git``, which
     is what its session recorded when it was wired: an agent whose
     terminal does not carry the verb would otherwise be taught a
-    spelling it cannot run.
+    spelling it cannot run. ``inherited`` is whether the delegate
+    opens on its parent's conversation (``inherit="full"``), which
+    needs its change of role said first.
     """
     return (
         provenance_header(parent, commit)
+        + (inherited_conversation(parent) if inherited else "")
         + (VERSIONING if versioning else "")
+        + shared_db(parent)
         + "The task follows.\n\n"
     )
 
@@ -324,7 +370,33 @@ class StudioRunner:
         child's primer was built from, so one session is never told two
         things about one verb.
         """
-        return brief(self._parent, forked_at, versioning=child.wsgit)
+        return brief(
+            self._parent,
+            forked_at,
+            versioning=child.wsgit,
+            inherited=self._inherited(child, forked_at),
+        )
+
+    @staticmethod
+    def _inherited(child: "Session", forked_at: str | None) -> bool:
+        """Whether the delegate opens on its parent's conversation.
+
+        True for the first turn of a fork made with ``inherit="full"``:
+        the runs it holds are exactly the ones its parent held at the
+        fork point, none of them its own. A ``fresh`` fork holds none,
+        and a resumed delegate holds runs of its own past the fork, and
+        neither needs to be told whose conversation it is reading.
+        """
+        if forked_at is None:
+            return False
+        provider = child.ws.provider
+        mine = provider.kv.get(CONVERSATION_SESSION_KEY) or {}
+        held = list(mine.get("run_ids") or [])
+        try:
+            at = provider.key_at(forked_at, CONVERSATION_SESSION_KEY) or {}
+        except Exception:  # noqa: BLE001 - an unreadable point inherits nothing
+            return False
+        return bool(held) and held == list(at.get("run_ids") or [])
 
     def _turn(self, child: "Session", prompt: str) -> tuple[str, str | None]:
         """One turn, run the way a human's turn runs; its prose and error.

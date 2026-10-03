@@ -149,6 +149,42 @@ def test_the_task_arrives_with_a_provenance_header(registry):
     assert asked["text"].endswith(WRITE_A_NOTE)
 
 
+def test_the_brief_says_the_db_is_the_parents_store(registry):
+    """A delegate's `db` is its parent's live store, so a `ws-curl`
+    request that writes lands rows its parent reads; the brief says so
+    and points it at `testdb`."""
+    parent = registry.open("boss")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+    child = registry.open(answer.branch)
+    asked = next(e for e in child.events if e["type"] == "user")
+    assert "Your `db` is `boss`'s own store, not a copy" in asked["text"]
+    assert "call(..., db=testdb)" in asked["text"]
+
+
+def test_a_full_delegate_is_told_whose_conversation_it_opens_on(registry):
+    """Forked with inherit="full", a delegate opens on its parent's
+    conversation, a person's requests and the parent's replies. Its
+    task says the principal changed before it says anything else."""
+    parent = registry.open("boss")
+    _turn(parent, "!text Noted.")  # a finished turn, so there is a conversation
+    answer = _delegate(registry, parent, WRITE_A_NOTE, inherit="full")
+    assert answer.status == "answered"
+    child = registry.open(answer.branch)
+    asked = [e for e in child.events if e["type"] == "user"][-1]
+    assert "The conversation above is `boss`'s" in asked["text"]
+    assert "Do not address the person" in asked["text"]
+    assert asked["text"].endswith(WRITE_A_NOTE)
+
+
+def test_a_fresh_delegate_is_not_told_about_a_conversation(registry):
+    parent = registry.open("boss")
+    _turn(parent, "!text Noted.")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+    child = registry.open(answer.branch)
+    asked = next(e for e in child.events if e["type"] == "user")
+    assert "The conversation above" not in asked["text"]
+
+
 def test_a_delegate_and_its_parent_share_one_db(registry):
     """`db` is a handle to an external store, and forking a session is
     not forking the store: the delegate's row names the file its
@@ -1409,6 +1445,18 @@ def test_the_primer_says_the_number_and_the_verb(registry, tmp_path):
         assert "is swept" not in off.open("boss").agent.instructions
     finally:
         off.close()
+
+
+def test_the_primer_says_what_a_delegate_starts_from(registry):
+    """A delegate forked before the files it builds against exist cannot
+    see them, and an agent that thought only commits travel wrote a
+    contract into the task for want of knowing that. The primer says
+    what a delegate starts from, that it shares the db, and which
+    `inherit` to choose."""
+    instructions = registry.open("boss").agent.instructions
+    assert "starts from your tree as it is the moment you ask" in instructions
+    assert "It shares your `db`" in instructions
+    assert '"full" is this conversation up to your last finished turn' in instructions
 
 
 # -- the nesting cap: a delegate is a full agent ----------------------------
