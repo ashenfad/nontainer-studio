@@ -71,7 +71,7 @@ NUDGE = (
 
 CAPPED = (
     "The delegate stopped without a reply and ran out of turns. Whatever "
-    "it committed is on its branch; read it before relying on it."
+    "it wrote is on its branch; read it before relying on it."
 )
 
 
@@ -96,15 +96,13 @@ def provenance_header(parent: str, commit: str | None) -> str:
 
 
 VERSIONING = (
-    "Your work arrives as a NAMED commit only if you run `ws-git commit`, "
-    "and what you staged is taken as exactly that: anything you wrote past "
-    "your last commit is reported to the session that asked as left out, "
-    "never committed on your behalf, and a merge of your branch is refused "
-    "while that is true. If you never touch ws-git at all, your branch head "
-    "is your result — every write is already there. Either way the session "
-    "that asked brings the work back itself, with `ws-git merge <your "
-    "branch>` for all of it or `ws-git checkout <your branch> -- <paths>` "
-    "for some.\n\n"
+    "Everything you write is your answer: the session that asked sees all "
+    "of it, so you need not use ws-git to hand it over. A `ws-git commit` "
+    "of your own is a checkpoint, and whatever you write after it is "
+    "committed for you when you answer. App logs and test_app screenshots "
+    "stay with you and never reach the session that asked. It brings the "
+    "work back itself, with `ws-git merge <your branch>` for all of it or "
+    "`ws-git checkout <your branch> -- <paths>` for some.\n\n"
 )
 
 
