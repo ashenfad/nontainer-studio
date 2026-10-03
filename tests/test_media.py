@@ -155,7 +155,7 @@ def test_references_are_read_from_the_workspace():
 
 def test_speech_is_wrapped_as_wav_and_timed():
     m, ws, sent = _media(_speech_ok)
-    out = m.speech("[whispers] hello", "app/audio/hi.wav", voice="Charon")
+    out = m.speech("hello <laugh>", "app/audio/hi.wav", voice="Charon")
     assert out == {"path": "/workspace/app/audio/hi.wav", "seconds": 2.0}
     wav = ws.files.fs.read("/workspace/app/audio/hi.wav")
     assert wav[:4] == b"RIFF" and wav[8:12] == b"WAVE"
@@ -166,10 +166,38 @@ def test_speech_is_wrapped_as_wav_and_timed():
     assert url == media_mod.SPEECH_URL
     assert body == {
         "model": media_mod.SPEECH_MODEL,
-        "input": "[whispers] hello",
+        "input": "hello <laugh>",
         "voice": "Charon",
         "response_format": "pcm",
     }
+
+
+def test_a_style_is_sent_as_gemini_speech_metadata():
+    """Gemini 3.8 speaks its input word for word, so how a line is said
+    travels apart from it, as Google AI Studio's speech_metadata."""
+    m, _, sent = _media(_speech_ok)
+    m.speech("It's here.", "a.wav", style="  whispering, conspiratorial ")
+    assert sent[0][1]["input"] == "It's here."
+    assert sent[0][1]["provider"] == {
+        "options": {
+            "google-ai-studio": {
+                "speech_metadata": {"style": "whispering, conspiratorial"}
+            }
+        }
+    }
+    m.speech("It's here.", "b.wav", style="")
+    assert "provider" not in sent[1][1]
+    m.speech(
+        [
+            {"text": "one", "path": "c.wav", "style": "warm"},
+            {"text": "two", "path": "d.wav"},
+        ]
+    )
+    styled = {
+        body["input"]: body.get("provider", {}).get("options") for _, body in sent[2:]
+    }
+    assert styled["one"] == {"google-ai-studio": {"speech_metadata": {"style": "warm"}}}
+    assert styled["two"] is None
 
 
 def test_music_is_written_timed_and_its_lyrics_read():
@@ -301,6 +329,7 @@ def test_mistakes_are_refused_before_anything_is_spent():
         (lambda: m.image("x", "a.png", quality="ultra"), "quality is one of"),
         (lambda: m.speech("hi", "a.mp3"), r"name it \*\.wav"),
         (lambda: m.speech("hi", "a.wav", voice="Nope"), "no voice 'Nope'"),
+        (lambda: m.speech("hi", "a.wav", style=["warm"]), "style is words"),
         (lambda: m.music("x", "a.wav"), r"name it \*\.mp3"),
         (lambda: m.music("x", "a.mp3", length="album"), "length is one of"),
         (lambda: m.music(" ", "a.mp3"), "the prompt is empty"),

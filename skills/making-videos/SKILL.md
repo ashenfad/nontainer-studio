@@ -216,12 +216,20 @@ narrated and illustrated.
   scene, spoken together:
   ```python
   clips = media.speech([
-      {"text": "[warmly] Meet nontainer-studio.", "path": "app/audio/s1.wav"},
-      {"text": "Every turn is a commit.", "path": "app/audio/s2.wav"},
+      {"text": "Meet nontainer studio.", "path": "app/audio/s1.wav",
+       "style": "warm and welcoming"},
+      {"text": "Every turn is a commit. <short pause> Every one.",
+       "path": "app/audio/s2.wav"},
   ])
   ```
   `media.speech` writes each file itself, as WAV, so name it `*.wav`.
   Each result's `seconds` is that line's length.
+- **The text is read word for word.** Put only what is said in it: a
+  direction such as `[whispers]` or "Say warmly:" is spoken aloud. How a
+  line is said goes in `style`. Short sounds go inline in angle
+  brackets (`<laugh>`, `<sigh>`, `<breath>`, `<short pause>`), and are
+  performed rather than read. Spell names, acronyms and symbols the way
+  they should sound ("W S git", "nontainer studio").
 - **Two path bases.** `media` paths count from `/workspace`
   (`app/audio/s1.wav`); paths in the HTML count from the composition,
   which is in `app/` (`audio/s1.wav`). Copying one into the other is a
