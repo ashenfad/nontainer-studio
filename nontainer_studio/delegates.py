@@ -637,6 +637,11 @@ class DelegationMixin:
                 # message it rewinds to (see `undo_delegates_since`)
                 "asked": now,
             }
+            # A run that waited in the queue while an edit unsaid its
+            # ask: its record is born undone, as the edit recorded it.
+            owner = self._sessions.get(parent)
+            if owner is not None and name in owner.undone_delegates:
+                manifest["delegates"][name]["undone"] = True
             self._save_manifest(manifest)
             # The row before the open that reads it: `open` builds the
             # child's python config over the file its row names.
@@ -937,7 +942,10 @@ class DelegationMixin:
         When a delegate was asked for is its record's ``asked``, or for
         a record written before that was kept, its live job's start.
         One with neither is left alone: what cannot be placed after the
-        message is not unsaid.
+        message is not unsaid. A job asked for whose run has not started
+        yet has no record at all (the run writes it), so live jobs are
+        read too; the record its run writes later says undone as well
+        (see :meth:`open_delegate`).
         """
         live: dict[str, Any] = {}
         if session.delegates is not None:
@@ -948,7 +956,8 @@ class DelegationMixin:
         undone: list[str] = []
         with self._lock:
             manifest = self._manifest()
-            for child, entry in manifest["delegates"].items():
+            record = manifest["delegates"]
+            for child, entry in record.items():
                 if entry["parent"] != session.name or entry.get("undone"):
                     continue
                 job = live.get(child)
@@ -961,6 +970,15 @@ class DelegationMixin:
                 undone.append(child)
             if undone:
                 self._save_manifest(manifest)
+            # asked for, and queued behind other runs: no record yet
+            undone += [
+                name
+                for name, job in live.items()
+                if name not in record
+                and name not in session.undone_delegates
+                and job.started is not None
+                and job.started >= since
+            ]
         for child in undone:
             session.undone_delegates.add(child)
             if session.delegates is not None:
@@ -1175,7 +1193,13 @@ class DelegationMixin:
                 "kept": bool(kept),
             }
             self._save_manifest(manifest)
-        return next(row for row in self.delegate_rows(parent) if row["name"] == child)
+        # the delegate's own view offers keep even for one an edit
+        # unsaid, so the row is read with those included
+        return next(
+            row
+            for row in self.delegate_rows(parent, undone=True)
+            if row["name"] == child
+        )
 
     def hold_delegate_run(self, name: str, loop: Any, task: Any) -> None:
         """Take the handles on a delegate turn that has just started.

@@ -502,6 +502,53 @@ def test_an_edit_cancels_a_delegate_still_at_work(registry):
     assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok"))
 
 
+def test_an_edit_unsays_a_delegate_whose_run_has_not_started(registry, monkeypatch):
+    """An ask whose run is still queued has a job and no record yet:
+    the run writes the record when it starts. The edit unsays it from
+    the job, and the record the run writes later says so too."""
+    release = threading.Event()
+    plain = sessions_mod.Registry.open_delegate
+
+    def queued(self, parent, child):
+        release.wait(10)
+        return plain(self, parent, child)
+
+    monkeypatch.setattr(sessions_mod.Registry, "open_delegate", queued)
+    parent = registry.open("boss")
+    _turn(parent, "!text before any delegate")
+    first = next(e["seq"] for e in parent.events if e["type"] == "user")
+    _turn(parent, ASK_ASYNC)
+    assert "boss.scout" not in registry._manifest()["delegates"]  # not yet
+
+    _edit(registry, parent, first, "!text an edited first message")
+    release.set()
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if all(j.status != "running" for j in parent.delegates.list()):
+            break
+        time.sleep(0.05)
+    time.sleep(0.5)  # its run, if it started, has written its record
+    assert registry._manifest()["delegates"].get("boss.scout", {}).get("undone", True)
+    assert parent.answered_delegates() == []
+    assert registry.delegate_rows("boss") == []
+    assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok"))
+
+
+def test_keeping_an_unsaid_delegate_answers_with_its_row(registry):
+    """Its own view, opened directly, still offers keep."""
+    parent = registry.open("boss")
+    _turn(parent, "!text before any delegate")
+    first = next(e["seq"] for e in parent.events if e["type"] == "user")
+    _turn(parent, ASK_ASYNC)
+    _await_delegates(parent)
+    _edit(registry, parent, first, "!text an edited first message")
+
+    row = registry.keep_delegate("boss", "boss.scout", True)
+    assert row["name"] == "boss.scout" and row["kept"] is True
+    assert registry._manifest()["delegates"]["boss.scout"]["undone"] is True
+    assert registry.delegate_rows("boss") == []
+
+
 def test_resuming_an_unsaid_delegate_brings_it_back(registry):
     """Asked again, by name, in the conversation that exists now: it is
     part of that conversation, and its answer is delivered."""
