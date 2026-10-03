@@ -149,7 +149,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **No tool-result compression.** The studio no longer has agno
   summarise old tool results at a context watermark, and
-  `NONTAINER_STUDIO_COMPRESS_TOKENS` is gone. Now that every earlier run
+  `NONTAINER_STUDIO_COMPRESS_TOKENS` is gone, along with the `tiktoken`
+  and `tokenizers` dependencies it needed. Now that every earlier run
   is sent, it would have worked against the prompt cache: agno sends an
   earlier run as copies it does not store, so a result first summarised
   in a later turn was summarised again on every turn after. That meant
