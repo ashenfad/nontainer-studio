@@ -88,6 +88,51 @@ def test_a_delegate_answers_and_leaves_its_work_on_its_own_branch(registry):
     assert child.ws.files.fs.read("/workspace/from_delegate.md") == b"delegate was here"
 
 
+def test_a_delegate_that_checked_its_work_after_committing_merges_cleanly(registry):
+    """What a long-video delegate did: commit its scene, check it with
+    test_app (which writes its captures into app/screenshots), answer.
+    The captures used to leave its work "uncommitted" and its merge
+    refused. Its answer is now its work, and the merge takes the scene
+    and leaves the captures behind."""
+    parent = registry.open("boss")
+    scene = "/workspace/app/intro.html"
+    shot = "/workspace/app/screenshots/intro-1.png"
+    task = "\n".join(
+        [
+            "!tool file_write "
+            + json.dumps({"path": scene, "content": "<p>intro</p>"}),
+            "!tool terminal "
+            + json.dumps({"command": "ws-git commit -m 'the intro scene'"}),
+            "!tool file_write " + json.dumps({"path": shot, "content": "PNG"}),
+            "!text Built and checked the intro.",
+        ]
+    )
+    answer = _delegate(registry, parent, task)
+    assert answer.status == "answered"
+    assert answer.uncommitted is False
+    assert answer.changed["seed"] == (scene,)
+
+    merged = _turn(
+        parent,
+        "!tool terminal "
+        + json.dumps({"command": f"ws-git merge {answer.branch}"})
+        + "\n!text Merged the intro.",
+    )
+    assert "refuse" not in " ".join(_tool_results(merged, "terminal"))
+    assert parent.ws.files.fs.read(scene) == b"<p>intro</p>"
+    assert not parent.ws.files.fs.exists(shot)
+
+
+def test_the_brief_says_everything_written_is_the_answer(registry):
+    parent = registry.open("boss")
+    answer = _delegate(registry, parent, WRITE_A_NOTE)
+    child = registry.open(answer.branch)
+    asked = next(e for e in child.events if e["type"] == "user")
+    assert "Everything you write is your answer" in asked["text"]
+    assert "screenshots stay with you" in asked["text"]
+    assert "left out" not in asked["text"]
+
+
 def test_the_task_arrives_with_a_provenance_header(registry):
     parent = registry.open("boss")
     answer = _delegate(registry, parent, WRITE_A_NOTE)
