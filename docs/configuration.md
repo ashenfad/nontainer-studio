@@ -251,10 +251,15 @@ session's workspace:
   Gemini's and `gpt-image-2` take no transparent background.
   `references` are workspace images to work from. Measured: about 11s
   and $0.006 at low quality.
-- `media.speech(text, path, voice="Kore")` writes a WAV from
-  `google/gemini-3.8-flash-tts`, with bracketed direction such as
-  `[whispers]` in the text, and returns its length in seconds. Gemini
-  speech comes back only as raw PCM, so it is wrapped as 24kHz mono WAV,
+- `media.speech(text, path, voice="Kore", style=None)` writes a WAV
+  from `google/gemini-3.8-flash-tts` and returns its length in seconds.
+  Gemini 3.8 reads `text` as a verbatim transcript, so a direction
+  written into it (`[whispers]`, "Say warmly:") is spoken. `style` is
+  sent as Gemini's `speech_metadata.style`, through OpenRouter's
+  provider options for Google AI Studio, and sets the delivery
+  ("whispering, conspiratorial"). Momentary sounds go inline in angle
+  brackets (`<laugh>`, `<sigh>`, `<short pause>`) and are performed, not
+  read. Speech is requested as raw PCM and wrapped as 24kHz mono WAV,
   about 48KB a second.
 - `media.music(prompt, path, length="clip")` writes an MP3 from Lyria 3:
   `google/lyria-3-clip-preview` for a clip of about 30s ($0.04, about

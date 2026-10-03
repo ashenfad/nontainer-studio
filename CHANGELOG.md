@@ -211,6 +211,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Speech direction is no longer read aloud.** The primer told agents
+  to steer `media.speech` with bracketed direction in the text
+  ("[whispers] It's here."). Gemini 3.8 reads its input as a verbatim
+  transcript, so the voice read "whispers" aloud before the line.
+  `media.speech` now takes `style`, how a line is said
+  in plain words ("whispering, conspiratorial"), and sends it as
+  Gemini's `speech_metadata.style` through OpenRouter's provider
+  options. The primer, the video skill and the configuration doc say:
+  the text holds only what is said; delivery goes in `style`; momentary
+  sounds go inline in angle brackets (`<laugh>`, `<sigh>`, `<short
+  pause>`) and are performed, not read; names are spelled the way they
+  should sound. Checked by transcribing real clips: a bracketed
+  direction was spoken, a `style` whispered without adding words, and
+  `<laugh>` laughed.
 - **A scrubbed video keeps its narration.** nontainer 0.8.5 (now the
   floor) serves app files in byte ranges. Without them a browser could
   not seek a sound clip, so after a scrub the narration played from its

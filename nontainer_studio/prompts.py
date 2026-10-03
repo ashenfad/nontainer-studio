@@ -472,11 +472,16 @@ MEDIA_PRIMER = (
     "edit it. Once the call has returned (not alongside it: the file "
     "does not exist until then), look at the image with view_image on "
     'the returned "path" before using it. '
-    '`media.speech(text, path, voice="Kore")` writes a WAV and returns '
-    '{"path", "seconds"}; time scenes to those seconds. Bracketed '
-    "direction in the text steers the delivery and is not spoken: "
-    "\"[whispers] It's here. [excited] It's really here!\", or [sighs], "
-    "[laughs], [serious], [very slow]. Voices: Kore (firm, the "
+    '`media.speech(text, path, voice="Kore", style=None)` writes a WAV '
+    'and returns {"path", "seconds"}; time scenes to those seconds. The '
+    "text is spoken word for word, so it holds only what is said: a "
+    "direction written into it, [whispers] or 'Say warmly:', is read "
+    "aloud. Say how it is said in `style`, in plain words "
+    '("whispering, conspiratorial", "warm and unhurried", "excited, '
+    'fast"). Momentary sounds go inline in angle brackets and are '
+    "performed, not read: <laugh>, <sigh>, <breath>, <gasp>, <short "
+    "pause>, <long pause>. Write names, acronyms and symbols the way "
+    "they should sound. Voices: Kore (firm, the "
     "default), Puck (upbeat), Charon (informative), Zephyr (bright), "
     "Fenrir (excitable), Leda (youthful), Aoede (breezy), Sulafat "
     "(warm), Achernar (soft), Algenib (gravelly), among 30. WAV is "

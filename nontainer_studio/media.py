@@ -36,7 +36,13 @@ IMAGE_ASPECTS = ("1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9")
 IMAGE_QUALITIES = ("low", "medium", "high", "xhigh", "max")
 MAX_REFERENCES = 16
 
+#: Gemini 3.8 reads its input as a verbatim transcript: a direction
+#: written into the text ("[whispers]", "Say cheerfully:") is spoken.
+#: Delivery goes in ``speech_metadata.style``, passed through to Google
+#: AI Studio as a provider option; only momentary vocal sounds in angle
+#: brackets (``<laugh>``, ``<sigh>``, ``<short pause>``) stay inline.
 SPEECH_MODEL = "google/gemini-3.8-flash-tts"
+SPEECH_PROVIDER = "google-ai-studio"
 DEFAULT_VOICE = "Kore"
 #: Gemini's prebuilt voices, with the tone each is described by. The
 #: provider answers an unknown name with a bare "Provider returned 400",
@@ -242,22 +248,34 @@ class Media:
         text: str | list[dict],
         path: str | None = None,
         voice: str = DEFAULT_VOICE,
+        style: str | None = None,
     ) -> dict | list[dict]:
         """Speak ``text`` in ``voice`` and write a WAV to ``path``.
 
-        Bracketed direction in the text steers the delivery and is not
-        spoken: ``"[whispers] It's here. [excited] It's really here!"``.
-        Returns ``{"path", "seconds"}``.
+        ``text`` is spoken word for word, so it holds only what is said:
+        a direction written into it ("[whispers]", "Say warmly:") is read
+        aloud. ``style`` is how it is said, in plain words
+        (``"whispering, conspiratorial"``, ``"warm and unhurried"``).
+        Momentary sounds go inline in angle brackets and are performed,
+        not read: ``"It's here. <laugh> It's really here!"``, or
+        ``<sigh>``, ``<breath>``, ``<gasp>``, ``<short pause>``,
+        ``<long pause>``. Returns ``{"path", "seconds"}``.
 
         A list of dicts, each with this call's arguments by name, is
         spoken concurrently and returns a list in the same order; one
         that fails holds ``{"path", "error"}`` in its slot."""
         if isinstance(text, (list, tuple)):
             return self._batch(self._speech, text, "media.speech")
-        return self._single(self._speech(text=text, path=path, voice=voice))
+        return self._single(
+            self._speech(text=text, path=path, voice=voice, style=style)
+        )
 
     def _speech(
-        self, text: Any = None, path: Any = None, voice: Any = DEFAULT_VOICE
+        self,
+        text: Any = None,
+        path: Any = None,
+        voice: Any = DEFAULT_VOICE,
+        style: Any = None,
     ) -> dict:
         text = str(text or "").strip()
         if not text:
@@ -267,17 +285,21 @@ class Media:
             raise ValueError(
                 f"media.speech: no voice {voice!r}; the voices are " + ", ".join(VOICES)
             )
-        r = self._post(
-            "media.speech",
-            SPEECH_URL,
-            {
-                "model": SPEECH_MODEL,
-                "input": text,
-                "voice": voice,
-                "response_format": "pcm",
-            },
-            SPEECH_TIMEOUT,
-        )
+        if style is not None and not isinstance(style, str):
+            raise ValueError("media.speech: style is words, such as 'warm and slow'")
+        body: dict[str, Any] = {
+            "model": SPEECH_MODEL,
+            "input": text,
+            "voice": voice,
+            "response_format": "pcm",
+        }
+        if style and style.strip():
+            body["provider"] = {
+                "options": {
+                    SPEECH_PROVIDER: {"speech_metadata": {"style": style.strip()}}
+                }
+            }
+        r = self._post("media.speech", SPEECH_URL, body, SPEECH_TIMEOUT)
         pcm = r.content
         if not pcm:
             raise RuntimeError("media.speech: the response held no audio")
