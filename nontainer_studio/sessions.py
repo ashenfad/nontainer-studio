@@ -779,21 +779,6 @@ class Registry(
         # `sessions` tool beside the studio's.
         if delegates is not None:
             toolkit.sessions = delegates
-        # Compaction: wave-based tool-result compression at a per-model
-        # high-water mark (never count-based, never a sliding window —
-        # both would bust the prompt cache every turn). The transcript
-        # keeps full detail either way; only the MODEL's view of old
-        # tool results coarsens.
-        compression = None
-        limit = providers.compress_token_limit(model or self._default_model)
-        if limit is not None:
-            from .compression import InboxAwareCompression
-
-            # The studio's subclass, because a tool result may carry a
-            # message the human sent mid-turn: their words are kept
-            # verbatim while the tool's own output compresses.
-            compression = InboxAwareCompression(compress_token_limit=limit)
-
         # The `sessions` tool is registered only where there is a helper
         # to delegate through, which is nontainer's gate for it too: an
         # agent told to delegate with nothing to delegate to spends a
@@ -815,8 +800,6 @@ class Registry(
             model=self._model_factory(model),
             tools=[toolkit]
             + ([self._sessions_tool(name, delegates)] if delegation else []),
-            compress_tool_results=compression is not None,
-            compression_manager=compression,
             # Tool calls this run may spend, and None where there is
             # no cap. Past the limit agno answers each further call
             # with a tool result saying the limit is reached and not
@@ -832,10 +815,7 @@ class Registry(
             # out and then dropped. agno runs pre hooks when a run
             # starts and not when a run is continued, so a turn resumed
             # after a provider error does not come through here.
-            # `hold_session` lets compression keep what it does to an
-            # earlier run's tool result (see compression.py).
-            pre_hooks=[toolkit.begin_turn]
-            + ([compression.hold_session] if compression is not None else []),
+            pre_hooks=[toolkit.begin_turn],
             # `end_turn` commits nothing here — the session db owns the
             # commit — so all it does is settle the notes this turn
             # delivered: the turn that read them is over, and nothing

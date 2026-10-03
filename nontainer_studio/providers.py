@@ -373,30 +373,6 @@ def context_window(spec: str | None) -> int | None:
     return _CONTEXT_BY_PROVIDER.get(provider)
 
 
-def compress_token_limit(spec: str | None) -> int | None:
-    """The compaction high-water mark for this model: when the message
-    stack crosses it, agno compresses older tool results IN A WAVE
-    (one cache miss, then a stable prefix again — never a sliding
-    window, which would bust the prompt cache every turn).
-
-    Default: 60% of the model's context window, clamped to [32k, 250k]
-    (the ceiling is a cost bound — a 1M-context model doesn't want
-    600k-token turns). Unknown context -> 100k.
-    NONTAINER_STUDIO_COMPRESS_TOKENS overrides (0/off disables)."""
-    raw = os.getenv("NONTAINER_STUDIO_COMPRESS_TOKENS")
-    if raw:
-        if raw.strip().lower() in ("0", "off", "none", "false"):
-            return None
-        try:
-            return max(1_000, int(raw))
-        except ValueError:
-            pass  # unparseable -> fall through to the default
-    ctx = context_window(spec)
-    if ctx is None:
-        return 100_000
-    return min(max(int(ctx * 0.6), 32_000), 250_000)
-
-
 def _split_openrouter_tag(model: str) -> tuple[str, dict | None]:
     """``qwen/qwen3.6-35b-a3b@wandb/fp8`` -> the base model id plus an
     OpenRouter provider-routing pin. ``@slug`` pins the upstream

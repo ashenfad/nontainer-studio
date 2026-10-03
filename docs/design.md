@@ -137,11 +137,6 @@ Withdraw a queued message with the ✕ beside it, while the agent has not
 read it yet — delivery cannot be taken back. "Send now" is not on offer:
 stop, then send, is the interrupt, and it already exists.
 
-Compression respects the same line. When old tool results are summarised
-at the context watermark, a message that rode out in one is cut off
-before the summariser sees it and re-appended byte for byte, so the agent
-never acts on a paraphrase of something you said exactly once.
-
 ## When the provider fails
 
 A provider error is an interruption, not a restart. The model call

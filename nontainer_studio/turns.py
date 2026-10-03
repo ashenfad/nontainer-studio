@@ -146,21 +146,6 @@ def _client_events(ev: Any) -> list[dict]:
         return events
     if kind == "RunCancelled":
         return [{"type": "notice", "text": "turn stopped"}]
-    if kind == "CompressionStarted":
-        return [
-            {
-                "type": "notice",
-                "text": "context high-water mark — compressing older tool results",
-            }
-        ]
-    if kind == "CompressionCompleted":
-        n = getattr(ev, "tool_results_compressed", None)
-        orig = getattr(ev, "original_size", None)
-        comp = getattr(ev, "compressed_size", None)
-        detail = f"{n} tool results" if n else "tool results"
-        if orig and comp:
-            detail += f" ({orig:,} → {comp:,} chars)"
-        return [{"type": "notice", "text": f"compressed {detail}"}]
     if kind == "ModelRequestCompleted":
         # context-usage telemetry for the UI (one per model call; the
         # frontend keeps only the latest)
