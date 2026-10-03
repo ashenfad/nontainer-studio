@@ -176,6 +176,29 @@ def test_a_full_delegate_is_told_whose_conversation_it_opens_on(registry):
     assert asked["text"].endswith(WRITE_A_NOTE)
 
 
+def test_a_full_delegate_forked_elsewhere_is_told_whose_conversation_it_is(
+    registry,
+):
+    """With fork_from, the conversation a full delegate opens on is the
+    fork point's session's, not the asking one's: the brief names that
+    session as the owner and the asking one as the speaker."""
+    maker = registry.open("maker")
+    _turn(maker, "!text Built the dashboard.")
+    builder = registry.open("builder")
+    answer = _delegate(
+        registry,
+        builder,
+        WRITE_A_NOTE,
+        fork_from=f"maker@{maker.ws.head}",
+        inherit="full",
+    )
+    assert answer.status == "answered"
+    child = registry.open(answer.branch)
+    asked = [e for e in child.events if e["type"] == "user"][-1]
+    assert "The conversation above is `maker`'s" in asked["text"]
+    assert "You are a delegate of `builder`" in asked["text"]
+
+
 def test_a_fresh_delegate_is_not_told_about_a_conversation(registry):
     parent = registry.open("boss")
     _turn(parent, "!text Noted.")
