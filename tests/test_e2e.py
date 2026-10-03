@@ -1636,6 +1636,40 @@ def test_a_card_whose_delegate_went_away_does_not_open_it(page, server):
     assert "e2e-stale.scout" not in names
 
 
+def test_an_edit_before_the_ask_takes_the_delegate_out_of_view(page, server):
+    """Rewinding to a message from before a delegate was asked for
+    unsays it, as it unsays the agent's own turns after that message:
+    its chip leaves the strip, the rail's badge goes, and the edited
+    turn is not handed its answer."""
+    page.goto(f"{server}/?session=e2e-undo")
+    _title(server, "e2e-undo", "undoer")
+    _send(page, "!text Nothing delegated yet.")
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Nothing delegated yet.", timeout=15000
+    )
+    _send(
+        page,
+        '!tool sessions {"action": "ask", "name": "scout", '
+        '"task": "!text Found it."}\n!text Sent a scout.',
+    )
+    row = page.locator(".rail .row", has_text="undoer")
+    expect(row.locator(".waiting")).to_be_visible(timeout=20000)
+    chip = page.locator(".delegate-strip .chip", has_text="scout")
+    expect(chip).to_be_visible(timeout=15000)
+
+    first = page.locator(".user-row").first
+    first.hover()
+    first.locator(".edit").click()
+    page.locator(".edit-box textarea").fill("!text Edited, before any delegate.")
+    page.locator(".edit-actions .send").click()
+    expect(page.locator(".agent-msg .bubble").last).to_contain_text(
+        "Edited, before any delegate.", timeout=15000
+    )
+    expect(page.locator(".delegate-strip")).to_have_count(0, timeout=10000)
+    expect(row.locator(".waiting")).to_have_count(0, timeout=10000)
+    expect(page.locator(".delegate-card")).to_have_count(0)
+
+
 def test_the_rail_listing_opens_a_delegate(page, server):
     """The way in: the ⑂ listing's names are the drill-down's handles."""
     page.goto(f"{server}/?session=e2e-open")

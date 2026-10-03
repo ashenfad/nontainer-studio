@@ -215,6 +215,12 @@ class Session:
     refused rather than left queued for nobody.
     """
 
+    undone_delegates: set = field(default_factory=set)
+    """Delegates an edit unsaid: asked after the message it rewound to,
+    so the conversation that exists now never asked for them. Their
+    answers are never delivered and they are listed nowhere; their
+    branches stay, and age out like any other."""
+
     wakes_left: int = field(default_factory=_delegate_wakes)
     """Turns delegates' answers may still start before the human speaks
     again (see ``_delegate_wakes``)."""
@@ -341,13 +347,15 @@ class Session:
         branch was swept has had its answer dropped with it — asking for
         it raises. Both are the same rule, which is that this lists what
         a turn could actually deliver, so it is also what the rail's
-        count means."""
+        count means. Nor is one an edit unsaid: the conversation that
+        exists now never asked for it."""
         if self.delegates is None:
             return []
         done = [
             job
             for job in self.delegates.list()
             if job.status not in ("running", "cancelled", "expired")
+            and job.name not in self.undone_delegates
         ]
         unread = self.undelivered(job.name for job in done)
         return [job for job in done if job.name in unread]

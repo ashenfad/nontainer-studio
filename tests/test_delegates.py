@@ -441,6 +441,86 @@ def test_an_edited_turn_gets_the_delegates_answer_again(registry):
     assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [0]
 
 
+def test_an_edit_before_the_ask_unsays_the_delegate(registry):
+    """Rewinding to a message from before a delegate was asked for puts
+    the conversation back to where nobody had asked: its answer is not
+    handed to the edited turn, and it is listed nowhere, as the turns
+    after the edited message are shown nowhere. Its branch stays."""
+    parent = registry.open("boss")
+    _turn(parent, "!text before any delegate")
+    first = next(e["seq"] for e in parent.events if e["type"] == "user")
+    _turn(parent, ASK_ASYNC)
+    _await_delegates(parent)
+    _turn(parent, "what did the scout say?")  # delivered
+
+    again = _edit(registry, parent, first, "!text an edited first message")
+    assert not any(e["type"] == "delegate" for e in again)
+    assert parent.answered_delegates() == []
+    assert registry.delegate_rows("boss") == []
+    assert [r["delegates"] for r in registry.list() if r["name"] == "boss"] == [0]
+    assert registry.orphaned_delegates(parent) == []
+    assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok"))
+    # not deleted: the branch is still there, and still says whose it is
+    assert registry._store.exists("boss.scout")
+    assert registry.delegate_of("boss.scout")["parent"] == "boss"
+
+    # and it stays unsaid across a restart
+    reborn = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=registry._store.path,
+        default_model="dummy",
+    )
+    try:
+        assert reborn.delegate_rows("boss") == []
+        assert reborn.open("boss").undone_delegates == {"boss.scout"}
+    finally:
+        reborn.close()
+
+
+def test_an_edit_cancels_a_delegate_still_at_work(registry):
+    """A delegate still running when its ask is unsaid would answer into
+    the rewound conversation, and wake it to do so. It is cancelled, so
+    its answer is dropped when it lands."""
+    parent = registry.open("boss")
+    _turn(parent, "!text before any delegate")
+    first = next(e["seq"] for e in parent.events if e["type"] == "user")
+    sleepy = json.dumps({"code": "import time; time.sleep(2)"})
+    task = f"!tool run_python {sleepy}\n!text Slept on it."
+    _turn(
+        parent,
+        "!tool sessions "
+        + json.dumps({"action": "ask", "name": "scout", "task": task})
+        + "\n!text Sent a scout.",
+    )
+    assert [j.status for j in parent.delegates.list()] == ["running"]
+
+    _edit(registry, parent, first, "!text an edited first message")
+    assert [j.status for j in parent.delegates.list()] == ["cancelled"]
+    time.sleep(3)  # past the end of its run: its answer has landed, or would have
+    assert parent.answered_delegates() == []
+    assert registry.delegate_rows("boss") == []
+    assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok"))
+
+
+def test_resuming_an_unsaid_delegate_brings_it_back(registry):
+    """Asked again, by name, in the conversation that exists now: it is
+    part of that conversation, and its answer is delivered."""
+    parent = registry.open("boss")
+    _turn(parent, "!text before any delegate")
+    first = next(e["seq"] for e in parent.events if e["type"] == "user")
+    _turn(parent, ASK_ASYNC)
+    _await_delegates(parent)
+    _edit(registry, parent, first, "!text an edited first message")
+    assert registry.delegate_rows("boss") == []
+
+    resume = {"action": "ask", "resume": "boss.scout", "task": "!text Looked again."}
+    _turn(parent, "!tool sessions " + json.dumps(resume) + "\n!text Asked again.")
+    _await_delegates(parent)
+    assert [r["name"] for r in registry.delegate_rows("boss")] == ["boss.scout"]
+    delivered = _turn(parent, "what did it say this time?")
+    assert [e["name"] for e in delivered if e["type"] == "delegate"] == ["boss.scout"]
+
+
 # -- the published action: apps as a starting point --------------------------
 
 PUBLISHED = '!tool sessions {"action": "published"}\n!text Listed them.'

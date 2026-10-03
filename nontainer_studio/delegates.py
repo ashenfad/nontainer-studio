@@ -235,6 +235,9 @@ class StudioRunner:
         outlive every reason to have them.
         """
         turns = self._budget(budget)
+        # Asked again (a resume), so part of the conversation again,
+        # whatever an earlier edit unsaid.
+        self._registry.reinstate_delegate(self._parent, session)
         child = self._registry.open_delegate(self._parent, session)
         try:
             prompt: str | None = self._brief(child, forked_at) + task
@@ -625,10 +628,14 @@ class DelegationMixin:
         """
         with self._lock:
             manifest = self._manifest()
+            now = time.time()
             manifest["delegates"][name] = {
                 "parent": parent,
-                "touched": time.time(),
+                "touched": now,
                 "kept": None,  # nobody has said; the job table answers
+                # when it was asked for, which an edit compares with the
+                # message it rewinds to (see `undo_delegates_since`)
+                "asked": now,
             }
             self._save_manifest(manifest)
             # The row before the open that reads it: `open` builds the
@@ -731,7 +738,7 @@ class DelegationMixin:
                 kept = entry["kept"] if entry["kept"] is not None else kept or None
                 if (touched, kept) == (entry["touched"], entry["kept"]):
                     continue
-                record[job.name] = {"parent": name, "touched": touched, "kept": kept}
+                record[job.name] = {**entry, "touched": touched, "kept": kept}
                 changed = True
             if changed:
                 self._save_manifest(manifest)
@@ -912,7 +919,75 @@ class DelegationMixin:
         self._pinned.add(child)
         log.info("delegates: %s is idle but its subtree is held; leaving it", child)
 
-    def delegate_rows(self, name: str) -> list[dict]:
+    def undo_delegates_since(self, session: "Session", since: float) -> list[str]:
+        """Unsay the delegates ``session`` asked for at or after
+        ``since``; returns their names, sorted.
+
+        The other half of an edit. Rewinding to a message puts the
+        files and the conversation back to before it, and a delegate
+        asked for after it belongs to the conversation that was unsaid:
+        delivering its answer would hand the new turn a reply to a task
+        nobody in it gave, and a running one would wake the session to
+        do it. So each is recorded as undone, which every reader of
+        delegates honours (it is delivered nowhere and listed nowhere),
+        and a running one is cancelled, so its answer is discarded when
+        it lands. Nothing is deleted: its branch stays, and ages out
+        like any other.
+
+        When a delegate was asked for is its record's ``asked``, or for
+        a record written before that was kept, its live job's start.
+        One with neither is left alone: what cannot be placed after the
+        message is not unsaid.
+        """
+        live: dict[str, Any] = {}
+        if session.delegates is not None:
+            try:
+                live = {job.name: job for job in session.delegates.list()}
+            except Exception:  # noqa: BLE001 - the record answers instead
+                live = {}
+        undone: list[str] = []
+        with self._lock:
+            manifest = self._manifest()
+            for child, entry in manifest["delegates"].items():
+                if entry["parent"] != session.name or entry.get("undone"):
+                    continue
+                job = live.get(child)
+                asked = entry.get("asked")
+                if asked is None and job is not None:
+                    asked = job.started
+                if asked is None or asked < since:
+                    continue
+                entry["undone"] = True
+                undone.append(child)
+            if undone:
+                self._save_manifest(manifest)
+        for child in undone:
+            session.undone_delegates.add(child)
+            if session.delegates is not None:
+                try:
+                    session.delegates.cancel(child)  # a no-op once it answered
+                except Exception:  # noqa: BLE001 - undone either way
+                    pass
+        if undone:
+            log.info("delegates: an edit of %s unsaid %s", session.name, undone)
+        return sorted(undone)
+
+    def reinstate_delegate(self, parent: str, child: str) -> None:
+        """Make ``child`` part of ``parent``'s conversation again: it
+        has been asked for again, which a resume is, so what an earlier
+        edit unsaid no longer holds."""
+        with self._lock:
+            manifest = self._manifest()
+            entry = manifest["delegates"].get(child)
+            if entry is None or not entry.get("undone"):
+                return
+            entry["undone"] = False
+            self._save_manifest(manifest)
+        session = self._sessions.get(parent)
+        if session is not None:
+            session.undone_delegates.discard(child)
+
+    def delegate_rows(self, name: str, *, undone: bool = False) -> list[dict]:
         """What ``name`` delegated, most recently dealt with first —
         the per-session listing the rail shows under the ⑂ badge.
 
@@ -924,6 +999,11 @@ class DelegationMixin:
         running and not swept. ``touched`` and ``kept`` come from
         whichever side was told last, so the rail agrees with the sweep
         about what it is looking at.
+
+        A delegate an edit unsaid is left out, as the turns after the
+        edited message are: the conversation that exists now never asked
+        for it. ``undone=True`` keeps it, for the one reader that has to
+        know what a name is even then (:meth:`delegate_of`).
         """
         manifest = self._manifest()
         session = self._sessions.get(name)
@@ -943,6 +1023,8 @@ class DelegationMixin:
         rows = []
         for child, entry in manifest["delegates"].items():
             if entry["parent"] != name:
+                continue
+            if entry.get("undone") and not undone:
                 continue
             job = live.get(child)
             touched, kept = self._freshest(entry, job)
@@ -1031,6 +1113,7 @@ class DelegationMixin:
             child
             for child, entry in record.items()
             if entry["parent"] == session.name
+            and not entry.get("undone")
             and child not in live
             and self._store.exists(child)
         ]
@@ -1048,7 +1131,10 @@ class DelegationMixin:
         parent = self.parent_of(name)
         if parent is None:
             return None
-        row = next((r for r in self.delegate_rows(parent) if r["name"] == name), None)
+        row = next(
+            (r for r in self.delegate_rows(parent, undone=True) if r["name"] == name),
+            None,
+        )
         return {**row, "parent": parent} if row is not None else None
 
     def keep_delegate(self, parent: str, child: str, kept: bool) -> dict:
@@ -1084,7 +1170,7 @@ class DelegationMixin:
             if entry is None or entry["parent"] != parent:
                 raise KeyError(child)
             manifest["delegates"][child] = {
-                "parent": parent,
+                **entry,
                 "touched": time.time(),
                 "kept": bool(kept),
             }
