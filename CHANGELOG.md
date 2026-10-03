@@ -265,6 +265,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cache, not even a wake seconds after the run before it. Every earlier run is sent
   now. Tool-result compression still starts at the model's watermark,
   and compacting older turns into a summary is planned as the next step.
+- **An earlier turn's tool result is compressed once.** agno sends an
+  earlier run as copies it drops before storing the run, so it keeps a
+  compression only when it is made in the run the result belongs to. A
+  result that first crossed the watermark in a later turn was compressed
+  again on every turn after: one model call per result per turn, and a
+  freshly worded summary that changed the prompt and missed the cache.
+  The compression is now kept on the stored message. With the whole
+  conversation sent, that cost would have grown with every turn.
 
 - **An edit to before a delegate was asked for unsays it.** Rewinding to
   an earlier message took back the agent's turns after it but not the

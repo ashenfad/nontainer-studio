@@ -11,6 +11,17 @@ it was given exactly once.
 So the block is cut off before the compressor sees it and re-appended
 after, byte for byte. Only the tool's half is summarised, and what the
 person said stands as they said it.
+
+The other thing it does is keep a compression of an EARLIER run's tool
+result. agno compresses what it sends, and an earlier run is sent as
+copies of its messages that are dropped before the run is stored, so
+agno itself keeps only the compressions it made in the run they belong
+to. A tool result that first crossed the watermark in a later run was
+compressed again on every turn after: one model call per result per
+turn, growing with the conversation, and each fresh summary a slightly
+different prompt, so the cache missed too. The compression is copied
+onto the session's own message, which agno stores at the end of the
+run, and the next run's copy arrives already compressed.
 """
 
 from __future__ import annotations
@@ -24,7 +35,11 @@ from nontainer.inbox import split
 
 class InboxAwareCompression(CompressionManager):
     """The studio's compression manager: an inbox block survives a
-    compression pass unchanged.
+    compression pass unchanged, and an earlier run's tool result is
+    compressed once.
+
+    ``hold_session`` is a pre hook: agno hands it the session the run
+    loaded, which is the object it stores when the run ends.
 
     The narrowest seam agno offers is the per-message compression call,
     and there are two of them — one sync, one async — because the sync
@@ -32,6 +47,44 @@ class InboxAwareCompression(CompressionManager):
     compress a copy carrying only the tool's own output, and put the
     block back on the answer.
     """
+
+    #: The session the current run loaded; set by ``hold_session``.
+    _session: Any = None
+
+    def hold_session(self, session: Any) -> None:
+        """Pre hook: remember the run's session, whose messages are the
+        originals the history copies were made from."""
+        self._session = session
+
+    def compress(
+        self, messages: list[Message], run_metrics: Optional[Any] = None
+    ) -> None:
+        pending = _pending_history(messages)
+        super().compress(messages, run_metrics=run_metrics)
+        self._keep(pending)
+
+    async def acompress(
+        self, messages: list[Message], run_metrics: Optional[Any] = None
+    ) -> None:
+        pending = _pending_history(messages)
+        await super().acompress(messages, run_metrics=run_metrics)
+        self._keep(pending)
+
+    def _keep(self, pending: list[Message]) -> None:
+        """Copy what this pass compressed onto the stored originals.
+
+        A run resumed after a provider error skips the pre hooks, so the
+        session held may be an earlier run's: writing to it changes
+        nothing that is stored, and the result is compressed again next
+        turn, as it was before.
+        """
+        done = {m.id: m.compressed_content for m in pending if m.compressed_content}
+        if not done or self._session is None:
+            return
+        for run in self._session.runs or []:
+            for original in run.messages or []:
+                if original.id in done and original.compressed_content is None:
+                    original.compressed_content = done[original.id]
 
     def _compress_tool_result(
         self,
@@ -60,6 +113,16 @@ class InboxAwareCompression(CompressionManager):
             _bare_copy(tool_result, bare), run_metrics=run_metrics
         )
         return None if compressed is None else compressed + notes
+
+
+def _pending_history(messages: list[Message]) -> list[Message]:
+    """The earlier runs' tool results this pass may compress: copies,
+    with an id to find their originals by."""
+    return [
+        m
+        for m in messages
+        if m.role == "tool" and m.from_history and m.id and m.compressed_content is None
+    ]
 
 
 def _cut(message: Message) -> tuple[str, str]:

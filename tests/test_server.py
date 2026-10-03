@@ -2742,9 +2742,7 @@ def test_the_agent_remembers_every_earlier_turn(tmp_path):
 
         async def ainvoke_stream(self, messages, **kwargs):
             if kwargs.get("tools"):  # the agent's turn, not the naming pass
-                self.seen.append(
-                    [str(m.content) for m in messages if m.role == "user"]
-                )
+                self.seen.append([str(m.content) for m in messages if m.role == "user"])
             async for chunk in super().ainvoke_stream(messages, **kwargs):
                 yield chunk
 
@@ -2759,6 +2757,62 @@ def test_the_agent_remembers_every_earlier_turn(tmp_path):
     registry.close()
 
     assert model.seen[-1] == [f"turn {i}" for i in range(5)]
+
+
+def test_an_earlier_runs_tool_result_is_compressed_once(tmp_path, monkeypatch):
+    """A tool result first compressed in a later run keeps that
+    compression. agno sends an earlier run as copies it drops before
+    storing the run, so without keeping it, every later turn compressed
+    the same result again: a model call each, and a fresh summary that
+    changed the prompt."""
+    from agno.compression.manager import CompressionManager
+
+    from nontainer_studio import providers
+    from nontainer_studio.dummy import DummyModel
+
+    over = {"on": False}  # the watermark, crossed from turn 2 on
+    compressed: list[str] = []
+
+    async def summarise(self, tool_result, run_metrics=None):
+        compressed.append(str(tool_result.content))
+        return "short"
+
+    monkeypatch.setattr(providers, "compress_token_limit", lambda spec: 1)
+    monkeypatch.setattr(
+        CompressionManager, "should_compress", lambda self, *a, **k: over["on"]
+    )
+    monkeypatch.setattr(
+        CompressionManager, "ashould_compress", _async(lambda: over["on"])
+    )
+    monkeypatch.setattr(CompressionManager, "_acompress_tool_result", summarise)
+
+    registry = sessions_mod.Registry(
+        model_factory=lambda spec=None: DummyModel(), store=tmp_path
+    )
+
+    def turn(i: int, word: str) -> None:
+        code = json.dumps({"code": f"print({word!r})"})
+        _run(client, "s1", f"!tool run_python {code}\n!text turn {i}")
+
+    with TestClient(server.build_app(registry)) as client:
+        client.post("/api/sessions", json={"name": "s1"})
+        turn(1, "first")
+        over["on"] = True
+        turn(2, "second")
+        turn(3, "third")
+        runs = registry.db.get_session("s1").runs
+    registry.close()
+
+    assert sum("first" in c for c in compressed) == 1
+    first = [m for m in runs[0].messages if m.role == "tool"]
+    assert [m.compressed_content for m in first] == ["short"]
+
+
+def _async(answer):
+    async def call(*a, **k):
+        return answer()
+
+    return call
 
 
 def test_edit_rewinds_files_and_memory_in_one_restore(scripted):
