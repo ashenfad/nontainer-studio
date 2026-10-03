@@ -424,12 +424,11 @@ def test_skill_conditionals_resolve_on_delegation_too():
         assert out.startswith("top\n") and out.endswith("tail\n")
 
 
-def test_compression_and_usage_events_reach_the_transcript(studio):
-    """Compaction waves surface as notices (the slow turn explains
-    itself); per-call token usage rides a `usage` event for the UI."""
+def test_usage_events_reach_the_transcript(studio):
+    """Per-call token usage rides a `usage` event for the UI."""
     client, registry = studio
 
-    class CompressingAgent(FakeAgent):
+    class MeteredAgent(FakeAgent):
         async def arun(self, message, stream=True, stream_events=True):
             self.seen.append(message)
             yield SimpleNamespace(
@@ -438,26 +437,16 @@ def test_compression_and_usage_events_reach_the_transcript(studio):
                 cache_read_tokens=100_000,
                 run_id="run-1",
             )
-            yield SimpleNamespace(event="CompressionStarted")
-            yield SimpleNamespace(
-                event="CompressionCompleted",
-                tool_results_compressed=7,
-                original_size=90_000,
-                compressed_size=4_000,
-            )
             yield SimpleNamespace(event="RunContent", content="done")
 
-    registry._build_agent = lambda *a, **k: CompressingAgent()
+    registry._build_agent = lambda *a, **k: MeteredAgent()
     client.post("/api/sessions", json={"name": "s1"})
     client.post("/api/sessions/s1/chat", json={"message": "go"})
     events = _collect_until_done(client, "s1")
     kinds = [e["type"] for e in events]
-    assert kinds == ["user", "usage", "notice", "notice", "text", "done"]
+    assert kinds == ["user", "usage", "text", "done"]
     usage = next(e for e in events if e["type"] == "usage")
     assert usage["input_tokens"] == 123_456 and usage["cached_tokens"] == 100_000
-    notices = [e["text"] for e in events if e["type"] == "notice"]
-    assert "compressing older tool results" in notices[0]
-    assert "7 tool results (90,000 → 4,000 chars)" in notices[1]
 
 
 def test_chat_missing_session_and_empty_message(studio):
@@ -2757,62 +2746,6 @@ def test_the_agent_remembers_every_earlier_turn(tmp_path):
     registry.close()
 
     assert model.seen[-1] == [f"turn {i}" for i in range(5)]
-
-
-def test_an_earlier_runs_tool_result_is_compressed_once(tmp_path, monkeypatch):
-    """A tool result first compressed in a later run keeps that
-    compression. agno sends an earlier run as copies it drops before
-    storing the run, so without keeping it, every later turn compressed
-    the same result again: a model call each, and a fresh summary that
-    changed the prompt."""
-    from agno.compression.manager import CompressionManager
-
-    from nontainer_studio import providers
-    from nontainer_studio.dummy import DummyModel
-
-    over = {"on": False}  # the watermark, crossed from turn 2 on
-    compressed: list[str] = []
-
-    async def summarise(self, tool_result, run_metrics=None):
-        compressed.append(str(tool_result.content))
-        return "short"
-
-    monkeypatch.setattr(providers, "compress_token_limit", lambda spec: 1)
-    monkeypatch.setattr(
-        CompressionManager, "should_compress", lambda self, *a, **k: over["on"]
-    )
-    monkeypatch.setattr(
-        CompressionManager, "ashould_compress", _async(lambda: over["on"])
-    )
-    monkeypatch.setattr(CompressionManager, "_acompress_tool_result", summarise)
-
-    registry = sessions_mod.Registry(
-        model_factory=lambda spec=None: DummyModel(), store=tmp_path
-    )
-
-    def turn(i: int, word: str) -> None:
-        code = json.dumps({"code": f"print({word!r})"})
-        _run(client, "s1", f"!tool run_python {code}\n!text turn {i}")
-
-    with TestClient(server.build_app(registry)) as client:
-        client.post("/api/sessions", json={"name": "s1"})
-        turn(1, "first")
-        over["on"] = True
-        turn(2, "second")
-        turn(3, "third")
-        runs = registry.db.get_session("s1").runs
-    registry.close()
-
-    assert sum("first" in c for c in compressed) == 1
-    first = [m for m in runs[0].messages if m.role == "tool"]
-    assert [m.compressed_content for m in first] == ["short"]
-
-
-def _async(answer):
-    async def call(*a, **k):
-        return answer()
-
-    return call
 
 
 def test_edit_rewinds_files_and_memory_in_one_restore(scripted):
@@ -7971,91 +7904,3 @@ def test_a_note_delivered_before_a_provider_error_is_not_delivered_again(
     assert len(carried) == 1 and carried[0].role == "tool"
     assert session.inbox.pending() == []
     assert session.inbox.delivered() == []
-
-
-# -- compression: the tool's output coarsens, the human's words do not --------
-
-
-def _tool_message(content: str):
-    from agno.models.message import Message
-
-    return Message(role="tool", tool_name="run_python", content=content)
-
-
-def _with_note(bare: str, text: str) -> tuple:
-    """A tool result as the delivery hook leaves it: the tool's own
-    output, then the rendered block."""
-    from nontainer.inbox import Inbox
-
-    inbox = Inbox()
-    block = inbox.render([inbox.put(text)])
-    return bare + block, block
-
-
-def test_compression_summarises_the_tool_and_keeps_the_note_verbatim(monkeypatch):
-    """A tool result that carried a mid-turn message must not have that
-    message paraphrased into the model's memory: the agent would go on
-    acting on a retelling of words it was given exactly once."""
-    from agno.compression.manager import CompressionManager
-
-    from nontainer_studio.compression import InboxAwareCompression
-
-    monkeypatch.setattr(
-        CompressionManager,
-        "_compress_tool_result",
-        lambda self, tool_result, run_metrics=None: (
-            f"summary of: {tool_result.content}"
-        ),
-    )
-    content, block = _with_note("12000 rows, 4 columns", "switch to a log scale")
-    message = _tool_message(content)
-
-    manager = InboxAwareCompression(compress_token_limit=1000)
-    assert manager._compress_tool_result(message) == (
-        "summary of: 12000 rows, 4 columns" + block
-    )
-    # the live message is untouched by the pass that read it
-    assert message.content == content
-
-    # and through agno's own loop, which is what actually runs
-    manager.compress([message])
-    assert message.compressed_content == "summary of: 12000 rows, 4 columns" + block
-    assert "switch to a log scale" in message.compressed_content
-
-
-def test_compression_leaves_a_plain_tool_result_alone(monkeypatch):
-    from agno.compression.manager import CompressionManager
-
-    from nontainer_studio.compression import InboxAwareCompression
-
-    monkeypatch.setattr(
-        CompressionManager,
-        "_compress_tool_result",
-        lambda self, tool_result, run_metrics=None: (
-            f"summary of: {tool_result.content}"
-        ),
-    )
-    message = _tool_message("12000 rows, 4 columns")
-    assert InboxAwareCompression()._compress_tool_result(message) == (
-        "summary of: 12000 rows, 4 columns"
-    )
-
-
-def test_the_async_compression_path_keeps_the_note_too(monkeypatch):
-    """Two spellings because agno has two run loops, and the studio
-    drives the async one."""
-    from agno.compression.manager import CompressionManager
-
-    from nontainer_studio.compression import InboxAwareCompression
-
-    async def summarise(self, tool_result, run_metrics=None):
-        return f"summary of: {tool_result.content}"
-
-    monkeypatch.setattr(CompressionManager, "_acompress_tool_result", summarise)
-    content, block = _with_note("12000 rows, 4 columns", "switch to a log scale")
-    message = _tool_message(content)
-
-    manager = InboxAwareCompression(compress_token_limit=1000)
-    asyncio.run(manager.acompress([message]))
-    assert message.compressed_content == "summary of: 12000 rows, 4 columns" + block
-    assert message.content == content

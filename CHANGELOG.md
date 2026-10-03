@@ -147,6 +147,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **No tool-result compression.** The studio no longer has agno
+  summarise old tool results at a context watermark, and
+  `NONTAINER_STUDIO_COMPRESS_TOKENS` is gone. Now that every earlier run
+  is sent, it would have worked against the prompt cache: agno sends an
+  earlier run as copies it does not store, so a result first summarised
+  in a later turn was summarised again on every turn after. That meant
+  a model call each time, and a reworded summary that changed the
+  prompt. Keeping it working needed more machinery than it was worth.
+  Compaction, which folds older turns into one summary for the model
+  while the transcript keeps everything, is the planned bound
+  (nontainer's `docs/compaction.md`). Until then nothing shrinks the
+  context, and a session that outgrows the model's window fails with
+  the provider's error.
+
 - **Requires nontainer 0.8.7** (termish 0.2.1, monkeyfs 0.2.5).
   - **Merging a delegate's work holds up.** `cd /workspace && ws-git
     merge x` in one call lands rather than being refused with advice
@@ -262,17 +276,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   said it had never delegated, and pieced the story back together from
   `ws-git log`. The window also moved on every run, which changed the
   start of the prompt, so from the fifth run on none hit the prompt
-  cache, not even a wake seconds after the run before it. Every earlier run is sent
-  now. Tool-result compression still starts at the model's watermark,
-  and compacting older turns into a summary is planned as the next step.
-- **An earlier turn's tool result is compressed once.** agno sends an
-  earlier run as copies it drops before storing the run, so it keeps a
-  compression only when it is made in the run the result belongs to. A
-  result that first crossed the watermark in a later turn was compressed
-  again on every turn after: one model call per result per turn, and a
-  freshly worded summary that changed the prompt and missed the cache.
-  The compression is now kept on the stored message. With the whole
-  conversation sent, that cost would have grown with every turn.
+  cache, not even a wake seconds after the run before it. Every
+  earlier run is sent now.
 
 - **An edit to before a delegate was asked for unsays it.** Rewinding to
   an earlier message took back the agent's turns after it but not the

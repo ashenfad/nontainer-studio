@@ -36,7 +36,6 @@ The server-side halves:
 | `nontainer_studio/config.py` | what the environment decides: store, executor, apps config, settings, agent-only host objects |
 | `nontainer_studio/prompts.py` | what the agent is told: the primer, frontend notes, tool and host-object text |
 | `nontainer_studio/web.py`, `media.py` | the `web` and `media` host objects |
-| `nontainer_studio/compression.py` | tool-result compression that keeps a mid-run human message verbatim |
 | `nontainer_studio/summaries.py` | the stateless second pass that names a session and describes an app |
 | `nontainer_studio/providers.py` | which model backends are available, model specs, thinking and context settings |
 | `nontainer_studio/dummy.py` | the scripted model the tests (and you) can drive by hand |
@@ -108,7 +107,7 @@ event carries its sequence number as its cursor.
 | `tool_start` | `name`, `args` | a tool call begins; `args` are shaped and shortened for display |
 | `tool_end` | `name`, `result` | a tool call returns. A mid-run message is cut back out of the result first, so the tool box shows the tool's own output |
 | `artifact` | `name`, `path`, `kind` | a `ui = {...}` value became a file; parsed from the raw tool result, so a long one does not truncate the note away |
-| `notice` | `text` | turn stopped, model switched, upload written, compression started or finished, a provider error the turn is resuming from |
+| `notice` | `text` | turn stopped, model switched, upload written, a provider error the turn is resuming from |
 | `usage` | `input_tokens`, `cached_tokens` | context telemetry, one per model call; the frontend keeps only the latest |
 | `error` | `message` | the run errored and its one resume did not clear it, the run loop raised, or the studio shut down on a turn it could not wait out |
 | `done` | `run_id`, `head` | the turn ended. `head` is the workspace at turn end — the commit ↔ conversation mapping a rewind needs |
@@ -127,7 +126,7 @@ uv run pytest
 No LLM key is needed anywhere in the suite.
 
 - `test_server.py` drives the server plumbing — workspaces, forks,
-  publish, restore, the queue, compression — against a `FakeAgent` that
+  publish, restore, the queue — against a `FakeAgent` that
   stands in for the whole agent. Subclasses of it script the specific
   behaviour a test needs (a thinking agent, an artifact agent, one that
   hangs until a gate opens).

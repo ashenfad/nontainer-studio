@@ -67,7 +67,6 @@ risks a turn that spends it all thinking and ends before its tool call.
 | `NONTAINER_STUDIO_SKILLS` | the repo's `skills/` | directory of starter skills seeded into new sessions |
 | `NONTAINER_STUDIO_APP_ASSETS` | `nontainer_studio/appassets/` | the browser libraries served to agent-authored apps at `vendor/` |
 | `NONTAINER_STUDIO_CSP` | derived | the content-security policy published apps carry; `none` drops it |
-| `NONTAINER_STUDIO_COMPRESS_TOKENS` | per-model | the context watermark at which old tool results are compressed |
 
 A skill is any child directory of the skills root holding a `SKILL.md`.
 A skill whose workflow needs a knob that is off is not seeded: the
@@ -103,13 +102,6 @@ it. An explicit policy is used verbatim and therefore has to carry its
 own script hosts (and `'wasm-unsafe-eval'` if a vendored library has a
 wasm core); unset, the policy is derived from the config's `script_hosts`,
 which is empty.
-
-`NONTAINER_STUDIO_COMPRESS_TOKENS` overrides a watermark otherwise
-computed per model — 60% of its context window, clamped to 32k–250k, or
-100k when the context length is unknown. `0`, `off`, `none` or `false`
-disables compression; any other number is floored at 1,000. The
-transcript keeps full detail either way: only the model's view of old
-tool results coarsens.
 
 ## Where agent code runs
 
