@@ -124,19 +124,25 @@ def shared_db(parent: str) -> str:
     )
 
 
-def inherited_conversation(parent: str) -> str:
+def inherited_conversation(parent: str, owner: str | None = None) -> str:
     """The role a delegate forked with ``inherit="full"`` takes up.
 
-    Such a delegate opens on ``parent``'s conversation — a person's
-    requests and the parent's replies — and this message arrives as one
-    more user turn. Left there, it reads as the person asking: it
-    answers them, carries on the plan above, or delegates the way the
-    conversation shows "it" doing. So the change of principal is said
-    before the task, in the message rather than the system prompt, which
-    stays the parent's and keeps its cached prefix.
+    Such a delegate opens on a conversation — a person's requests and an
+    agent's replies — and this message arrives as one more user turn.
+    Left there, it reads as the person asking: it answers them, carries
+    on the plan above, or delegates the way the conversation shows "it"
+    doing. So the change of principal is said before the task, in the
+    message rather than the system prompt, which stays the parent's and
+    keeps its cached prefix.
+
+    ``owner`` is the session whose conversation it is: the parent's own
+    by default, and another session's when the delegate was forked from
+    there (``fork_from``) — the session asking is not then the one whose
+    turns the delegate is reading.
     """
+    owner = owner or parent
     return (
-        f"The conversation above is `{parent}`'s, as of the commit you were "
+        f"The conversation above is `{owner}`'s, as of the commit you were "
         f"forked at: its person's requests and its own replies. You are not "
         f"continuing it. You are a delegate of `{parent}` with one task, "
         f"below; this message is `{parent}` speaking, not its person, and "
@@ -147,7 +153,12 @@ def inherited_conversation(parent: str) -> str:
 
 
 def brief(
-    parent: str, commit: str | None, *, versioning: bool, inherited: bool = False
+    parent: str,
+    commit: str | None,
+    *,
+    versioning: bool,
+    inherited: bool = False,
+    inherited_from: str | None = None,
 ) -> str:
     """The whole frame a delegated task carries, ready to prepend.
 
@@ -155,12 +166,13 @@ def brief(
     is what its session recorded when it was wired: an agent whose
     terminal does not carry the verb would otherwise be taught a
     spelling it cannot run. ``inherited`` is whether the delegate
-    opens on its parent's conversation (``inherit="full"``), which
-    needs its change of role said first.
+    opens on an inherited conversation (``inherit="full"``), which needs
+    its change of role said first, and ``inherited_from`` the session
+    that conversation is — the parent's unless it was forked elsewhere.
     """
     return (
         provenance_header(parent, commit)
-        + (inherited_conversation(parent) if inherited else "")
+        + (inherited_conversation(parent, inherited_from) if inherited else "")
         + (VERSIONING if versioning else "")
         + shared_db(parent)
         + "The task follows.\n\n"
@@ -370,33 +382,43 @@ class StudioRunner:
         child's primer was built from, so one session is never told two
         things about one verb.
         """
+        owner = self._inherited(child, forked_at)
         return brief(
             self._parent,
             forked_at,
             versioning=child.wsgit,
-            inherited=self._inherited(child, forked_at),
+            inherited=owner is not None,
+            inherited_from=owner,
         )
 
     @staticmethod
-    def _inherited(child: "Session", forked_at: str | None) -> bool:
-        """Whether the delegate opens on its parent's conversation.
+    def _inherited(child: "Session", forked_at: str | None) -> str | None:
+        """The session whose conversation the delegate opens on, or None.
 
-        True for the first turn of a fork made with ``inherit="full"``:
-        the runs it holds are exactly the ones its parent held at the
-        fork point, none of them its own. A ``fresh`` fork holds none,
-        and a resumed delegate holds runs of its own past the fork, and
-        neither needs to be told whose conversation it is reading.
+        A session for the first turn of a fork made with
+        ``inherit="full"``: the runs it holds are exactly the ones held
+        at the fork point, none of them its own. A ``fresh`` fork holds
+        none, and a resumed delegate holds runs of its own past the fork,
+        and neither needs to be told whose conversation it is reading.
+
+        The session named is the one the fork rebound the conversation
+        from (``session_data["forked_from_session_id"]``), which is the
+        fork point's own session: the parent, or wherever ``fork_from``
+        started the delegate.
         """
         if forked_at is None:
-            return False
+            return None
         provider = child.ws.provider
         mine = provider.kv.get(CONVERSATION_SESSION_KEY) or {}
         held = list(mine.get("run_ids") or [])
         try:
             at = provider.key_at(forked_at, CONVERSATION_SESSION_KEY) or {}
         except Exception:  # noqa: BLE001 - an unreadable point inherits nothing
-            return False
-        return bool(held) and held == list(at.get("run_ids") or [])
+            return None
+        if not held or held != list(at.get("run_ids") or []):
+            return None
+        origin = (mine.get("session_data") or {}).get("forked_from_session_id")
+        return origin or at.get("session_id") or ""
 
     def _turn(self, child: "Session", prompt: str) -> tuple[str, str | None]:
         """One turn, run the way a human's turn runs; its prose and error.
