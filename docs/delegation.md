@@ -65,11 +65,22 @@ ws-git checkout <name> -- <paths>   # take some
 ws-git worktree add <dir> <name>    # check its tree out under a directory
 ```
 
-A delegate's work arrives as a *named* commit only if the delegate runs
-`ws-git commit`; what it staged is taken as exactly that, and anything it
-wrote past its last commit is reported as left out rather than committed
-on its behalf. A delegate that never touches `ws-git` is simpler: its
-branch head is its result, since every write is already there.
+Everything a delegate writes is its answer, so it never needs `ws-git`
+to hand its work over. A delegate that never touches `ws-git` answers at
+its branch head, since every write is already there. One that does
+commit is making checkpoints: whatever it writes after its last commit
+is committed for it when it answers, under a message saying the
+delegation mechanism made the commit, and the answer names that commit
+(nontainer 0.8.6). The exception is a delegate that answers with a
+merge of its own unresolved: its work is reported as left uncommitted
+and `ws-git merge` refuses it, so conflict markers never arrive
+unannounced.
+
+App logs and test_app screenshots (`app/logs`, `app/screenshots`) are
+never part of the work. They stay on the delegate's branch, out of
+`ws-git diff <name>` and the answer's list of changed paths, and a merge
+keeps the parent's own copies. So a delegate can check its scene with
+test_app after committing and still merge cleanly.
 
 Without the verb, delegation is the degraded half of itself — the
 delegate's answer is all that ever comes back, and the honest thing to
