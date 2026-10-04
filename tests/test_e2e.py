@@ -1730,3 +1730,41 @@ def test_deleting_the_parent_moves_the_view_off_its_delegate(page, server):
     expect(page.locator(".delegate-bar")).to_have_count(0, timeout=20000)
     expect(page.locator("textarea")).to_have_count(1)
     assert "e2e-cascade" not in page.url
+
+
+def test_a_compacted_conversation_shows_a_marker_that_opens_to_the_summary(
+    browser, tmp_path_factory
+):
+    """Past the budget, the earlier turns reach the agent as one summary.
+    The transcript keeps them, and a marker where the fold happened says
+    how many turns it covers and opens to what the agent now remembers.
+    It is an event in the log, so a reload shows it again."""
+    started = _studio(tmp_path_factory, NONTAINER_STUDIO_COMPACT_TOKENS="1000")
+    server = next(started)
+    page = browser.new_page()
+    try:
+        page.goto(f"{server}/?session=e2e-compact")
+        _send(page, "!text The first reply.")
+        expect(page.locator(".agent-msg").last).to_contain_text(
+            "The first reply.", timeout=15000
+        )
+        _send(page, "!text The second reply.")
+        expect(page.locator(".agent-msg").last).to_contain_text(
+            "The second reply.", timeout=15000
+        )
+
+        marker = page.locator("details.compaction")
+        expect(marker).to_have_count(1)
+        expect(marker.locator("summary")).to_contain_text("1 earlier turn summarized")
+        expect(marker.locator(".compaction-summary")).to_be_hidden()
+        marker.locator("summary").click()
+        expect(marker.locator(".compaction-summary")).to_be_visible()
+        expect(marker.locator(".compaction-summary")).not_to_be_empty()
+        # the person still sees the turn the agent now has as a summary
+        expect(page.locator(".agent-msg").first).to_contain_text("The first reply.")
+
+        page.reload()
+        expect(page.locator("details.compaction")).to_have_count(1, timeout=15000)
+    finally:
+        page.close()
+        next(started, None)

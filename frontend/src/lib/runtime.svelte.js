@@ -35,6 +35,11 @@
 //                                      to the model with a tool result. No
 //                                      `head`: the turn began before it was
 //                                      said, so it is not an edit anchor
+//   {type:'compaction', turns, summary, tokens_before, tokens_after}
+//                                    — the agent's context was compacted:
+//                                      from here on the earlier turns reach
+//                                      the model as this one summary. The
+//                                      transcript keeps every turn
 //   {type:'notice', text}            — uploads, ...
 //   {type:'error',  message}
 //   {type:'done',   run_id, head}    — turn boundary
@@ -430,6 +435,22 @@ export class SessionRuntime {
             })
             this.version++
             refreshSessions()
+        } else if (ev.type === 'compaction') {
+            // The model's context was compacted. A fold can happen
+            // mid-turn, between two model calls, so like an
+            // interjection it closes the agent message so far: the
+            // marker sits where it happened, and what follows was
+            // written from the summary.
+            const open = this.messages.at(-1)
+            if (open?.role === 'agent') open.streaming = false
+            this.messages.push({
+                role: 'compaction',
+                turns: ev.turns,
+                summary: ev.summary,
+                before: ev.tokens_before,
+                after: ev.tokens_after,
+            })
+            this.version++
         } else if (ev.type === 'notice') {
             this.messages.push({ role: 'notice', text: ev.text })
             this.version++
