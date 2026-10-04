@@ -5988,16 +5988,20 @@ def _module_exports(path: Path) -> set[str]:
 def test_the_skill_lists_exactly_the_icons_that_exist():
     """Curating the icon set is what keeps it at 14 KB instead of 4.3 MB,
     and the cost is that a name outside the set fails. So the list is
-    part of the contract: the skill prints it, and an agent picks from
-    it rather than from memory. A list that drifts from the bundle is
-    worse than no list — it would send the agent at a name that isn't
-    there, with the skill's own authority behind it."""
+    part of the contract: the skill's vendor listing prints it, the
+    skill sends icon questions there, and an agent picks from it rather
+    than from memory. A list that drifts from the bundle is worse than
+    no list — it would send the agent at a name that isn't there, with
+    the skill's own authority behind it."""
     root = Path(__file__).parent.parent
     bundled = _module_exports(root / "nontainer_studio" / "appassets" / "icons.min.js")
-    skill = (root / "skills" / "building-apps" / "SKILL.md").read_text()
+    skill_dir = root / "skills" / "building-apps"
+    vendor = (skill_dir / "references" / "vendor.md").read_text()
+    skill = (skill_dir / "SKILL.md").read_text()
+    assert "only the names in `references/vendor.md`" in skill
 
-    block = re.search(r"```\n(Add ArrowBack.*?)\n```", skill, re.S)
-    assert block, "the icon manifest is gone from SKILL.md"
+    block = re.search(r"```\n(Add ArrowBack.*?)\n```", vendor, re.S)
+    assert block, "the icon manifest is gone from references/vendor.md"
     listed = set(block.group(1).split())
 
     assert listed == bundled, (
@@ -6660,6 +6664,58 @@ def test_the_skill_defines_done_and_ships_the_readme_reference():
         "## Decisions",
     ):
         assert section in readme
+
+
+def test_the_rules_that_bite_are_where_a_delegate_reads():
+    """Agents read the skill with `head`: delegates took its first 60 to
+    100 lines, parents 200 or all of it. Rules placed past that went
+    unread in live runs (an agent reached for `node`, another left test
+    rows in the live db), so the ones that cost turns sit in the first
+    hundred lines, and the page stays short enough to read whole."""
+    skill = (
+        Path(__file__).parent.parent / "skills" / "building-apps" / "SKILL.md"
+    ).read_text()
+    lines = skill.splitlines()
+    head = "\n".join(lines[:100])
+    for rule in (
+        "cp /workspace/skills/building-apps/references/app.jsx",
+        "house/theme",
+        "@mui/icons-material",
+        "ONE `.jsx` file",
+        "native: true",
+        "VERB functions",
+        'req.require("n", int)',
+        "Only `app/` publishes",
+        "`db` is LIVE",
+        "never under `app/`",
+        "There is no `node`",
+        "testdb",
+        "api.log",
+        "ws-curl",
+    ):
+        assert rule in head, f"{rule!r} is not in the first 100 lines"
+    assert len(lines) <= 160, f"SKILL.md is {len(lines)} lines"
+    for name in ("frontend.md", "handlers.md", "testing.md", "debugging.md"):
+        assert f"references/{name}" in skill
+        assert (
+            Path(__file__).parent.parent
+            / "skills"
+            / "building-apps"
+            / "references"
+            / name
+        ).is_file()
+
+
+def test_a_references_conditional_blocks_are_resolved_too(studio):
+    """The detail moved into references/ carries `<!--if:...-->` blocks
+    of its own (the termish note in debugging.md), resolved for the
+    session like SKILL.md's, never served raw."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    fs = registry.get("s1").ws.files.fs
+    text = fs.read("/workspace/skills/building-apps/references/debugging.md").decode()
+    assert "<!--if:" not in text and "<!--endif-->" not in text
+    assert "The terminal is not bash" in text  # the default rung is termish
 
 
 def test_the_primer_makes_the_unit_test_runs_part_of_done():

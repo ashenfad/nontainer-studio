@@ -161,6 +161,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The building-apps skill puts what bites first.** In live runs,
+  delegates read it with `head -n 60` or `head -n 100` and parents with
+  `head -n 200`. The skill was 480 lines, and what sat past those points
+  went unread: an agent reached for `node`, and another left test rows
+  in the live `db`. `SKILL.md` is now about 150 lines:
+  - The rules that have cost turns come first, one line each, under
+    tests and tools, handlers, and frontend. The first hundred lines
+    hold all of them.
+  - Then the reference copy block, the definition of done, and what
+    makes a verification mean something.
+  - The longer explanations moved, verbatim, into
+    `references/handlers.md`, `frontend.md`, `testing.md` and
+    `debugging.md`, and each rule names the file to read.
+  - The icon list lives only in `references/vendor.md`, which is
+    generated from the bundle.
+  - Conditional blocks are now resolved in every markdown file of a
+    skill, not only `SKILL.md`, so the termish note in `debugging.md`
+    reaches only sessions whose terminal is termish.
+  - A test keeps the rules inside the first hundred lines and the page
+    under 160.
+
 - **Starter skills are mounted read-only, not copied in.** Each session
   used to get its own copy of `skills/` in its tree. ws-git saw it, so a
   delegate's `ws-git add -A` swept the whole directory into its commit,
