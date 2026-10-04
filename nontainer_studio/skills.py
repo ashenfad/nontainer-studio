@@ -207,7 +207,8 @@ class SkillsMixin:
     ) -> dict[str, bytes]:
         """The starter set a session with this executor and ws-git
         answer is given, as ``{"<skill>/<path>": bytes}``: each seed's
-        files with its SKILL.md resolved for the session, and its
+        files with its markdown resolved for the session (SKILL.md and
+        the references it points into alike), and its
         generated files, then the skills its granted python modules ship
         (``<pkg>/skills/``, nontainer's convention), resolved the same
         way. A seed wins a name both have. Best-effort per file: one
@@ -221,7 +222,7 @@ class SkillsMixin:
                     data = path.read_bytes()
                 except OSError:
                     continue
-                if rel == f"{seed.name}/SKILL.md":
+                if rel.endswith(".md"):
                     text = data.decode("utf-8", "replace")
                     data = SkillsMixin._resolve_skill_text(
                         text, commands=commands, delegation=delegation
@@ -242,7 +243,7 @@ class SkillsMixin:
                 continue
             taken.add(name)
             for rel, data in files.items():
-                if rel == "SKILL.md":
+                if rel.endswith(".md"):
                     data = SkillsMixin._resolve_skill_text(
                         data.decode("utf-8", "replace"),
                         commands=commands,
@@ -307,7 +308,8 @@ class SkillsMixin:
             log.warning("starter skills could not be built", exc_info=True)
             return {}
 
-    # Conditional blocks in starter SKILL.md files, `<!--if:KEY-->` …
+    # Conditional blocks in a starter skill's markdown (SKILL.md and
+    # its references alike), `<!--if:KEY-->` …
     # `<!--endif-->`, or `<!--if:no-KEY-->` for the other side. Skill text
     # that teaches what a session does not have costs the agent a turn to
     # discover, so such text is written in a block rather than
