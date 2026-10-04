@@ -117,6 +117,61 @@ def _stamp_generated(label: str, body: bytes) -> bytes:
     return f"<!-- {label}; generated, sha256 {digest} -->\n".encode() + body
 
 
+def _module_grants(modules: Any) -> list[Any]:
+    """The modules a python config grants, flattened: its entries may be
+    preset groups (lists of grants) as well as grants and modules."""
+    out: list[Any] = []
+    for entry in modules or ():
+        if isinstance(entry, (list, tuple)):
+            out.extend(_module_grants(entry))
+        else:
+            out.append(getattr(entry, "module", entry))
+    return out
+
+
+def _module_skills(modules: Any) -> list[tuple[str, dict[str, bytes]]]:
+    """``(name, {path: bytes})`` for each skill a granted module's
+    package ships, read whole: a package inside a zip has no directory
+    to mount, but its bytes go into the starter set like any other."""
+    from nontainer import skills
+
+    found: list[tuple[str, dict[str, bytes]]] = []
+    seen: set[str] = set()
+    for module in _module_grants(modules):
+        top = (getattr(module, "__name__", None) or str(module)).split(".")[0]
+        if not top or top in seen:
+            continue
+        seen.add(top)
+        try:
+            dirs = skills.discover(top)
+        except Exception:
+            continue
+        for skill_dir in dirs:
+            try:
+                files = _read_tree(skill_dir)
+                meta = skills.frontmatter(files.get("SKILL.md", b""))
+                raw = meta.get("name") or skill_dir.name
+                name = re.sub(r"[^a-z0-9._-]+", "-", raw.lower()).strip("-")
+            except Exception:
+                continue
+            if name and "SKILL.md" in files:
+                found.append((name, files))
+    return found
+
+
+def _read_tree(node: Any, prefix: str = "") -> dict[str, bytes]:
+    """Every file under a directory-like node (a path or a package
+    resource), by relative path."""
+    out: dict[str, bytes] = {}
+    for child in node.iterdir():
+        rel = f"{prefix}/{child.name}" if prefix else child.name
+        if child.is_dir():
+            out.update(_read_tree(child, rel))
+        elif child.is_file():
+            out[rel] = child.read_bytes()
+    return out
+
+
 class SkillsMixin:
     """Starter skills, as part of ``Registry``: the read-only mounts a
     session is opened with."""
@@ -147,12 +202,16 @@ class SkillsMixin:
         return seeds
 
     @staticmethod
-    def _starter_files(*, commands: bool, wsgit: bool) -> dict[str, bytes]:
+    def _starter_files(
+        *, commands: bool, wsgit: bool, modules: Any = ()
+    ) -> dict[str, bytes]:
         """The starter set a session with this executor and ws-git
         answer is given, as ``{"<skill>/<path>": bytes}``: each seed's
         files with its SKILL.md resolved for the session, and its
-        generated files. Best-effort per file: one that will not read
-        or generate is left out, not fatal."""
+        generated files, then the skills its granted python modules ship
+        (``<pkg>/skills/``, nontainer's convention), resolved the same
+        way. A seed wins a name both have. Best-effort per file: one
+        that will not read or generate is left out, not fatal."""
         delegation = _can_delegate(wsgit)
         out: dict[str, bytes] = {}
         for seed in SkillsMixin._skill_seeds(wsgit=wsgit):
@@ -177,15 +236,30 @@ class SkillsMixin:
                 continue
             for rel, (label, body) in generated.items():
                 out[f"{seed.name}/{rel}"] = _stamp_generated(label, body)
+        taken = {rel.split("/", 1)[0] for rel in out}
+        for name, files in _module_skills(modules):
+            if name in taken:
+                continue
+            taken.add(name)
+            for rel, data in files.items():
+                if rel == "SKILL.md":
+                    data = SkillsMixin._resolve_skill_text(
+                        data.decode("utf-8", "replace"),
+                        commands=commands,
+                        delegation=delegation,
+                    ).encode()
+                out[f"{name}/{rel}"] = data
         return out
 
-    def _starter_dir(self, *, commands: bool, wsgit: bool) -> Path | None:
+    def _starter_dir(
+        self, *, commands: bool, wsgit: bool, modules: Any = ()
+    ) -> Path | None:
         """The resolved starter set on disk, written once: its directory
         is named by a hash of what it holds, so an existing one is never
         rewritten (a session may have it mounted) and a changed set gets
         a directory of its own. ``None`` when there are no starter
         skills."""
-        files = self._starter_files(commands=commands, wsgit=wsgit)
+        files = self._starter_files(commands=commands, wsgit=wsgit, modules=modules)
         if not files:
             return None
         digest = hashlib.sha256()
@@ -220,29 +294,18 @@ class SkillsMixin:
         root: str = "/workspace",
     ) -> dict[str, Any]:
         """The read-only mounts a session is opened with: the starter
-        set for its executor and ws-git answer, and any skills the
-        python modules it is granted ship (``<pkg>/skills/``, the
-        nontainer convention). Best-effort: a set that will not build
-        leaves the session without starter skills, never unopened."""
+        set for its executor and ws-git answer, its granted modules'
+        skills included (see ``_starter_files``). Best-effort: a set
+        that will not build leaves the session without starter skills,
+        never unopened."""
         from nontainer import skills
 
-        mounts: dict[str, Any] = {}
         try:
-            starter = self._starter_dir(commands=commands, wsgit=wsgit)
-            if starter is not None:
-                mounts.update(skills.mounts(starter, root=root))
+            starter = self._starter_dir(commands=commands, wsgit=wsgit, modules=modules)
+            return skills.mounts(starter, root=root) if starter is not None else {}
         except Exception:
             log.warning("starter skills could not be built", exc_info=True)
-        for entry in modules or ():
-            try:
-                found = skills.discover(getattr(entry, "module", entry))
-                for point, mount in (
-                    skills.mounts(*found, root=root).items() if found else ()
-                ):
-                    mounts.setdefault(point, mount)
-            except Exception:
-                continue  # a library's skill that cannot be mounted
-        return mounts
+            return {}
 
     # Conditional blocks in starter SKILL.md files, `<!--if:KEY-->` …
     # `<!--endif-->`, or `<!--if:no-KEY-->` for the other side. Skill text

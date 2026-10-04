@@ -7964,3 +7964,46 @@ def test_a_session_opens_with_the_studios_ignore_patterns(studio):
     assert ws._ignores("/workspace/__pycache__/m.cpython-313.pyc")
     assert ws._ignores("/tmp/scratch.mjs")
     assert not ws._ignores("/workspace/app/main.py")
+
+
+def test_a_granted_modules_skill_joins_the_starter_set_resolved(tmp_path, monkeypatch):
+    """A library granted to the sandbox may ship skills (`<pkg>/skills/`).
+    Grants come in preset groups, so they are flattened first; the
+    skill joins the starter set and its conditional blocks resolve like
+    any starter skill's. One inside a zip is read rather than mounted."""
+    import sys
+    import zipfile
+    from types import SimpleNamespace
+
+    skill = (
+        "---\nname: using-skilllib\ndescription: how to drive skilllib\n---\n"
+        "<!--if:commands-->\ntermish here\n<!--endif-->\n"
+        "<!--if:no-commands-->\nreal bash here\n<!--endif-->\n"
+    )
+    pkg = tmp_path / "skilllib"
+    (pkg / "skills" / "using-skilllib").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "skills" / "using-skilllib" / "SKILL.md").write_text(skill)
+    archive = tmp_path / "zipped.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("ziplib/__init__.py", "")
+        z.writestr(
+            "ziplib/skills/zipped/SKILL.md", "---\nname: zipped\n---\nfrom a zip\n"
+        )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.syspath_prepend(str(archive))
+    import skilllib
+    import ziplib
+
+    try:
+        group = [SimpleNamespace(module=skilllib), SimpleNamespace(module=ziplib)]
+        files = sessions_mod.Registry._starter_files(
+            commands=False, wsgit=False, modules=[group]
+        )
+        text = files["using-skilllib/SKILL.md"].decode()
+        assert "real bash here" in text and "termish here" not in text
+        assert "<!--if:" not in text
+        assert files["zipped/SKILL.md"].decode().endswith("from a zip\n")
+    finally:
+        sys.modules.pop("skilllib", None)
+        sys.modules.pop("ziplib", None)
