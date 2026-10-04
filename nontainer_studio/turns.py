@@ -524,6 +524,7 @@ async def _one_turn(
                     "name": name,
                     "status": answer.status,
                     "text": delegates.answer_message(name, answer),
+                    **delegates.answer_run(answer),
                 }
             )
         for name, note in notes:

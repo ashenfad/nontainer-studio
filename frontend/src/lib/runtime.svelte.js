@@ -432,6 +432,8 @@ export class SessionRuntime {
                 name: ev.name,
                 status: ev.status,
                 text: ev.text,
+                started: ev.started,
+                finished: ev.finished,
             })
             this.version++
             refreshSessions()

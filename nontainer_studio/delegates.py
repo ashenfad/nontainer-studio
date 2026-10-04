@@ -227,6 +227,23 @@ WAKE_MESSAGE = (
 person's message occupies, after the answers themselves."""
 
 
+def answer_run(answer: Answer) -> dict:
+    """The run an answer came from, for its `delegate` event: when it
+    started and finished, from the provenance nontainer stamps on it.
+
+    ``started`` is what names the answer. A delegate given a second
+    task answers again under the same name, so the delivery record
+    (``Session.answered_delegates``) tells two answers apart by the run
+    that wrote each, and a card shows how long that run took rather
+    than how long the delegate's latest one did."""
+    run = {}
+    for key in ("started", "finished"):
+        value = (answer.provenance or {}).get(key)
+        if isinstance(value, (int, float)):
+            run[key] = value
+    return run
+
+
 def answer_message(name: str, answer: Answer) -> str:
     """A delegate's answer as it reaches the session that asked.
 

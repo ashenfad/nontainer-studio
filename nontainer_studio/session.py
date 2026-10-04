@@ -26,7 +26,7 @@ from nontainer.errors import (
 from nontainer.inbox import Inbox, Note
 
 from .config import _delegate_wakes
-from .delegates import answer_message
+from .delegates import answer_message, answer_run
 
 log = logging.getLogger(__name__)
 
@@ -348,7 +348,12 @@ class Session:
         it raises. Both are the same rule, which is that this lists what
         a turn could actually deliver, so it is also what the rail's
         count means. Nor is one an edit unsaid: the conversation that
-        exists now never asked for it."""
+        exists now never asked for it.
+
+        Read per ANSWER, not per delegate: a delegate given a second
+        task (a resume) answers again under the same name, and the
+        transcript showing its first answer says nothing about this
+        one (see :meth:`_shows`)."""
         if self.delegates is None:
             return []
         done = [
@@ -357,8 +362,23 @@ class Session:
             if job.status not in ("running", "cancelled", "expired")
             and job.name not in self.undone_delegates
         ]
-        unread = self.undelivered(job.name for job in done)
+        unread = self._unshown(done)
         return [job for job in done if job.name in unread]
+
+    def _unshown(self, jobs: list) -> set:
+        """Names of those of ``jobs`` whose current answer the
+        transcript does not show — the tail, then the whole log when
+        the tail is full and cannot answer (as :meth:`undelivered`)."""
+        shown = _deliveries(self.events)
+        missing = {job.name for job in jobs if not _shows(shown, job)}
+        if missing and len(self.events) >= MAX_EVENTS and self.log_path is not None:
+            shown = _deliveries(_read_log(self.log_path))
+            missing = {
+                job.name
+                for job in jobs
+                if job.name in missing and not _shows(shown, job)
+            }
+        return missing
 
     def delivered_delegates(self) -> set:
         """Job names whose answers the transcript still shows.
@@ -458,6 +478,7 @@ def _delivery_event(note: Note) -> dict:
             "name": note.job,
             "status": answer.status,
             "text": answer_message(note.job, answer),
+            **answer_run(answer),
         }
     return {"type": "interject", "id": note.id, "text": note.text}
 
@@ -527,6 +548,38 @@ def record_fold(session: "Session", fold: Any) -> None:
 def _load_events(log_path: Path | None) -> list[dict]:
     """Reload a prior run's transcript tail."""
     return _read_log(log_path)[-MAX_EVENTS:]
+
+
+def _deliveries(events: list) -> dict[str, list[tuple[Any, Any]]]:
+    """``name -> [(started, ts), ...]`` for the `delegate` events the
+    transcript shows: which answer each delivered, by the ``started``
+    of the run that wrote it, and when it was written."""
+    out: dict[str, list[tuple[Any, Any]]] = {}
+    for _, event in _visible(events):
+        if event.get("type") == "delegate" and event.get("name"):
+            out.setdefault(event["name"], []).append(
+                (event.get("started"), event.get("ts"))
+            )
+    return out
+
+
+def _shows(shown: dict, job: Any) -> bool:
+    """Whether ``shown`` (see :func:`_deliveries`) holds ``job``'s
+    current answer.
+
+    An answer is named by its delegate and the start of the run that
+    wrote it. A delegate resumed with a second task keeps its name and
+    starts a new run, so its first answer's event does not cover the
+    second, which would otherwise never wake the session or reach it.
+    An event written before events carried ``started`` covers whatever
+    answer had landed by the time it was written."""
+    for started, ts in shown.get(job.name, ()):
+        if started is not None:
+            if started == job.started:
+                return True
+        elif ts is None or job.finished is None or ts >= job.finished:
+            return True
+    return False
 
 
 def _visible(events: list[dict]) -> list[tuple[int, dict]]:
