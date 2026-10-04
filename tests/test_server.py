@@ -2717,6 +2717,52 @@ def _run_ids(registry, name: str) -> list[str]:
     return [run.run_id for run in (record.runs or [])] if record is not None else []
 
 
+def test_a_long_conversation_is_compacted_and_the_transcript_says_so(
+    tmp_path, monkeypatch
+):
+    """Past the budget, the earlier turns reach the model as one
+    summary, and a marker in the transcript says how many turns it
+    covers and what it says. The transcript itself keeps every turn."""
+    from nontainer.compaction import folds
+
+    from nontainer_studio.dummy import DummyModel
+
+    class Recording(DummyModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen: list[list[str]] = []
+
+        async def ainvoke_stream(self, messages, **kwargs):
+            if kwargs.get("tools") and kwargs.get("tool_choice") != "none":
+                self.seen.append([str(m.content) for m in messages if m.role == "user"])
+            async for chunk in super().ainvoke_stream(messages, **kwargs):
+                yield chunk
+
+    monkeypatch.setenv("NONTAINER_STUDIO_COMPACT_TOKENS", "1000")
+    model = Recording()
+    registry = sessions_mod.Registry(
+        model_factory=lambda spec=None: model, store=tmp_path
+    )
+    with TestClient(server.build_app(registry)) as client:
+        client.post("/api/sessions", json={"name": "s1"})
+        _run(client, "s1", "turn 0")
+        events = _run(client, "s1", "turn 1")
+        session = registry.get("s1")
+        [fold] = folds(session.ws)
+        log = [e for e in session.events if e["type"] in ("user", "compaction")]
+    registry.close()
+
+    [marker] = [e for e in events if e["type"] == "compaction"]
+    assert marker["turns"] == 1 and marker["summary"] == fold.summary
+    assert marker["tokens_before"] >= 1000
+    # the model's request carried the summary, not turn 0
+    last = model.seen[-1]
+    assert "turn 0" not in last and last[-1] == "turn 1"
+    assert any(text.endswith(fold.summary) for text in last)
+    # the transcript keeps both turns, with the marker between them
+    assert [e["type"] for e in log] == ["user", "user", "compaction"]
+
+
 def test_the_agent_remembers_every_earlier_turn(tmp_path):
     """Past agno's default window of three runs, the first turn is still
     in what the model is sent. With that default, an agent asked about

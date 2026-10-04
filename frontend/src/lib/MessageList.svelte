@@ -69,6 +69,12 @@
 
     // The composer prepends "[attached: /a, /b]" for the AGENT's
     // benefit; humans get chips. Split it back out for display.
+    // the size a compaction marker's tooltip gives: "~84k → ~3k tokens"
+    function tokensLine(msg) {
+        const k = (n) => (n >= 1000 ? `~${Math.round(n / 1000)}k` : `~${n}`)
+        return msg.before ? `${k(msg.before)} → ${k(msg.after ?? 0)} tokens in context` : ''
+    }
+
     function splitAttached(text) {
         const m = text.match(/^\[attached: ([^\]]+)\]\n?/)
         if (!m) return { files: [], body: text }
@@ -295,6 +301,14 @@
                     <span class="open">open →</span>
                 </button>
             {/if}
+        {:else if msg.role === 'compaction'}
+            <details class="compaction">
+                <summary title={tokensLine(msg)}>
+                    Context compacted · {msg.turns} earlier {msg.turns === 1 ? 'turn' : 'turns'}
+                    summarized for the agent
+                </summary>
+                <div class="compaction-summary"><Markdown text={msg.summary} /></div>
+            </details>
         {:else if msg.role === 'notice'}
             <div class="notice">{msg.text}</div>
         {:else if msg.role === 'error'}
@@ -558,6 +572,39 @@
     .delegate-answer {
         padding: 0 0.8rem 0.5rem;
         overflow-x: auto;
+    }
+    .compaction {
+        align-self: center;
+        max-width: min(44rem, 100%);
+        margin: 0.3rem 0;
+        font-size: 0.72rem;
+        color: var(--text-muted);
+    }
+    .compaction summary {
+        cursor: pointer;
+        list-style: none;
+        text-align: center;
+        background: rgba(255, 255, 255, 0.04);
+        border-radius: 999px;
+        padding: 0.2rem 0.8rem;
+    }
+    .compaction summary::-webkit-details-marker {
+        display: none;
+    }
+    .compaction summary::before {
+        content: '▸ ';
+    }
+    .compaction[open] summary::before {
+        content: '▾ ';
+    }
+    .compaction-summary {
+        margin-top: 0.4rem;
+        padding: 0.6rem 0.9rem;
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+        background: var(--surface);
+        color: var(--text);
+        font-size: 0.8rem;
     }
     .notice {
         align-self: center;

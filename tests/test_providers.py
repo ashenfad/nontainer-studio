@@ -299,6 +299,41 @@ def test_openrouter_meta_failure_is_cached_with_ttl(monkeypatch):
     assert calls["n"] == 2
 
 
+def test_the_compaction_budget_scales_with_the_window(monkeypatch):
+    """60% of the model's window, clamped to [32k, 250k] and kept under
+    a window smaller than the floor; 100k with no window stated when
+    none is known; the env var overrides, and 'off' turns it off."""
+    from nontainer_studio import providers
+
+    monkeypatch.delenv("NONTAINER_STUDIO_COMPACT_TOKENS", raising=False)
+    monkeypatch.setattr(
+        providers,
+        "_openrouter_meta",
+        {
+            "z-ai/glm-5.2": (False, 202_752),
+            "big/ctx": (False, 1_000_000),
+            "tiny/ctx": (False, 16_384),
+        },
+    )
+
+    def policy(spec):
+        p = providers.compaction_policy(spec)
+        return None if p is None else (p.budget, p.window)
+
+    assert policy("openrouter:z-ai/glm-5.2") == (int(202_752 * 0.6), 202_752)
+    assert policy("openrouter:big/ctx") == (250_000, 1_000_000)  # the ceiling
+    assert policy("openrouter:tiny/ctx") == (int(16_384 * 0.8), 16_384)
+    assert policy("anthropic:claude-sonnet-5") == (120_000, 200_000)
+    assert policy("openrouter:unknown/model") == (100_000, None)
+
+    monkeypatch.setenv("NONTAINER_STUDIO_COMPACT_TOKENS", "50000")
+    assert policy("openrouter:big/ctx") == (50_000, 1_000_000)
+    monkeypatch.setenv("NONTAINER_STUDIO_COMPACT_TOKENS", "300000")
+    assert policy("openrouter:z-ai/glm-5.2") == (300_000, None)  # past the window
+    monkeypatch.setenv("NONTAINER_STUDIO_COMPACT_TOKENS", "off")
+    assert policy("openrouter:big/ctx") is None
+
+
 def test_supports_vision_provider_defaults():
     from nontainer_studio import providers
 

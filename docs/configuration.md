@@ -67,6 +67,14 @@ risks a turn that spends it all thinking and ends before its tool call.
 | `NONTAINER_STUDIO_SKILLS` | the repo's `skills/` | directory of starter skills seeded into new sessions |
 | `NONTAINER_STUDIO_APP_ASSETS` | `nontainer_studio/appassets/` | the browser libraries served to agent-authored apps at `vendor/` |
 | `NONTAINER_STUDIO_CSP` | derived | the content-security policy published apps carry; `none` drops it |
+| `NONTAINER_STUDIO_COMPACT_TOKENS` | per-model | the request size at which earlier turns are compacted into one summary; `off` never compacts |
+
+`NONTAINER_STUDIO_COMPACT_TOKENS` overrides a budget otherwise computed
+per model: 60% of its context window, clamped to 32k–250k and kept under
+a window smaller than that, or 100k when the window is unknown. `0`,
+`off`, `none` or `false` turns compaction off; any other number is
+floored at 1,000, which is low enough to watch it happen. Compaction
+changes only what the agent is sent: the transcript keeps every turn.
 
 A skill is any child directory of the skills root holding a `SKILL.md`.
 A skill whose workflow needs a knob that is off is not seeded: the

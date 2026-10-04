@@ -495,6 +495,35 @@ def _record_delivery(session: "Session") -> Callable:
     return record
 
 
+def record_fold(session: "Session", fold: Any) -> None:
+    """Put a compaction marker in the transcript.
+
+    Called by nontainer's compaction on the worker thread the summary
+    was written on, mid-turn, so the event is handed to the loop the
+    turn is on and waited for, as a delivery's is. A failure is logged
+    and nothing more: the fold is recorded either way, and the marker
+    is only the person's view of it.
+    """
+    loop = session.loop
+    try:
+        if loop is None:
+            raise RuntimeError("no event loop is carrying this turn")
+        event = {
+            "type": "compaction",
+            "turns": fold.runs,
+            "summary": fold.summary,
+            "tokens_before": fold.tokens_before,
+            "tokens_after": fold.tokens_after,
+        }
+        asyncio.run_coroutine_threadsafe(session.emit(event), loop).result(
+            timeout=_EMIT_TIMEOUT
+        )
+    except Exception:  # noqa: BLE001 - the fold stands without its marker
+        log.warning(
+            "compaction: a fold reached the model but not the transcript", exc_info=True
+        )
+
+
 def _load_events(log_path: Path | None) -> list[dict]:
     """Reload a prior run's transcript tail."""
     return _read_log(log_path)[-MAX_EVENTS:]

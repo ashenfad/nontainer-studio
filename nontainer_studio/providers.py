@@ -373,6 +373,44 @@ def context_window(spec: str | None) -> int | None:
     return _CONTEXT_BY_PROVIDER.get(provider)
 
 
+def compaction_policy(spec: str | None) -> Any:
+    """When this model's conversation is compacted: a
+    ``nontainer.compaction.Policy``, or ``None`` for never.
+
+    Past the budget, every earlier turn is folded into one summary for
+    the model (nontainer's docs/compaction.md); the transcript keeps
+    everything. The budget is 60% of the model's context window,
+    clamped to [32k, 250k] (the ceiling is a cost bound: a 1M-context
+    model doesn't want 600k-token turns), and kept below the window
+    for a model whose window is smaller than the floor. With no window
+    known it is 100k, and the window goes unstated, so a fold too large
+    for one request is noticed when the provider refuses it.
+
+    ``NONTAINER_STUDIO_COMPACT_TOKENS`` overrides the budget; ``0``,
+    ``off``, ``none`` or ``false`` turns compaction off.
+    """
+    from nontainer.compaction import Policy
+
+    window = context_window(spec)
+    raw = os.getenv("NONTAINER_STUDIO_COMPACT_TOKENS")
+    budget: int | None = None
+    if raw:
+        if raw.strip().lower() in ("0", "off", "none", "false"):
+            return None
+        try:
+            budget = max(1_000, int(raw))
+        except ValueError:
+            budget = None  # unparseable: the default
+    if budget is None:
+        if window is None:
+            return Policy(budget=100_000)
+        budget = min(max(int(window * 0.6), 32_000), 250_000)
+        budget = min(budget, int(window * 0.8))
+    if window is not None and window <= budget:
+        window = None  # an override past the window: no window to promise
+    return Policy(budget=budget, window=window)
+
+
 def _split_openrouter_tag(model: str) -> tuple[str, dict | None]:
     """``qwen/qwen3.6-35b-a3b@wandb/fp8`` -> the base model id plus an
     OpenRouter provider-routing pin. ``@slug`` pins the upstream

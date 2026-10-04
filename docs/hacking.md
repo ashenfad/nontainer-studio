@@ -107,6 +107,7 @@ event carries its sequence number as its cursor.
 | `tool_start` | `name`, `args` | a tool call begins; `args` are shaped and shortened for display |
 | `tool_end` | `name`, `result` | a tool call returns. A mid-run message is cut back out of the result first, so the tool box shows the tool's own output |
 | `artifact` | `name`, `path`, `kind` | a `ui = {...}` value became a file; parsed from the raw tool result, so a long one does not truncate the note away |
+| `compaction` | `turns`, `summary`, `tokens_before`, `tokens_after` | the agent's earlier turns were folded into one summary (`turns` of them, including any an earlier fold covered), mid-turn, before a model call. Sizes are in tokens and estimated |
 | `notice` | `text` | turn stopped, model switched, upload written, a provider error the turn is resuming from |
 | `usage` | `input_tokens`, `cached_tokens` | context telemetry, one per model call; the frontend keeps only the latest |
 | `error` | `message` | the run errored and its one resume did not clear it, the run loop raised, or the studio shut down on a turn it could not wait out |

@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Long conversations are compacted.** Past a budget of 60% of the
+  model's context window, every earlier turn is folded into one summary
+  the agent writes itself, and it is sent that summary and the turns
+  since rather than the whole conversation. The transcript keeps every
+  turn, and a marker where the fold happened ("Context compacted · 12
+  earlier turns summarized for the agent") opens to the summary. It is
+  nontainer 0.8.8's compaction, so the fold lives in the session's
+  branch: an edit to before it takes it back. The summary request
+  reuses the agent's own prompt, so it is mostly read from the cache.
+  `NONTAINER_STUDIO_COMPACT_TOKENS` sets the budget, or `off`. Requires
+  nontainer 0.8.8. This is the bound that dropping tool-result
+  compression left for later: since the agent is sent every earlier
+  turn, nothing else keeps a long session inside the window.
+
 - **The agent can make music.** `media.music(prompt, path,
   length="clip")` composes with Google's Lyria 3 on OpenRouter and writes
   an MP3. A clip is about 30 seconds for $0.04; `length="song"` follows
