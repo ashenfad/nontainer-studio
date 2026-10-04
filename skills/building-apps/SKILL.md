@@ -410,6 +410,10 @@ it. Python is `tests/test_<name>.py`, JavaScript is
 `tests/<name>.test.js`. Run them with `ws-pytest -v` and `ws-vitest
 --reporter=verbose`.
 
+**There is no `node` here**, nor `npm` or `npx`. JavaScript runs in the
+browser: `ws-vitest` runs a module's tests, and `test_app` loads the
+page, where a syntax error in `app.jsx` is reported with its line.
+
 `references/test-summary.py` and `references/format.test.js` are the
 working pair for the reference app, and `references/test-scores.py` is
 the test for the `db`-backed handler. Copy them with the rest, then make
@@ -437,6 +441,11 @@ helper you call directly and that raises one is tested with
 `except HttpError`; and a keyword argument (`db=fake`) substitutes what
 the handler reads when a test wants isolation. There are no fixtures and
 no conftest — setup is the test's own code, written in the test.
+
+`call` and `testdb` exist only inside a `ws-pytest` run, so
+`from host import call` fails in run_python. To watch a handler answer,
+write the test (what a test prints is in the report), or `ws-curl` the
+endpoint.
 
 ## Done
 

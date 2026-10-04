@@ -189,6 +189,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says a module worker must set `onmessage` before any top-level
   `await`. All of these come from an agent's retrospective on building a
   game with six delegates.
+- **The building-apps skill answers three wrong turns from a delegated
+  build.** The scores reference read `req.require("name")` with a note
+  that it answers a 400 only when the field is missing, then checked the
+  type again. A delegate took that to mean `require` checks presence
+  only. Its `req.require("score")` then refused the number 10, because
+  the type is `str` unless you pass one. The reference now says so and
+  names `req.require("score", int)`, and its test refuses a name that
+  is not text. The skill also says there is no `node` (JavaScript runs
+  through `ws-vitest` and `test_app`), and that `call` and `testdb`
+  exist only inside a `ws-pytest` run, not in run_python.
 - **Requires nontainer 0.8.10.**
 
 - **No tool-result compression.** The studio no longer has agno

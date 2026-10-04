@@ -6154,7 +6154,7 @@ def test_the_reference_tests_pass_against_the_reference_app(scripted):
     ws.commit()
 
     pytest_out = _terminal(client, "s1", "ws-pytest -v")
-    assert "7 passed" in pytest_out, pytest_out
+    assert "8 passed" in pytest_out, pytest_out
     assert "failed" not in pytest_out, pytest_out
     # A bare run collects tests/ only, so the seeded skill's own copy is
     # never run where it sits — a reference that ran itself would seed
