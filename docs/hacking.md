@@ -32,7 +32,7 @@ The server-side halves:
 | `nontainer_studio/publishing.py` | `PublishingMixin`: apps and versions, serving, what changed, migrations |
 | `nontainer_studio/delegates.py` | `StudioRunner`, the loop that drives a forked session to an answer, and `DelegationMixin`, the registry's record of delegates |
 | `nontainer_studio/titles.py` | `TitlesMixin`: session titles |
-| `nontainer_studio/skills.py` | `SkillsMixin`: seeding the starter skills |
+| `nontainer_studio/skills.py` | `SkillsMixin`: the starter skills, resolved per session kind and mounted read-only |
 | `nontainer_studio/config.py` | what the environment decides: store, executor, apps config, settings, agent-only host objects |
 | `nontainer_studio/prompts.py` | what the agent is told: the primer, frontend notes, tool and host-object text |
 | `nontainer_studio/web.py`, `media.py` | the `web` and `media` host objects |

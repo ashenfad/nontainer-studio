@@ -15,7 +15,7 @@ runs on the same declaration a published one will run on.
 Below the request tier the agent has `ws-pytest` and `ws-vitest` — one
 Python function or one frontend module under test, so a failing assertion
 names the broken piece where a blank page does not. The `building-apps`
-skill seeded into each session is what teaches the loop.
+skill every session is given is what teaches the loop.
 
 ## What a handler returns
 

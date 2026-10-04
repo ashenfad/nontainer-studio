@@ -1,19 +1,32 @@
-"""The starter skills a session is seeded with: which ones it may follow,
-the files generated for them, the top-up older sessions get, and the
-conditional blocks resolved for the executor.
+"""The starter skills a session is given: which ones it may follow, the
+files generated for them, and the conditional blocks resolved for its
+executor.
+
+They are mounted read-only, not copied in. Each set a session can be
+given (by executor, delegation and ws-git) is resolved once on the host
+into ``<store>/.skills/<hash>/``, named by a hash of what it holds, and
+mounted at ``<root>/skills/<name>`` with nontainer's ``skills.mounts``.
+A mount is not versioned, so ws-git never lists a starter skill and no
+commit, delegate or fork carries a copy; every session sees the text
+this server ships, and a package upgrade reaches the next session opened
+because its READMEs hash to a new set. Skills an agent writes are its
+own files under ``<root>/skills`` beside them.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
-from nontainer import Workspace
-
 from .config import sessions_tool_enabled
+
+log = logging.getLogger(__name__)
 
 
 def _can_start_from_published(wsgit: bool) -> bool:
@@ -98,83 +111,29 @@ _GENERATED_SKILL_FILES: dict[str, Callable[[], dict[str, tuple[str, bytes]]]] = 
 }
 
 
-#: The first line of a generated skill file: its label and a hash of the
-#: rest. A file whose rest still matches is pristine, so it may be
-#: refreshed or removed; one that doesn't was edited, and is the
-#: session's own.
-_GENERATED_STAMP = re.compile(rb"<!-- (.*); generated, sha256 ([0-9a-f]{16}) -->\n")
-
-
 def _stamp_generated(label: str, body: bytes) -> bytes:
+    """A generated skill file, its first line saying what it is."""
     digest = hashlib.sha256(body).hexdigest()[:16]
     return f"<!-- {label}; generated, sha256 {digest} -->\n".encode() + body
 
 
-def _is_pristine_generated(data: bytes) -> bool:
-    m = _GENERATED_STAMP.match(data)
-    if m is None:
-        return False
-    return hashlib.sha256(data[m.end() :]).hexdigest()[:16] == m.group(2).decode()
-
-
 class SkillsMixin:
-    """Skill seeding, as part of ``Registry``. Static throughout: each
-    method works on the workspace it is handed.
-    """
+    """Starter skills, as part of ``Registry``: the read-only mounts a
+    session is opened with."""
 
     @staticmethod
-    def _seed_skills(ws: Workspace, *, wsgit: bool) -> None:
-        """Install starter skills into a fresh session: each child
-        directory of NONTAINER_STUDIO_SKILLS (default: the repo's
-        skills/) plus any skills EMBEDDED in granted python libraries
-        (<pkg>/skills/ — the nontainer convention). Best-effort: a bad
-        skill must never block a session.
-
-        ``wsgit`` is whether this session carries the verb, which a
-        gated skill's own predicate may need: what decides is what the
-        session GOT, not what a knob asked for.
-
-        Skill text is resolved for the executor first (see
-        ``_resolve_skill_text``) — the seeded copy must not teach
-        affordances this session doesn't have.
-        """
-        from nontainer import skills
-
-        root = Path(
+    def _skill_root() -> Path:
+        return Path(
             os.getenv("NONTAINER_STUDIO_SKILLS")
             or Path(__file__).resolve().parent.parent / "skills"
         ).expanduser()
-        if root.is_dir():
-            for child in sorted(root.iterdir()):
-                if child.is_dir() and (child / "SKILL.md").is_file():
-                    gate = _GATED_SKILLS.get(child.name)
-                    if gate is not None and not gate(wsgit):
-                        continue
-                    try:
-                        installed = skills.install(ws, child)
-                    except Exception:
-                        continue
-                    if SkillsMixin._write_generated(ws, child.name, installed):
-                        if ws.caps.versioned and ws.uncommitted:
-                            ws.commit(info={"tool": "skill", "skill": installed})
-        try:
-            skills.install_from_modules(ws)
-        except Exception:
-            pass
-        try:
-            SkillsMixin._resolve_skill_conditionals(ws, delegation=_can_delegate(wsgit))
-        except Exception:
-            pass  # a skill that won't resolve is still better than none
 
     @staticmethod
     def _skill_seeds(*, wsgit: bool) -> list[Path]:
-        """The skill directories this session would be seeded from: each
-        child of NONTAINER_STUDIO_SKILLS holding a SKILL.md, minus the
-        gated ones this session cannot follow."""
-        root = Path(
-            os.getenv("NONTAINER_STUDIO_SKILLS")
-            or Path(__file__).resolve().parent.parent / "skills"
-        ).expanduser()
+        """The skill directories a session is given: each child of
+        NONTAINER_STUDIO_SKILLS holding a SKILL.md, minus the gated ones
+        it cannot follow."""
+        root = SkillsMixin._skill_root()
         if not root.is_dir():
             return []
         seeds = []
@@ -188,115 +147,104 @@ class SkillsMixin:
         return seeds
 
     @staticmethod
-    def _write_generated(ws: Workspace, seed: str, installed: str) -> bool:
-        """Bring the generated files of the skill seeded from directory
-        ``seed`` up to date in its installed tree. True when anything
-        changed. Best-effort, like seeding.
-
-        Generated files describe the server, not the session, so unlike
-        the directory's own files a pristine one follows the server: it
-        is rewritten when its source changed (a package was upgraded)
-        and removed when its source is gone (one was uninstalled). A
-        file the agent edited no longer matches its stamp, and is left
-        as it is either way.
-        """
-        make = _GENERATED_SKILL_FILES.get(seed)
-        if make is None:
-            return False
-        try:
-            files = {
-                rel: _stamp_generated(label, body)
-                for rel, (label, body) in make().items()
-            }
-        except Exception:
-            return False
-        fs = ws.files.fs
-        root = f"{ws.root}/skills/{installed}"
-        changed = False
-        for rel, data in files.items():
-            dest = f"{root}/{rel}"
-            try:
-                if fs.exists(dest):
-                    old = fs.read(dest)
-                    if old == data or not _is_pristine_generated(old):
-                        continue
-                else:
-                    fs.makedirs(dest.rsplit("/", 1)[0], exist_ok=True)
-                fs.write(dest, data)
-                changed = True
-            except Exception:
-                continue
-        for path in SkillsMixin._walk_files(fs, root):
-            if path[len(root) + 1 :] in files:
-                continue
-            try:
-                if _is_pristine_generated(fs.read(path)):
-                    fs.remove(path)
-                    changed = True
-            except Exception:
-                continue
-        return changed
-
-    @staticmethod
-    def _walk_files(fs: Any, root: str) -> list[str]:
-        """Every file under ``root``, or none when it cannot be listed."""
-        out = []
-        try:
-            names = sorted(fs.list(root))
-        except Exception:
-            return out
-        for name in names:
-            path = f"{root}/{name}"
-            if fs.isdir(path):
-                out.extend(SkillsMixin._walk_files(fs, path))
-            else:
-                out.append(path)
-        return out
-
-    @staticmethod
-    def _top_up_skills(ws: Workspace, *, wsgit: bool) -> None:
-        """Add to an existing session's skill tree the seed files it
-        lacks, and touch nothing it has.
-
-        A skill tree is seeded once and then is the session's own
-        versioned state, so a reseed would clobber what an agent edited.
-        But the notes and the skill text a session receives are the
-        current ones, and they name files the current seed carries: a
-        session created before a reference existed would be told to
-        cat a file that is not there. The additive pass closes that
-        gap: a seed file with no counterpart in the tree is written, an
-        existing file is left as it is, whoever wrote it. A seed file
-        the agent deleted comes back on the next open, which the studio
-        cannot tell apart from staleness. Generated files are the one
-        exception to "touch nothing": a pristine one is also refreshed
-        or removed (see ``_write_generated``). Best-effort, like seeding.
-        """
-        added = False
+    def _starter_files(*, commands: bool, wsgit: bool) -> dict[str, bytes]:
+        """The starter set a session with this executor and ws-git
+        answer is given, as ``{"<skill>/<path>": bytes}``: each seed's
+        files with its SKILL.md resolved for the session, and its
+        generated files. Best-effort per file: one that will not read
+        or generate is left out, not fatal."""
+        delegation = _can_delegate(wsgit)
+        out: dict[str, bytes] = {}
         for seed in SkillsMixin._skill_seeds(wsgit=wsgit):
             for path in sorted(p for p in seed.rglob("*") if p.is_file()):
-                dest = (
-                    f"{ws.root}/skills/{seed.name}/{path.relative_to(seed).as_posix()}"
-                )
+                rel = f"{seed.name}/{path.relative_to(seed).as_posix()}"
                 try:
-                    if ws.files.fs.exists(dest):
-                        continue
-                    ws.files.fs.makedirs(dest.rsplit("/", 1)[0], exist_ok=True)
-                    ws.files.fs.write(dest, path.read_bytes())
-                    added = True
-                except Exception:
+                    data = path.read_bytes()
+                except OSError:
                     continue
-            if SkillsMixin._write_generated(ws, seed.name, seed.name):
-                added = True
-        if not added:
-            return
-        try:
-            SkillsMixin._resolve_skill_conditionals(ws, delegation=_can_delegate(wsgit))
-        except Exception:
-            pass
-        if ws.caps.versioned and ws.uncommitted:
-            ws.commit(info={"tool": "skill", "skill": "top-up"})
+                if rel == f"{seed.name}/SKILL.md":
+                    text = data.decode("utf-8", "replace")
+                    data = SkillsMixin._resolve_skill_text(
+                        text, commands=commands, delegation=delegation
+                    ).encode()
+                out[rel] = data
+            make = _GENERATED_SKILL_FILES.get(seed.name)
+            if make is None:
+                continue
+            try:
+                generated = make()
+            except Exception:
+                continue
+            for rel, (label, body) in generated.items():
+                out[f"{seed.name}/{rel}"] = _stamp_generated(label, body)
+        return out
 
-    # Conditional blocks in seeded SKILL.md files, `<!--if:KEY-->` …
+    def _starter_dir(self, *, commands: bool, wsgit: bool) -> Path | None:
+        """The resolved starter set on disk, written once: its directory
+        is named by a hash of what it holds, so an existing one is never
+        rewritten (a session may have it mounted) and a changed set gets
+        a directory of its own. ``None`` when there are no starter
+        skills."""
+        files = self._starter_files(commands=commands, wsgit=wsgit)
+        if not files:
+            return None
+        digest = hashlib.sha256()
+        for rel in sorted(files):
+            digest.update(rel.encode() + b"\0" + hashlib.sha256(files[rel]).digest())
+        target = Path(self._store.path) / ".skills" / digest.hexdigest()[:16]
+        if target.is_dir():
+            return target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(dir=target.parent, prefix=".building-"))
+        try:
+            for rel, data in files.items():
+                dest = staging / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+            try:
+                staging.rename(target)
+            except OSError:
+                if not target.is_dir():  # not a concurrent build of the same set
+                    raise
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+        return target
+
+    def _skill_mounts(
+        self,
+        *,
+        commands: bool,
+        wsgit: bool,
+        modules: Any = (),
+        root: str = "/workspace",
+    ) -> dict[str, Any]:
+        """The read-only mounts a session is opened with: the starter
+        set for its executor and ws-git answer, and any skills the
+        python modules it is granted ship (``<pkg>/skills/``, the
+        nontainer convention). Best-effort: a set that will not build
+        leaves the session without starter skills, never unopened."""
+        from nontainer import skills
+
+        mounts: dict[str, Any] = {}
+        try:
+            starter = self._starter_dir(commands=commands, wsgit=wsgit)
+            if starter is not None:
+                mounts.update(skills.mounts(starter, root=root))
+        except Exception:
+            log.warning("starter skills could not be built", exc_info=True)
+        for entry in modules or ():
+            try:
+                found = skills.discover(getattr(entry, "module", entry))
+                for point, mount in (
+                    skills.mounts(*found, root=root).items() if found else ()
+                ):
+                    mounts.setdefault(point, mount)
+            except Exception:
+                continue  # a library's skill that cannot be mounted
+        return mounts
+
+    # Conditional blocks in starter SKILL.md files, `<!--if:KEY-->` …
     # `<!--endif-->`, or `<!--if:no-KEY-->` for the other side. Skill text
     # that teaches what a session does not have costs the agent a turn to
     # discover, so such text is written in a block rather than
@@ -326,32 +274,3 @@ class SkillsMixin:
             return body if has[key] != bool(negated) else ""
 
         return SkillsMixin._IF_BLOCK.sub(_pick, text)
-
-    @staticmethod
-    def _resolve_skill_conditionals(ws: Workspace, *, delegation: bool = False) -> None:
-        """Rewrite seeded SKILL.md files in place for this session: its
-        executor, and whether it can delegate.
-
-        Post-install rather than pre-install because ``skills.install``
-        takes a directory of bytes; rewriting the installed copy keeps
-        the source skill single-sourced (one file, both rungs) instead
-        of forking it into per-executor variants that drift.
-        """
-        root = f"{ws.root}/skills"
-        if not ws.files.fs.isdir(root):
-            return
-        commands = ws.runtime.supports_commands
-        changed = False
-        for name in sorted(ws.files.fs.list(root)):
-            path = f"{root}/{name}/SKILL.md"
-            if not ws.files.fs.exists(path):
-                continue
-            text = ws.files.fs.read(path).decode("utf-8", "replace")
-            resolved = SkillsMixin._resolve_skill_text(
-                text, commands=commands, delegation=delegation
-            )
-            if resolved != text:
-                ws.files.fs.write(path, resolved.encode())
-                changed = True
-        if changed and ws.caps.versioned and ws.uncommitted:
-            ws.commit(info={"tool": "skill", "skill": "resolve-conditionals"})

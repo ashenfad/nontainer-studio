@@ -424,6 +424,21 @@ def start_vm_prewarm() -> "threading.Thread | None":
     return t
 
 
+#: What a session writes inside its workspace that is never its work,
+#: as nontainer ``ignore=`` patterns. Everything outside the workspace
+#: root (scratch under /tmp, a library's cache) is ignored by nontainer
+#: already; these are the caches tools leave inside it.
+WORKSPACE_IGNORE = ("__pycache__/", ".pytest_cache/")
+
+
+def executor_runs_commands() -> bool:
+    """Whether this server's executor runs termish's terminal builtins:
+    the in-process default does, the dud rungs' real shell does not.
+    Known before a workspace exists, which is when its starter skills
+    have to be chosen."""
+    return os.getenv("NONTAINER_STUDIO_EXECUTOR", "").lower() not in ("dud", "dud-vm")
+
+
 def _ws_kwargs() -> dict[str, Any]:
     """Executor kwarg for ``Store.open()``, added ONLY when a custom
     backend is selected — so the default path opens a session with

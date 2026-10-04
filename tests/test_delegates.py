@@ -2394,3 +2394,40 @@ def test_a_cancelled_delegate_has_nothing_to_deliver(registry):
     row = next(r for r in registry.delegate_rows("boss") if r["name"] == "boss.scout")
     assert row["status"] == "cancelled"
     assert row["delivered"] is True
+
+
+def test_a_delegates_answer_is_its_final_reply_not_its_narration():
+    """A model may narrate between tool calls ("Path is wrong; try
+    relative."). Joining every word of the turn glued those notes,
+    with no space between them, onto the front of the answer. The
+    answer is what it wrote after its last tool call, or the last prose
+    it wrote when the turn ended on one."""
+    from types import SimpleNamespace
+
+    from nontainer_studio.delegates import _reply
+
+    def turn(*events):
+        return SimpleNamespace(events=[dict(e, seq=i) for i, e in enumerate(events)])
+
+    narrated = turn(
+        {"type": "user", "text": "build it"},
+        {"type": "text", "delta": "Use top-level await."},
+        {"type": "tool_start", "name": "terminal"},
+        {"type": "tool_end", "name": "terminal"},
+        {"type": "text", "delta": "Path is wrong; "},
+        {"type": "text", "delta": "try relative."},
+        {"type": "tool_start", "name": "terminal"},
+        {"type": "tool_end", "name": "terminal"},
+        {"type": "text", "delta": "The content is "},
+        {"type": "text", "delta": "written and tested."},
+        {"type": "done"},
+    )
+    assert _reply(narrated, 0) == ("The content is written and tested.", None)
+
+    ended_on_a_tool = turn(
+        {"type": "text", "delta": "Half done."},
+        {"type": "tool_start", "name": "terminal"},
+        {"type": "error", "message": "provider error"},
+    )
+    assert _reply(ended_on_a_tool, 0) == ("Half done.", "provider error")
+    assert _reply(turn({"type": "tool_start"}), 0) == ("", None)

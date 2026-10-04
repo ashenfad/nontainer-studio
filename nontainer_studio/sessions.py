@@ -56,6 +56,7 @@ from nontainer.wsgit import register_wsgit
 from .config import (
     AGENT_PYTHON_TIMEOUT,
     DEFAULT_STORE,
+    WORKSPACE_IGNORE,
     _agent_host_objects,
     _bind_host_objects,
     _delegate_depth,
@@ -65,6 +66,7 @@ from .config import (
     _view_workers,
     _ws_kwargs,
     apps_config,
+    executor_runs_commands,
     sessions_tool_enabled,
     wsgit_enabled,
 )
@@ -445,11 +447,7 @@ class Registry(
             db = self._db_handle(rel)
             ws = None
             try:
-                ws = self._store.open(
-                    name,
-                    python=self._python_config(db, agent=True),
-                    **_ws_kwargs(),
-                )
+                ws = self._open_workspace(name, self._python_config(db, agent=True))
                 _bind_host_objects(ws)
                 # Published before anything can ask: _build_agent
                 # constructs the toolkit, which checks that the store db
@@ -465,18 +463,6 @@ class Registry(
                     if not ws.files.fs.isdir(f"{ws.root}/ui"):
                         ws.files.fs.makedirs(f"{ws.root}/ui", exist_ok=True)
                         ws.commit(info={"tool": "init"})
-                    # Seed skills once, at session CREATION — after that
-                    # they are the session's own versioned state (agents
-                    # may edit or add them; a reseed would clobber that).
-                    # The ws-git answer is settled first because a gated
-                    # skill reads it, and seeding cannot simply wait for
-                    # _assemble: the toolkit catalogs the seeded skills
-                    # when the agent is built, so a skill installed after
-                    # that is one no agent is told about.
-                    if not ws.files.fs.isdir(f"{ws.root}/skills"):
-                        self._seed_skills(ws, wsgit=self._wsgit(ws))
-                    else:
-                        self._top_up_skills(ws, wsgit=self._wsgit(ws))
                     session = self._assemble(name, ws, db, model)
                     loaded = self._load_events(session.log_path)
                     session.events.extend(loaded)
@@ -589,6 +575,41 @@ class Registry(
             # too-high is resident memory that nothing reclaims.
             warm_view_workers=_view_workers(),
         )
+
+    def _open_workspace(self, name: str, python: Any) -> Workspace:
+        """Open ``name``'s workspace with its starter skills mounted and
+        the studio's ignore patterns.
+
+        The starter set depends on the executor and on whether the
+        session gets ``ws-git``, and mounts are fixed when a workspace
+        is built, so both are predicted from the configuration first.
+        The session's own answers are what decide (a gated skill reads
+        them), so where they differ from the prediction, which takes an
+        executor that cannot carry the verb, the workspace is opened
+        again with the right set. Opening is cheap: nothing runs until
+        the first tool call.
+        """
+        modules = getattr(python, "modules", None) or ()
+
+        def opened(commands: bool, wsgit: bool) -> Workspace:
+            return self._store.open(
+                name,
+                python=python,
+                mounts=self._skill_mounts(
+                    commands=commands, wsgit=wsgit, modules=modules
+                ),
+                ignore=WORKSPACE_IGNORE,
+                **_ws_kwargs(),
+            )
+
+        guess = (executor_runs_commands(), wsgit_enabled())
+        ws = opened(*guess)
+        got = (bool(ws.runtime.supports_commands), self._wsgit(ws))
+        if got != guess:
+            ws.close()
+            ws = opened(*got)
+            self._wsgit(ws)
+        return ws
 
     @staticmethod
     def _wsgit(ws: Workspace) -> bool:
@@ -1038,11 +1059,7 @@ class Registry(
             child_ws.close()
             with self._lock:
                 db = self._db_handle(rel)
-            ws = self._store.open(
-                name,
-                python=self._python_config(db, agent=True),
-                **_ws_kwargs(),
-            )
+            ws = self._open_workspace(name, self._python_config(db, agent=True))
             _bind_host_objects(ws)
             with self._lock:
                 self._opening[name] = ws

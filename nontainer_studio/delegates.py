@@ -543,23 +543,45 @@ def _failed_text(text: str, error: str) -> str:
     return f"{text}\n\n[the delegate's run failed: {error}]"
 
 
+#: Transcript events that end a run of the delegate's prose: what it
+#: wrote before one of these was narration on the way, not its answer.
+_BREAKS_PROSE = frozenset(
+    {"tool_start", "tool_end", "interject", "delegate", "compaction"}
+)
+
+
 def _reply(child: "Session", since: int) -> tuple[str, str | None]:
-    """The prose and the error of the turn that began at seq ``since``.
+    """The answer and the error of the turn that began at seq ``since``.
 
     Read off the transcript rather than returned by the loop: the
     transcript is what the turn actually produced, streamed deltas and
     all, and it is the same text a human would have read.
+
+    The answer is the delegate's last run of prose: what it wrote after
+    its last tool call. A model may narrate between calls ("Path is
+    wrong; try relative."), and joining every word of the turn glued
+    those notes, with no space between them, onto the front of the
+    answer. A turn that ended on a tool call answers with the last prose
+    it did write.
     """
-    text: list[str] = []
+    runs: list[list[str]] = [[]]
     error: str | None = None
     for event in child.events:
         if event.get("seq", -1) < since:
             continue
-        if event.get("type") == "text":
-            text.append(event.get("delta", ""))
-        elif event.get("type") == "error":
+        kind = event.get("type")
+        if kind == "text":
+            runs[-1].append(event.get("delta", ""))
+        elif kind in _BREAKS_PROSE:
+            if runs[-1]:
+                runs.append([])
+        elif kind == "error":
             error = event.get("message")
-    return "".join(text).strip(), error
+    for run in reversed(runs):
+        text = "".join(run).strip()
+        if text:
+            return text, error
+    return "", error
 
 
 class DelegationMixin:

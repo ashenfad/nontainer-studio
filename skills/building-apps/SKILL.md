@@ -319,6 +319,14 @@ published link). `format.js` has the two pure halves,
 `filtersFromSearch` and `searchWithFilters`, and `app.jsx` wires them,
 listener included.
 
+**A worker listens before it awaits.** A module worker that does
+top-level work first — `await import(...)`, loading data — can miss the
+page's first message: it arrives before `onmessage` is set, and the page
+waits forever on a reply that will never come (a progress bar stuck at
+0). Set the handler first and do the slow work inside it, or have the
+worker `postMessage({ ready: true })` once it is set up and have the
+page send nothing until it hears that.
+
 Let JSX render your data — `{row.category}` — rather than assembling
 markup as a string. React escapes values, so a category called
 `North "A"` renders as itself; the same value interpolated into

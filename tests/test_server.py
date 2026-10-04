@@ -323,26 +323,28 @@ def test_tool_result_without_note_emits_no_artifact_events(studio):
     assert not any(e["type"] == "artifact" for e in events)
 
 
-def test_new_sessions_seed_skills(studio):
-    """Session creation installs the repo's starter skills into
-    /workspace/skills as ordinary versioned files; existing sessions keep their
-    own (possibly agent-edited) copies."""
+def test_starter_skills_are_mounted_read_only(studio):
+    """A session is given the repo's starter skills as read-only mounts
+    under /workspace/skills: listed and readable, but not its files. No
+    write lands, nothing versions them (so no commit, delegate or fork
+    carries a copy), and a skill the agent writes sits beside them as
+    its own."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     files = client.get("/api/sessions/s1/files").json()["files"]
     assert "/workspace/skills/building-apps/SKILL.md" in files
     assert "/workspace/skills/building-apps/references/app.jsx" in files
 
-    # creation-only: a reseed must not clobber the session's copies
-    session = registry.get("s1")
-    session.ws.files.write("/workspace/skills/building-apps/SKILL.md", "agent-edited")
-    registry.close()
-    registry._sessions.clear()
-    session2 = registry.open("s1")
-    assert (
-        session2.ws.files.fs.read("/workspace/skills/building-apps/SKILL.md")
-        == b"agent-edited"
+    ws = registry.get("s1").ws
+    with pytest.raises(PermissionError):
+        ws.files.write("/workspace/skills/building-apps/SKILL.md", "agent-edited")
+    assert not any(
+        p.startswith("/workspace/skills/") for p in ws.provider.working_files()
     )
+    assert not ws.uncommitted
+
+    ws.files.write("/workspace/skills/mine/SKILL.md", "---\nname: mine\n---\n")
+    assert "/workspace/skills/mine/SKILL.md" in ws.provider.working_files()
 
 
 def test_the_seeded_skill_teaches_the_verbs_the_session_has(studio):
@@ -7384,38 +7386,41 @@ def test_the_shell_serves_its_fonts_itself():
         )
 
 
-def test_an_existing_session_is_topped_up_with_the_seed_files_it_lacks(studio):
-    """The notes a session receives are the current ones and name files
-    the current seed carries, so a session created before a reference
-    existed must not be told to cat a file that is not there. The
-    additive pass writes what is missing and touches nothing the
-    session has, whoever wrote it."""
+def test_an_older_session_sees_the_current_starter_skills(studio):
+    """A session from before the skills were mounted holds copies of its
+    own in the tree. The mount shadows them, so it reads the text this
+    server ships: no reference it is told to read is missing, and an
+    old copy never wins."""
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
-    session = registry.get("s1")
-    fs = session.ws.files.fs
-    fs.remove("/workspace/skills/building-apps/references/vendor.md")
-    fs.write("/workspace/skills/building-apps/SKILL.md", b"agent-edited")
-    fs.write("/workspace/skills/building-apps/references/mine.md", b"agent-added")
-    session.ws.commit()
+    store_path = registry._store.path
     registry.close()
-    registry._sessions.clear()
 
-    reopened = registry.open("s1").ws.files.fs
-    assert reopened.exists("/workspace/skills/building-apps/references/vendor.md")
-    assert reopened.read("/workspace/skills/building-apps/SKILL.md") == b"agent-edited"
-    assert (
-        reopened.read("/workspace/skills/building-apps/references/mine.md")
-        == b"agent-added"
-    )
+    from nontainer import Store
+
+    old = Store(store_path)
+    ws = old.open("s1")  # as an older studio wrote it: no mounts
+    ws.files.write("/workspace/skills/building-apps/SKILL.md", "an old copy")
+    ws.commit()
+    ws.close()
+    old.close()
+
+    reborn = sessions_mod.Registry(model_factory=lambda *a: None, store=store_path)
+    reborn._build_agent = lambda *a, **k: FakeAgent()
+    try:
+        fs = reborn.open("s1").ws.files.fs
+        text = fs.read("/workspace/skills/building-apps/SKILL.md").decode()
+        assert text != "an old copy" and "ws-curl" in text
+        assert fs.exists("/workspace/skills/building-apps/references/vendor.md")
+    finally:
+        reborn.close()
 
 
 def test_the_ecosystem_skill_carries_the_installed_readmes(studio, monkeypatch):
     """The ecosystem skill's references are the READMEs of the packages
-    installed here, read from their metadata when a session is seeded,
-    so they describe the versions this server runs. A package that is
-    not installed has no file, and the seed is committed like any
-    other skill."""
+    installed here, read from their metadata, so they describe the
+    versions this server runs. A package that is not installed has no
+    file, and like the rest of the skill they are read-only."""
     from importlib.metadata import version
 
     monkeypatch.setattr(
@@ -7432,26 +7437,18 @@ def test_the_ecosystem_skill_carries_the_installed_readmes(studio, monkeypatch):
     assert kvgit.startswith(f"<!-- kvgit {version('kvgit')}: ")
     assert "# kvgit" in kvgit
     assert not session.ws.uncommitted
-
-    # topped up like the directory's own files: a missing README comes
-    # back, an edited one is left alone
-    fs.remove(f"{refs}/kvgit.md")
-    fs.write(f"{refs}/termish.md", b"agent-edited")
-    session.ws.commit()
-    registry.close()
-    registry._sessions.clear()
-    reopened = registry.open("s1").ws.files.fs
-    assert reopened.read(f"{refs}/kvgit.md").decode() == kvgit
-    assert reopened.read(f"{refs}/termish.md") == b"agent-edited"
+    with pytest.raises(PermissionError):
+        fs.remove(f"{refs}/kvgit.md")
 
 
 def test_generated_skill_files_follow_the_server(studio, monkeypatch):
     """A generated reference describes the server, not the session: an
-    upgraded package's README replaces the old one, an uninstalled
-    package's is removed, and a file the agent edited stays either
-    way."""
+    upgraded package's README replaces the old one and an uninstalled
+    package's goes, in the next session opened. The starter set is
+    named by a hash of what it holds, so the new one is a set of its
+    own rather than an edit to one a session may still have mounted."""
 
-    installed = {"alpha": "1.0", "beta": "1.0", "gamma": "1.0"}
+    installed = {"alpha": "1.0", "beta": "1.0"}
 
     def readmes():
         return {
@@ -7464,22 +7461,22 @@ def test_generated_skill_files_follow_the_server(studio, monkeypatch):
     )
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
-    session = registry.get("s1")
     refs = "/workspace/skills/nontainer-ecosystem/references"
-    session.ws.files.fs.write(f"{refs}/gamma.md", b"the agent's own notes")
-    session.ws.commit()
+    first = registry.get("s1").ws.files.fs
+    assert "# alpha 1.0" in first.read(f"{refs}/alpha.md").decode()
+    sets_before = set((registry._store.path / ".skills").iterdir())
     registry.close()
     registry._sessions.clear()
 
     installed.update(alpha="2.0")  # upgraded
     del installed["beta"]  # uninstalled
-    del installed["gamma"]  # uninstalled, but the agent edited its file
     reopened = registry.open("s1")
     fs = reopened.ws.files.fs
     assert "# alpha 2.0" in fs.read(f"{refs}/alpha.md").decode()
     assert not fs.exists(f"{refs}/beta.md")
-    assert fs.read(f"{refs}/gamma.md") == b"the agent's own notes"
     assert not reopened.ws.uncommitted
+    # the old set is still on disk, untouched, beside the new one
+    assert sets_before < set((registry._store.path / ".skills").iterdir())
 
 
 # -- the inbox: messages queued while the agent works -------------------------
@@ -7950,3 +7947,20 @@ def test_a_note_delivered_before_a_provider_error_is_not_delivered_again(
     assert len(carried) == 1 and carried[0].role == "tool"
     assert session.inbox.pending() == []
     assert session.inbox.delivered() == []
+
+
+def test_a_session_opens_with_the_studios_ignore_patterns(studio):
+    """What tools cache inside a workspace (`__pycache__/`,
+    `.pytest_cache/`) is never a session's work; everything outside the
+    root already is not, by nontainer's own rule."""
+    from nontainer_studio.config import WORKSPACE_IGNORE
+
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    assert ws.ignore == WORKSPACE_IGNORE
+    ws.files.write("/workspace/__pycache__/m.cpython-313.pyc", b"\0")
+    ws.files.write("/workspace/app/main.py", "x = 1\n")
+    assert ws._ignores("/workspace/__pycache__/m.cpython-313.pyc")
+    assert ws._ignores("/tmp/scratch.mjs")
+    assert not ws._ignores("/workspace/app/main.py")

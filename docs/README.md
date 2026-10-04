@@ -24,7 +24,7 @@ only get by reading the code.
   asking for an app and publishing it, with screenshots of the panes,
   the rail and the version list. Every page assumes you already know
   what you are looking at.
-- **The skills seeded into a session.** `skills/building-apps` and
+- **The skills a session is given.** `skills/building-apps` and
   `skills/starting-from-published` are what actually teach the agent the
   app loop, and nothing documents what they say or how to author a third
   one. `NONTAINER_STUDIO_SKILLS` is described as a directory without
