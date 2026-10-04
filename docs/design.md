@@ -90,6 +90,23 @@ not rewind with any one branch. Conversations from before the move into
 the branch (the old `store/chat.sqlite`) are not carried over; those
 sessions keep their files and start with an empty memory.
 
+## Memory that fits
+
+The agent is sent the whole conversation, every earlier turn, until a
+request reaches the model's budget (60% of its context window, see
+[configuration](configuration.md)). Then every earlier turn is folded
+into one summary that the agent writes itself, and from there on it is
+sent that summary, then the turns since. The run in progress is never
+folded. This is nontainer's compaction (its `docs/compaction.md`): the
+fold is a record in the session's branch, so an edit to before it takes
+it back, and a delegate forked with the conversation starts from it.
+
+Only what the agent is sent changes. The transcript keeps every turn,
+and a marker where the fold happened says how many turns it covers and
+opens to the summary: what the agent remembers is something you can
+read. A fold mid-turn sits between two steps of the agent's work, as a
+message you interject does.
+
 ## Sessions name themselves
 
 After the first real exchange the studio runs a second, stateless model

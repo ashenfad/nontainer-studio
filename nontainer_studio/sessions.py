@@ -91,6 +91,7 @@ from .session import (
     _load_events,
     _record_delivery,
     _visible,
+    record_fold,
 )
 from .skills import SkillsMixin
 from .titles import (
@@ -787,6 +788,21 @@ class Registry(
         # with the knob off nothing hands the agent a name for it.
         delegation = delegates is not None and sessions_tool_enabled()
 
+        # Compaction: past a per-model budget, every earlier turn is
+        # folded into one summary for the model, while the transcript
+        # keeps everything (nontainer's docs/compaction.md). The marker
+        # goes to whichever session is live under this name when a fold
+        # happens: the first build runs before the session exists, and
+        # a model switch rebuilds this agent.
+        compaction = None
+        policy = providers.compaction_policy(model or self._default_model)
+        if policy is not None:
+            from nontainer.adapters.agno_compaction import CompactingCompression
+
+            compaction = CompactingCompression(
+                ws, policy, on_fold=lambda fold: self._fold_landed(name, fold)
+            )
+
         # A turn is one agno run and one agno run is a tool loop with
         # no bound of its own. A human's session needs none — somebody
         # is watching it and the stop button reaches it — but a
@@ -800,6 +816,7 @@ class Registry(
             model=self._model_factory(model),
             tools=[toolkit]
             + ([self._sessions_tool(name, delegates)] if delegation else []),
+            compression_manager=compaction,
             # Tool calls this run may spend, and None where there is
             # no cap. Past the limit agno answers each further call
             # with a tool result saying the limit is reached and not
@@ -880,6 +897,12 @@ class Registry(
             #   as an interrupted turn, and the workspace keeps what it
             #   wrote.
         )
+
+    def _fold_landed(self, name: str, fold: Any) -> None:
+        """A fold was made in ``name``'s turn: mark it in the transcript."""
+        session = self.get(name)
+        if session is not None:
+            record_fold(session, fold)
 
     # -- delegates: sessions the registry did not create ----------------------
 
