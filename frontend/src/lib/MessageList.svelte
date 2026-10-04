@@ -275,7 +275,9 @@
                  Once the delegate is swept there is no view left, so
                  the answer it left here unfolds in place. -->
             {@const row = delegateRows?.get(msg.name)}
-            {@const worked = workedFor(row)}
+            <!-- The run this answer came from: a delegate given a second
+                 task answers again, and the row is its latest run. -->
+            {@const worked = workedFor(msg.started ? msg : row)}
             {#if delegateRows && (!row || row.status === 'expired')}
                 <details class="delegate-card gone">
                     <summary>

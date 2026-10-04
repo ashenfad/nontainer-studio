@@ -324,6 +324,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A delegate sent back for changes is heard from again.** Studio
+  recorded a delegate's answer as delivered by the delegate's name. A
+  delegate resumed with a second task answers under the same name, so
+  once its first answer was in the transcript the next one counted as
+  delivered too. It never woke an idle parent and never reached it,
+  which breaks a review loop where the parent asks for changes and
+  waits. A `delegate` event now records the run its answer came from
+  (`started`, `finished`), and delivery matches on it. Events written
+  before this still count for the answer that had landed by then. Each
+  answer's card shows how long its own run took, where it used to show
+  the delegate's latest run.
+
 - **The agent remembers the whole conversation.** It was sent only its
   last three runs, agno's default, and a delegate's answer wakes the
   parent as a run of its own. After one round of delegation the agent no

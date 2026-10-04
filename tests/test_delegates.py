@@ -2096,6 +2096,55 @@ def test_an_answer_wakes_an_idle_parent(registry, monkeypatch):
     assert _wake(parent, registry) == (False, [])
 
 
+def test_a_resumed_delegates_next_answer_wakes_the_parent_and_is_delivered(
+    registry, monkeypatch
+):
+    """A delegate sent back with review feedback answers again under the
+    SAME name. Its first answer's event in the transcript must not stand
+    for the second: that one wakes the parent and is delivered, and the
+    event says which run it came from."""
+    parent = _idle_with_an_answer(registry, monkeypatch)
+    _, events = _wake(parent, registry)
+    (first,) = [e for e in events if e["type"] == "delegate"]
+    assert "Found it." in first["text"]
+    assert first["started"] <= first["finished"]
+
+    resume = {"action": "ask", "resume": "boss.scout", "task": "!text Fixed it."}
+    _turn(parent, "!tool sessions " + json.dumps(resume) + "\n!text Sent it back.")
+    _await_delegates(parent)
+    assert [job.name for job in parent.answered_delegates()] == ["boss.scout"]
+
+    started, events = _wake(parent, registry)
+    assert started
+    (second,) = [e for e in events if e["type"] == "delegate"]
+    assert "Fixed it." in second["text"]
+    assert second["started"] > first["started"]
+    # and delivered once
+    assert parent.answered_delegates() == []
+    assert _wake(parent, registry) == (False, [])
+
+
+def test_an_answer_event_from_before_runs_were_named_still_counts(registry):
+    """A transcript written before `delegate` events carried their run's
+    `started` still marks the answer that had landed by then as
+    delivered, so an upgrade does not deliver every old answer again."""
+    parent = registry.open("boss")
+    _turn(parent, ASK_ASYNC)
+    _await_delegates(parent)
+    (job,) = parent.delegates.list()
+    parent.events.append(
+        {
+            "type": "delegate",
+            "name": job.name,
+            "status": "answered",
+            "text": "old",
+            "seq": parent.next_seq,
+            "ts": job.finished + 1,
+        }
+    )
+    assert parent.answered_delegates() == []
+
+
 def test_an_answer_after_the_last_tool_call_wakes_the_same_chain(registry, monkeypatch):
     """The gap waking closes: an answer landing while the model writes
     its final reply has no tool result left to ride out on. The turn's
