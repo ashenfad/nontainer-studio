@@ -161,6 +161,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Starter skills are mounted read-only, not copied in.** Each session
+  used to get its own copy of `skills/` in its tree. ws-git saw it, so a
+  delegate's `ws-git add -A` swept the whole directory into its commit,
+  and every session versioned a copy that drifted from what the server
+  ships. Now each set a session can be given (by executor, delegation
+  and ws-git) is resolved once into `<store>/.skills/<hash>/` and
+  mounted at `/workspace/skills/<name>` with nontainer 0.8.10's
+  `skills.mounts`. Starter skills are listed and readable but never the
+  session's files: writes are refused, nothing versions them, and a
+  package upgrade reaches the next session opened. A skill the agent
+  writes is its own file beside them. In an older session, the mount
+  shadows its old copies, so it reads the current text. The per-session
+  rewrite and the top-up pass are gone.
+- **Delegate answers are the final reply.** A delegate's answer joined
+  every word it wrote in its turn, so notes it made between tool calls
+  were glued, with no space, onto the front of the answer ("Use
+  top-level await.Path is wrong; try relative.The v1 content is
+  written…"). The answer is now what it wrote after its last tool call.
+- **Sessions ignore tool caches.** Sessions open with nontainer's
+  `ignore=` set to `__pycache__/` and `.pytest_cache/`, so those are
+  never work; anything outside the workspace root already isn't.
+- **The delegation primer** says to sequence dependent work, to give the
+  skeleton a thin end-to-end check each delegate runs before answering,
+  and to ask how each tested where its piece meets the others. A short
+  edit-run-read loop is cheaper done yourself. The building-apps skill
+  says a module worker must set `onmessage` before any top-level
+  `await`. All of these come from an agent's retrospective on building a
+  game with six delegates.
+- **Requires nontainer 0.8.10.**
+
 - **No tool-result compression.** The studio no longer has agno
   summarise old tool results at a context watermark, and
   `NONTAINER_STUDIO_COMPRESS_TOKENS` is gone, along with the `tiktoken`

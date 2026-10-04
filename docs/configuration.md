@@ -64,7 +64,7 @@ risks a turn that spends it all thinking and ends before its tool call.
 |---|---|---|
 | `NONTAINER_STUDIO_PORT` | `8321` | the port uvicorn binds on `127.0.0.1` |
 | `NONTAINER_STUDIO_STORE` | `~/.nontainer-studio` | where sessions, apps and the manifest live |
-| `NONTAINER_STUDIO_SKILLS` | the repo's `skills/` | directory of starter skills seeded into new sessions |
+| `NONTAINER_STUDIO_SKILLS` | the repo's `skills/` | directory of starter skills every session is given, read-only |
 | `NONTAINER_STUDIO_APP_ASSETS` | `nontainer_studio/appassets/` | the browser libraries served to agent-authored apps at `vendor/` |
 | `NONTAINER_STUDIO_CSP` | derived | the content-security policy published apps carry; `none` drops it |
 | `NONTAINER_STUDIO_COMPACT_TOKENS` | per-model | the request size at which earlier turns are compacted into one summary; `off` never compacts |
@@ -77,7 +77,17 @@ floored at 1,000, which is low enough to watch it happen. Compaction
 changes only what the agent is sent: the transcript keeps every turn.
 
 A skill is any child directory of the skills root holding a `SKILL.md`.
-A skill whose workflow needs a knob that is off is not seeded: the
+Starter skills are mounted read-only at `/workspace/skills/<name>`, not
+copied in. They are not the session's files: no write lands, ws-git
+never lists them, and no commit, delegate or fork carries a copy, so
+every session reads the text this server ships. A skill the agent writes
+is its own file under `/workspace/skills` beside them. Each set a
+session can be given (by executor, delegation and ws-git) is resolved
+once into `<store>/.skills/<hash>/`, named by a hash of what it holds,
+so a changed set is a directory of its own and an older one is never
+rewritten under a session that has it mounted.
+
+A skill whose workflow needs a knob that is off is not given: the
 `starting-from-published` skill needs the `ws-git` verb to read an origin
 tag, so a session without it never sees the skill.
 
@@ -85,19 +95,16 @@ Within a `SKILL.md`, text between `<!--if:KEY-->` and `<!--endif-->` is
 kept only in sessions where KEY holds, and `<!--if:no-KEY-->` marks the
 other side. The keys are `commands`, for a terminal that is termish
 rather than a real shell, and `delegation`, for a session with the
-`sessions` tool and `ws-git`. A session's copy holds the resolved text,
+`sessions` tool and `ws-git`. The mounted set holds the resolved text,
 so an agent never reads a marker or a section it cannot follow. Blocks
 do not nest.
 
-One skill is partly built at seeding: `nontainer-ecosystem` ships only
-its `SKILL.md` overview, and its `references/` are the READMEs of the
-stack's packages, read from the metadata of the copies installed here.
-They describe the versions this server runs, and a package that is not
-installed (dud is an extra) has no file. They stay that way in older
-sessions too: on each open, a README the agent has not edited is
-rewritten when its package was upgraded and removed when it was
-uninstalled. The first line's hash is how an unedited file is told apart;
-an edited one is the session's own and is left alone.
+One skill is partly generated: `nontainer-ecosystem` ships only its
+`SKILL.md` overview, and its `references/` are the READMEs of the stack's
+packages, read from the metadata of the copies installed here. They
+describe the versions this server runs, and a package that is not
+installed (dud is an extra) has no file. An upgrade reaches the next
+session opened, because the new READMEs hash to a new set.
 
 The app-assets directory and the notes that describe it are one decision.
 Swapping the directory means updating `FRONTEND_NOTES` in
