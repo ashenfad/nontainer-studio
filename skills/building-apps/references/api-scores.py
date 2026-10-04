@@ -36,8 +36,11 @@ def get(req):
 
 
 def post(req):
-    name = req.require("name")  # 400 if missing from the JSON body
-    if not isinstance(name, str) or not name.strip():
-        raise HttpError(400, "name must be a non-empty string")
-    db.execute("INSERT INTO scores (name) VALUES (?)", (name.strip(),))
+    # require() reads a field from the JSON body and answers a 400 when
+    # it is missing or not the type asked for. The type is str unless
+    # you pass one, so a number is req.require("score", int).
+    name = req.require("name").strip()
+    if not name:
+        raise HttpError(400, "name must not be blank")
+    db.execute("INSERT INTO scores (name) VALUES (?)", (name,))
     return {"ok": True}

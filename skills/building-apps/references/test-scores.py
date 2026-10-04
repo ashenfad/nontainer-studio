@@ -46,3 +46,10 @@ def test_a_blank_name_is_refused_and_nothing_is_stored():
     testdb.reset()
     assert call("scores", "POST", json={"name": "   "}, db=testdb).status == 400
     assert call("scores", db=testdb).json == {"scores": []}
+
+
+def test_a_name_that_is_not_text_is_refused():
+    testdb.reset()
+    resp = call("scores", "POST", json={"name": 7}, db=testdb)
+    assert resp.status == 400
+    assert "name" in resp.json["error"]
