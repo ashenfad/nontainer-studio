@@ -50,12 +50,15 @@ fails in run_python. To watch a handler answer, write the test (what a
 test prints is in the report), or `ws-curl` the endpoint. `testdb` is
 bound everywhere, run_python included.
 
-**A browser check runs against `testdb` too.** test_app hands the
-handlers of the requests it makes `testdb` where they read `db`, so a
-page you click through writes into the test store and the live one is
-left alone; its report says so on its second line. The store holds
-whatever the last test left, so a check that needs data resets and seeds
-it first, from run_python:
+**A browser check runs against `testdb` too, when you ask.**
+`test_app(actions, bind={"db": "testdb"})` hands the handlers of the
+requests that run makes `testdb` where they read `db`, so a page you click
+through writes into the test store and the live one is left alone; the
+report says so on its second line. `ws-curl --bind db=testdb ...` does the
+same for one request, which is how to try a write (a POST, a DELETE)
+without leaving a row behind. Without the binding, both reach the live
+`db`. The store holds whatever the last test left, so a check that needs
+data resets and seeds it first, from run_python:
 
 ```python
 testdb.reset()
@@ -66,4 +69,4 @@ testdb.execute("INSERT INTO scores (name) VALUES (?)", ("ann",))
 A handler creates its own tables on its first request, so seeding is
 only for the rows a check needs to see. To check the page against the
 live data instead (after a migration, which a fresh test store cannot
-show), pass `bind={}` to test_app; what that run writes is real.
+show), leave the binding off; what that run writes is real.

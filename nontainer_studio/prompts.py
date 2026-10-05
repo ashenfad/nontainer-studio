@@ -458,10 +458,11 @@ DB_PRIMER = (
     "a second store with the same API, empty and in memory, for tests: "
     "`testdb.reset()` first, then `call('x', db=testdb)`, so a test "
     "never seeds rows into the live store and never needs `sqlite3`, "
-    "which the sandbox refuses. test_app's handlers read `testdb` as "
-    "`db` too, so a browser check leaves the live store alone: seed "
-    "`testdb` from run_python first, and pass test_app `bind={}` only "
-    "to check against the live data."
+    "which the sandbox refuses. A browser check or a trial write uses it "
+    'too: test_app `bind={"db": "testdb"}` and '
+    "`ws-curl --bind db=testdb` hand the handlers `testdb` where they read "
+    "`db` (seed it from run_python first); without the binding they write "
+    "into the live store."
 )
 
 
