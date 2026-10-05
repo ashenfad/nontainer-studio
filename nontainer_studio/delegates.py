@@ -357,12 +357,6 @@ class StudioRunner:
                 if not text:
                     prompt = NUDGE
                     continue
-                if _trails_off(text):
-                    partial = text
-                    prompt = TRAILED_OFF.format(
-                        tail=text.rstrip().splitlines()[-1][-120:]
-                    )
-                    continue
                 # A reply while delegates of its own are still out is the
                 # delegate waiting for them, as the primer tells every
                 # agent to. Their answers wake it, as they wake a human's
@@ -370,6 +364,14 @@ class StudioRunner:
                 # are in. Woken turns spend its wake budget, not this one.
                 waited = self._await_own_answers(child)
                 if waited == "none":
+                    # A lead-in is unfinished only when nothing is
+                    # coming: "Waiting for results:" with delegates of
+                    # its own still out is the wait above, not a stop.
+                    if _trails_off(text):
+                        partial = text
+                        tail = text.rstrip().splitlines()[-1][-120:]
+                        prompt = TRAILED_OFF.format(tail=tail)
+                        continue
                     return Answer(text=text)
                 if waited == "stopping":
                     return Answer(
