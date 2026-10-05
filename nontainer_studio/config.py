@@ -120,6 +120,12 @@ def apps_config() -> AppsConfig:
         handler_example=HANDLER_EXAMPLE,
         csp=_csp(),
         script_hosts=(),
+        # A browser check writes what a person would, and `db` is the
+        # store every published version serves over: unbound, each
+        # check left rows an agent then deleted by hand. test_app's
+        # handlers read `testdb` as `db` unless a run passes `bind={}`.
+        # Every session binds both (`_python_config`).
+        test_bind={"db": "testdb"},
     )
 
 

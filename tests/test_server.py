@@ -5698,6 +5698,51 @@ def test_the_reference_app_wears_the_shell_palette(studio):
     assert result.ok, render_test_app(result)
 
 
+POSTING_PAGE = b"""<!doctype html><html><body><p id="out">...</p><script>
+fetch('api/names', {method: 'POST', headers: {'content-type': 'application/json'},
+  body: JSON.stringify({name: 'from the page'})})
+  .then(r => r.json()).then(j => { document.getElementById('out').textContent = j.n; });
+</script></body></html>"""
+
+POSTING_HANDLER = b"""from host import db
+
+def post(req):
+    db.execute("CREATE TABLE IF NOT EXISTS names (name TEXT)")
+    db.execute("INSERT INTO names VALUES (?)", (req.require("name"),))
+    return {"n": db.query("SELECT COUNT(*) FROM names")[0][0]}
+"""
+
+
+def test_a_browser_check_writes_to_testdb_unless_it_asks_for_the_live_db(studio):
+    """Every live delegated build ended each browser check with a manual
+    DELETE on the live db, which every published version serves over.
+    The studio binds `testdb` as `db` for test_app's handlers; `bind={}`
+    is the way to the live store."""
+    pytest.importorskip("playwright")
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    ws = session.ws
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", POSTING_PAGE)
+    ws.files.fs.write("/workspace/app/api/names.py", POSTING_HANDLER)
+    ws.commit()
+    testdb = ws.runtime.python_config.host_objects["testdb"]
+    check = [{"assert": "document.getElementById('out').textContent === '1'"}]
+
+    result = session.runtime.test_app(check)
+    assert result.ok, render_test_app(result)
+    assert result.bound == (("db", "testdb"),)
+    assert testdb.query("SELECT name FROM names") == [("from the page",)]
+    assert not session.db.query(
+        "SELECT name FROM sqlite_master WHERE name = 'names'"
+    )  # the live store never saw the table
+
+    result = session.runtime.test_app(check, bind={})
+    assert result.ok, render_test_app(result)
+    assert session.db.query("SELECT name FROM names") == [("from the page",)]
+
+
 def _jsx_app(ws, html: bytes, jsx: bytes):
     ws.files.fs.makedirs("/workspace/app", exist_ok=True)
     ws.files.fs.write("/workspace/app/index.html", html)

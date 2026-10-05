@@ -458,7 +458,10 @@ DB_PRIMER = (
     "a second store with the same API, empty and in memory, for tests: "
     "`testdb.reset()` first, then `call('x', db=testdb)`, so a test "
     "never seeds rows into the live store and never needs `sqlite3`, "
-    "which the sandbox refuses."
+    "which the sandbox refuses. test_app's handlers read `testdb` as "
+    "`db` too, so a browser check leaves the live store alone: seed "
+    "`testdb` from run_python first, and pass test_app `bind={}` only "
+    "to check against the live data."
 )
 
 

@@ -21,9 +21,10 @@ your report quotes them, and the README is filled in (**Done**).
   test_app for the page.
 - **There is no `node`**, nor `npm` or `npx`. JavaScript runs in the
   browser: through `ws-vitest`, or the page through test_app.
-- A handler that keeps state in `db` is tested against `testdb`:
-  `testdb.reset()`, then `call('scores', ..., db=testdb)`. `call` and
-  `testdb` exist only inside a `ws-pytest` run, not in run_python.
+- `testdb` is an empty store beside the live `db`. A ws-pytest test runs
+  `testdb.reset()`, then `call('scores', ..., db=testdb)` (`call` exists
+  only there). test_app's handlers read `testdb` as `db`: reset and seed
+  it from run_python first, and pass `bind={}` to check the live data.
 - A 500 means the traceback is in `/workspace/app/logs/api.log`: read it
   before changing code. `ws-curl $APP_ORIGIN/api/x` tries an endpoint
   without the page; never plain `curl`, which reaches the network.
@@ -81,9 +82,8 @@ your report quotes them, and the README is filled in (**Done**).
   setting `.value` from `eval`: React does not see that change, and the
   form submits what it had before.
 - Render data through JSX (`{row.name}`), never as an `innerHTML` string.
-- Grow in verified steps (one endpoint and one rendered number, then
-  the rest), and keep `app.jsx` small enough to rewrite when an edit gets
-  hairy.
+- Grow in verified steps (one endpoint and one number, then the rest),
+  and keep `app.jsx` small enough to rewrite when an edit gets hairy.
 - `vendor/` is served with your app but is not in your filesystem, so
   `ls` cannot see it. `references/vendor.md` is its listing: files and
   versions, the bare import names, the icon names, the theme's tokens.

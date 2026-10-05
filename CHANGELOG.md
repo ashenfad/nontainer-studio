@@ -161,6 +161,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Browser checks run against `testdb`.** test_app's handlers read the
+  in-memory `testdb` where they read `db` (nontainer's `test_bind`), so
+  clicking through a page no longer writes into the live store every
+  published version serves over. Every live delegated build had ended
+  each browser check with a manual `DELETE`. `bind={}` checks against
+  the live data, for a migration, say. The skill, the db primer and a
+  delegate's brief say how: reset and seed `testdb` from run_python
+  first. The skill also stops saying `testdb` is test-only, since
+  run_python has it too; only `call` is.
+
 - **The building-apps skill covers two more things live runs tripped on.**
   - Setting an input's `.value` from test_app's `eval` bypasses React.
     An app posted an empty due date that way; the skill now says to use
