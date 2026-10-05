@@ -136,10 +136,11 @@ def shared_db(parent: str) -> str:
     return (
         f"Your `db` is `{parent}`'s own store, not a copy: a row you write "
         f"there is a row `{parent}` reads. Test with `testdb`: "
-        "`call(..., db=testdb)` in a test, test_app with "
-        '`bind={"db": "testdb"}`, and `ws-curl --bind db=testdb` for a '
-        "write you are trying out. Unbound, test_app and ws-curl write "
-        "into that store.\n\n"
+        "`call(..., db=testdb)` in a test; for test_app with "
+        '`bind={"db": "testdb"}` and `ws-curl --bind db=testdb`, '
+        "`testdb.reset(copy=True)` first gives it the live data. Unbound, "
+        "test_app and ws-curl write into that store, and nothing you write "
+        "there is yours to delete.\n\n"
     )
 
 

@@ -161,15 +161,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **Browser checks and trial writes can use `testdb`.** nontainer's
-  test_app takes `bind={"db": "testdb"}` and `ws-curl` takes
-  `--bind db=testdb`, handing the handlers the in-memory `testdb` where
-  they read `db`. The skill, the db primer and a delegate's brief teach
-  both, with seeding `testdb` from run_python first. Every live delegated
-  build had ended its browser checks and `ws-curl` smoke tests with a
-  manual `DELETE` on the live store every published version serves
-  over. The skill also stops saying `testdb` is test-only, since
-  run_python has it too; only `call` is.
+- **Browser checks and trial writes can use `testdb`, with the live
+  data in it.** nontainer's test_app takes `bind={"db": "testdb"}` and
+  `ws-curl` takes `--bind db=testdb`, handing the handlers the in-memory
+  `testdb` where they read `db`. `testdb.reset(copy=True)` makes it a
+  copy of the live store, every table and row, so a check sees
+  realistic data and nothing it writes reaches the live one.
+  - **Why the copy:** with explicit binding, one agent skipped it
+    because seeding an empty store with realistic items was a chore. It
+    checked against the live store and restored it by hand after every
+    run.
+  - **`db.reset()` is refused:** it would empty the live store.
+  - **Teaching:** the skill, the db primer and a delegate's brief teach
+    copy-then-bind, and say never to undo test writes on the live `db`
+    by hand. A delegate had run `DELETE FROM groceries` there to tidy up
+    after an unbound request.
+  - **`testdb` isn't test-only:** the skill no longer says so, since
+    run_python has it too. Only `call` is.
 
 - **The building-apps skill covers two more things live runs tripped on.**
   - Setting an input's `.value` from test_app's `eval` bypasses React.

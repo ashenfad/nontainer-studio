@@ -542,7 +542,7 @@ class Registry(
             # same three methods plus reset().
             host_objects={
                 "db": db,
-                "testdb": Db(":memory:"),
+                "testdb": Db(":memory:", live=db),
                 **extra,
             },
             # A host call's wait counts against the timeout, and a deep

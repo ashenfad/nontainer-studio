@@ -57,8 +57,11 @@ through writes into the test store and the live one is left alone; the
 report says so on its second line. `ws-curl --bind db=testdb ...` does the
 same for one request, which is how to try a write (a POST, a DELETE)
 without leaving a row behind. Without the binding, both reach the live
-`db`. The store holds whatever the last test left, so a check that needs
-data resets and seeds it first, from run_python:
+`db`. The store holds whatever the last test left, so reset it first,
+from run_python. For a check that should see realistic data, copy the
+live store into it: `testdb.reset(copy=True)` gives every table and row
+the live `db` has right now, and nothing written to the copy reaches the
+live one. For a check that needs particular rows, reset and seed:
 
 ```python
 testdb.reset()
@@ -67,6 +70,10 @@ testdb.execute("INSERT INTO scores (name) VALUES (?)", ("ann",))
 ```
 
 A handler creates its own tables on its first request, so seeding is
-only for the rows a check needs to see. To check the page against the
-live data instead (after a migration, which a fresh test store cannot
-show), leave the binding off; what that run writes is real.
+only for the rows a check needs to see. A migration is tried the same
+way: `testdb.reset(copy=True)`, then the handler against the copy.
+
+**Never undo your test writes on the live `db`.** A `DELETE` or `UPDATE`
+to put the live store back is a guess at what it held before, and a
+wrong guess loses someone's data. Bind instead, and there is nothing to
+undo. `db.reset()` is refused: it would empty the live store.
