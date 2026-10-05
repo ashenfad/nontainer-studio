@@ -34,16 +34,35 @@ the transcript and reports it as the answer to whoever asked.
 """
 
 
-RESUME_BACKOFF = 5.0
-"""Seconds a turn waits, after its run ends in a provider error, before
-resuming that run where it stopped.
+RESUME_BACKOFFS: tuple[float, ...] = (5.0, 30.0, 60.0)
+"""Seconds a turn waits before each resume of a run that ended in a
+provider error, one entry per resume it gets.
 
 The model call has already retried the failure with its own backoff by
 the time the run gives up, so what is left is an outage measured in
-seconds rather than a blip; the wait gives it that long to clear
-before the one resume the turn gets is spent. A stop pressed during
-the wait is honored and the run is not resumed.
+seconds to minutes rather than a blip. One resume after five seconds
+caught some and missed others: a provider that stalled for two minutes
+stalled again on a resume five seconds later, and the turn ended with
+the human asked to type "go on" to a provider that was fine again
+by then. The waits grow so a later resume lands after the outage
+rather than inside it. A stop pressed during any wait is honored and
+the run is not resumed.
 """
+
+
+def _gave_up(failures: int, last: str) -> str:
+    """What a turn that ran out of resumes says, to the human (the
+    error event) and to the model (the kept run's closing note).
+
+    A bare provider string ("The operation was aborted") names no
+    cause, and agents reading it blamed whatever was nearest, the
+    delegates that had just answered. This one says it was the
+    provider, that the work is kept, and what continues it."""
+    times = "once" if failures == 1 else f"{failures} times in a row"
+    return (
+        f"the model provider failed {times} (last: {last}). Everything up "
+        "to here is kept; send a message to continue."
+    )
 
 
 def _short(value: Any, limit: int = 2_000) -> str:
@@ -556,8 +575,12 @@ async def _one_turn(
             session.agent.arun(prompt, stream=True, stream_events=True),
             state,
         )
-        if state.errored is not None and not state.cancelled:
-            await _resume_once(session, state)
+        failures = 0
+        while state.errored is not None and not state.cancelled:
+            failures += 1
+            if failures > len(RESUME_BACKOFFS):
+                break
+            await _resume(session, state, failures)
         if state.cancelled:
             # agno leaves a cancelled run out of the agent's history;
             # keeping it keeps the partial work in the agent's memory
@@ -566,18 +589,12 @@ async def _one_turn(
             )
             _settle_inbox(session)
         elif state.errored is not None:
-            # The resume failed too. The same skip-on-replay problem for
-            # an errored run: without keeping it, "please continue"
+            # Every resume failed too. The same skip-on-replay problem
+            # for an errored run: without keeping it, "please continue"
             # replans from scratch while the workspace holds the work.
-            await session.emit(
-                {"type": "error", "message": _short_middle(state.errored)}
-            )
-            await asyncio.to_thread(
-                _keep_aborted_run,
-                session,
-                state.run_id,
-                _short_middle(str(state.errored), 300),
-            )
+            said = _gave_up(failures, _short_middle(str(state.errored), 300))
+            await session.emit({"type": "error", "message": _short_middle(said)})
+            await asyncio.to_thread(_keep_aborted_run, session, state.run_id, said)
             _settle_inbox(session)
     except asyncio.CancelledError:
         # Cut from outside the loop, which is the studio shutting down
@@ -616,8 +633,9 @@ async def _one_turn(
     return not state.cancelled and state.errored is None
 
 
-async def _resume_once(session: Any, state: _RunState) -> None:
-    """Resume a run that ended in a provider error, in place, once.
+async def _resume(session: Any, state: _RunState, attempt: int = 1) -> None:
+    """Resume a run that ended in a provider error, in place: one of the
+    resumes ``RESUME_BACKOFFS`` allows, ``attempt`` counting from 1.
 
     A provider failure is an interruption, not a restart. By the time a
     run reports one, the model call has already retried it, so the run
@@ -628,10 +646,11 @@ async def _resume_once(session: Any, state: _RunState) -> None:
     errored run in place under its own run id (a completed run would be
     forked instead, which is why the run is kept only after this).
 
-    Once. A second failure is left to end the turn: the run is then
-    kept as an interrupted turn, and the human decides what happens
-    next. A stop pressed during the wait is honored — the turn ends
-    stopped, not resumed.
+    A bounded number of times, with a growing wait (``RESUME_BACKOFFS``).
+    When the last resume fails too, the turn ends: the run is kept as an
+    interrupted turn, and the human decides what happens next. A stop
+    pressed during a wait is honored — the turn ends stopped, not
+    resumed.
 
     Only a ``RunError`` event leads here. An exception out of the run
     loop is not a provider hiccup the next call can clear — it is the
@@ -644,13 +663,15 @@ async def _resume_once(session: Any, state: _RunState) -> None:
     exception out of the resume (agno refusing it, say) propagates to
     the turn's own handler.
     """
-    await session.emit(
-        {
-            "type": "notice",
-            "text": "provider error — resuming the turn where it stopped",
-        }
-    )
-    if await _stopped_while_waiting(state.run_id, RESUME_BACKOFF):
+    wait = RESUME_BACKOFFS[attempt - 1]
+    text = "provider error — resuming the turn where it stopped"
+    if attempt > 1:
+        text = (
+            f"provider error again — resuming in {wait:g}s "
+            f"(try {attempt} of {len(RESUME_BACKOFFS)})"
+        )
+    await session.emit({"type": "notice", "text": text})
+    if await _stopped_while_waiting(state.run_id, wait):
         state.cancelled = True
         await session.emit({"type": "notice", "text": "turn stopped"})
         return

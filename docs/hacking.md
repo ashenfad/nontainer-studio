@@ -110,7 +110,7 @@ event carries its sequence number as its cursor.
 | `compaction` | `turns`, `summary`, `tokens_before`, `tokens_after` | the agent's earlier turns were folded into one summary (`turns` of them, including any an earlier fold covered), mid-turn, before a model call. Sizes are in tokens and estimated |
 | `notice` | `text` | turn stopped, model switched, upload written, a provider error the turn is resuming from |
 | `usage` | `input_tokens`, `cached_tokens` | context telemetry, one per model call; the frontend keeps only the latest |
-| `error` | `message` | the run errored and its one resume did not clear it, the run loop raised, or the studio shut down on a turn it could not wait out |
+| `error` | `message` | the run errored and its resumes (`RESUME_BACKOFFS`) did not clear it, the run loop raised, or the studio shut down on a turn it could not wait out |
 | `done` | `run_id`, `head` | the turn ended. `head` is the workspace at turn end — the commit ↔ conversation mapping a rewind needs |
 | `title` | `title`, plus what was stored | the session was named or renamed |
 | `publish` | `token`, `version`, `title`, `url`, `head`, `tree` | a version exists. Emitted only after the fact, since it is a durable landmark you can restore to |
