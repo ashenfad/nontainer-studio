@@ -5732,6 +5732,8 @@ def test_a_browser_check_bound_to_testdb_leaves_the_live_db_alone(studio):
     check = [{"assert": "document.getElementById('out').textContent === '1'"}]
 
     result = session.runtime.test_app(check, bind={"db": "testdb"})
+    if result.load_error and "unavailable" in result.load_error:
+        pytest.skip(result.load_error)  # no chromium
     assert result.ok, render_test_app(result)
     assert result.bound == (("db", "testdb"),)
     assert testdb.query("SELECT name FROM names") == [("from the page",)]

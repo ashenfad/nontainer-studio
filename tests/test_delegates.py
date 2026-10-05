@@ -324,6 +324,42 @@ def test_a_delegate_that_keeps_trailing_off_is_capped_with_what_it_said(
     assert delegates.CAPPED in answer.text
 
 
+def test_a_lead_in_while_its_own_delegates_work_is_a_wait_not_a_stop(
+    registry, monkeypatch
+):
+    """'Waiting for results:' from a delegate whose own delegates are
+    still out is the wait the runner already does, not an unfinished
+    reply: it waits for their answers rather than nudging, and spends no
+    turns on the lead-in."""
+    replies = iter(
+        [
+            ("Asked two helpers. Waiting for results:", None),
+            ("Both helpers answered; here is the summary.", None),
+        ]
+    )
+    prompts = []
+    waits = iter(["answered", "none"])
+    monkeypatch.setattr(delegates, "_reply", lambda child, since: next(replies))
+    monkeypatch.setattr(
+        delegates.StudioRunner, "_await_own_answers", lambda self, child: next(waits)
+    )
+    real_turn = delegates.StudioRunner._turn
+
+    def turn(self, child, prompt):
+        prompts.append(prompt)
+        return real_turn(self, child, "!text ok")
+
+    monkeypatch.setattr(delegates.StudioRunner, "_turn", turn)
+    parent = registry.open("boss")
+    runner = delegates.StudioRunner(registry, parent.name, 2)
+    with Sessions(parent.ws, runner) as helper:
+        answer = helper.ask("!text ignored", wait=True)
+
+    assert answer.status == "answered"
+    assert answer.text.startswith("Both helpers answered")
+    assert len(prompts) == 2 and prompts[1] is None  # woken, not nudged
+
+
 def test_budget_caps_turns_and_a_nonsense_budget_falls_back(registry):
     runner = delegates.StudioRunner(registry, "boss", 3)
     assert runner._budget(1) == 1
