@@ -161,6 +161,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The building-apps skill covers two more things live runs tripped on.**
+  - Setting an input's `.value` from test_app's `eval` bypasses React.
+    An app posted an empty due date that way; the skill now says to use
+    test_app's `type` and `select` actions.
+  - `CREATE TABLE IF NOT EXISTS` never adds a column to a table that
+    already exists in the live `db`. The skill now says a new column
+    needs `ALTER TABLE ... ADD COLUMN`, guarded by `PRAGMA table_info`.
+    An agent caught this only because it had written it into its brief.
+
 - **The building-apps skill puts what bites first.** In live runs,
   delegates read it with `head -n 60` or `head -n 100` and parents with
   `head -n 200`. The skill was 480 lines, and what sat past those points

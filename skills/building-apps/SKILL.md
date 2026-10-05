@@ -54,7 +54,9 @@ your report quotes them, and the README is filled in (**Done**).
   module outside `app/` imports in the preview and fails once published.
 - `db` is LIVE: the published app, every later version and every
   delegate use the same store. `CREATE TABLE IF NOT EXISTS`, and never
-  leave test rows in it.
+  leave test rows in it. That creates a table but never changes one: a
+  new column on a table that exists needs `ALTER TABLE ... ADD COLUMN`,
+  run when `PRAGMA table_info` does not list it yet.
 - If an endpoint returns more than a few thousand rows, a file download,
   or anything that isn't JSON, read `references/returns.md` first.
 
@@ -75,6 +77,9 @@ your report quotes them, and the README is filled in (**Done**).
 - Give every control a stable `id` or `data-key`, and every dropdown
   `SelectProps={{ native: true }}`: test_app drives the page by selector,
   and cannot drive MUI's default Select.
+- In test_app, fill inputs with its `type` and `select` actions, never by
+  setting `.value` from `eval`: React does not see that change, and the
+  form submits what it had before.
 - Render data through JSX (`{row.name}`), never as an `innerHTML` string.
 - Grow in verified steps (one endpoint and one rendered number, then
   the rest), and keep `app.jsx` small enough to rewrite when an edit gets
@@ -85,11 +90,8 @@ your report quotes them, and the README is filled in (**Done**).
 
 ## Start from the reference app
 
-The references are WORKING FILES, one matched app: `api-handler.py` is
-filters in and chart-ready JSON out, `app.{html,jsx}` is the MUI frontend
-that calls it (filters, stat cards, a plotly chart, a table, a details
-dialog), and `format.js` is the plain-JavaScript half `app.jsx` imports.
-Copy them rather than retype them:
+The references are one WORKING app (a filtered summary endpoint, an MUI
+page with a chart and a table, `format.js` for the plain JS). Copy them:
 
 ```sh
 mkdir -p /workspace/app/api /workspace/tests
