@@ -273,6 +273,57 @@ def test_a_delegate_that_never_replies_is_capped(registry, monkeypatch):
     assert len(turns) == 2
 
 
+def test_a_reply_that_trails_off_on_a_lead_in_is_nudged_to_finish(
+    registry, monkeypatch
+):
+    """The answer is the prose after the last tool call, and a model
+    that wrote "Live smoke check (GETs only):" and stopped answered with
+    that line alone: the report it meant to write never reached the
+    parent. A reply ending on a lead-in is asked to finish."""
+    replies = iter(
+        [
+            ("All 32 green. Live smoke check (GETs only):", None),
+            ("Done: 32 tests pass; the smoke check returned 200.", None),
+        ]
+    )
+    prompts = []
+    monkeypatch.setattr(delegates, "_reply", lambda child, since: next(replies))
+    real_turn = delegates.StudioRunner._turn
+
+    def turn(self, child, prompt):
+        prompts.append(prompt)
+        return real_turn(self, child, "!text ok")
+
+    monkeypatch.setattr(delegates.StudioRunner, "_turn", turn)
+    parent = registry.open("boss")
+    runner = delegates.StudioRunner(registry, parent.name, 3)
+    with Sessions(parent.ws, runner) as helper:
+        answer = helper.ask("!text ignored", wait=True)
+
+    assert answer.status == "answered"
+    assert answer.text.startswith("Done: 32 tests pass")
+    assert len(prompts) == 2
+    assert "Live smoke check (GETs only):" in prompts[1]
+
+
+def test_a_delegate_that_keeps_trailing_off_is_capped_with_what_it_said(
+    registry, monkeypatch
+):
+    """Out of turns, the last lead-in is still more than nothing: it
+    comes back with the capped note rather than being dropped."""
+    monkeypatch.setattr(
+        delegates, "_reply", lambda child, since: ("Checking the endpoint:", None)
+    )
+    parent = registry.open("boss")
+    runner = delegates.StudioRunner(registry, parent.name, 2)
+    with Sessions(parent.ws, runner) as helper:
+        answer = helper.ask("!text ignored", wait=True)
+
+    assert answer.status == "capped"
+    assert answer.text.startswith("Checking the endpoint:")
+    assert delegates.CAPPED in answer.text
+
+
 def test_budget_caps_turns_and_a_nonsense_budget_falls_back(registry):
     runner = delegates.StudioRunner(registry, "boss", 3)
     assert runner._budget(1) == 1

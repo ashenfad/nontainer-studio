@@ -70,6 +70,23 @@ NUDGE = (
     "that delegated this."
 )
 
+TRAILED_OFF = (
+    "Your last turn ended on a lead-in with nothing after it: {tail!r}. "
+    "Finish that step if it still matters, then reply with what you did "
+    "and what you found — your reply is the whole of what reaches the "
+    "session that delegated this, and right now it is that one line."
+)
+
+
+def _trails_off(text: str) -> bool:
+    """Whether a reply stops on a lead-in: prose that announces what
+    comes next ("Live smoke check (GETs only):") and then ends. The
+    answer is the prose after the last tool call, so a model that
+    stopped there answers with that line alone, and the report it meant
+    to write after the step never reaches the asker."""
+    return text.rstrip().endswith(":")
+
+
 CAPPED = (
     "The delegate stopped without a reply and ran out of turns. Whatever "
     "it wrote is on its branch; read it before relying on it."
@@ -317,9 +334,14 @@ class StudioRunner:
         try:
             prompt: str | None = self._brief(child, forked_at) + task
             asked = 0  # turns the budget counts: the task and the nudges
+            partial = ""  # a reply that trailed off, kept if nothing better comes
             while True:
                 if prompt is not None:
                     if asked == turns:
+                        if partial:
+                            return Answer(
+                                text=partial + "\n\n" + CAPPED, status="capped"
+                            )
                         return Answer(text=CAPPED, status="capped")
                     asked += 1
                 text, error = self._turn(child, prompt)
@@ -331,6 +353,12 @@ class StudioRunner:
                     return Answer(text=_failed_text(text, error), status="failed")
                 if not text:
                     prompt = NUDGE
+                    continue
+                if _trails_off(text):
+                    partial = text
+                    prompt = TRAILED_OFF.format(
+                        tail=text.rstrip().splitlines()[-1][-120:]
+                    )
                     continue
                 # A reply while delegates of its own are still out is the
                 # delegate waiting for them, as the primer tells every
