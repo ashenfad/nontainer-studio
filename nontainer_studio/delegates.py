@@ -136,8 +136,9 @@ def shared_db(parent: str) -> str:
     return (
         f"Your `db` is `{parent}`'s own store, not a copy: a row you write "
         f"there is a row `{parent}` reads. Test with `testdb` — "
-        "`call(..., db=testdb)` — and not with a `ws-curl` request that "
-        "writes, which goes to that store.\n\n"
+        "`call(..., db=testdb)`, and test_app, whose handlers read "
+        "`testdb` as `db` — and not with a `ws-curl` request that writes, "
+        "which goes to that store.\n\n"
     )
 
 

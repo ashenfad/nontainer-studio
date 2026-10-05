@@ -45,7 +45,25 @@ helper you call directly and that raises one is tested with
 the handler reads when a test wants isolation. There are no fixtures and
 no conftest — setup is the test's own code, written in the test.
 
-`call` and `testdb` exist only inside a `ws-pytest` run, so
-`from host import call` fails in run_python. To watch a handler answer,
-write the test (what a test prints is in the report), or `ws-curl` the
-endpoint.
+`call` exists only inside a `ws-pytest` run, so `from host import call`
+fails in run_python. To watch a handler answer, write the test (what a
+test prints is in the report), or `ws-curl` the endpoint. `testdb` is
+bound everywhere, run_python included.
+
+**A browser check runs against `testdb` too.** test_app hands the
+handlers of the requests it makes `testdb` where they read `db`, so a
+page you click through writes into the test store and the live one is
+left alone; its report says so on its second line. The store holds
+whatever the last test left, so a check that needs data resets and seeds
+it first, from run_python:
+
+```python
+testdb.reset()
+testdb.execute("CREATE TABLE IF NOT EXISTS scores (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+testdb.execute("INSERT INTO scores (name) VALUES (?)", ("ann",))
+```
+
+A handler creates its own tables on its first request, so seeding is
+only for the rows a check needs to see. To check the page against the
+live data instead (after a migration, which a fresh test store cannot
+show), pass `bind={}` to test_app; what that run writes is real.
