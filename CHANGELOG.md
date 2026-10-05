@@ -247,7 +247,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is not text. The skill also says there is no `node` (JavaScript runs
   through `ws-vitest` and `test_app`), and that `call` and `testdb`
   exist only inside a `ws-pytest` run, not in run_python.
-- **Requires nontainer 0.8.10.**
+- **Requires nontainer 0.8.11**, for test_app's `bind` and `ws-curl --bind`.
 
 - **No tool-result compression.** The studio no longer has agno
   summarise old tool results at a context watermark, and
