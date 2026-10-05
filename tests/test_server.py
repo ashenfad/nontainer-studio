@@ -5744,6 +5744,49 @@ def test_a_browser_check_bound_to_testdb_leaves_the_live_db_alone(studio):
     assert session.db.query("SELECT name FROM names") == [("from the page",)]
 
 
+def test_testdb_resets_to_a_copy_of_the_live_db(studio):
+    """A browser check wants realistic data, and an empty test store made
+    seeding it a chore an agent skipped by checking against the live
+    store and restoring it by hand. `testdb.reset(copy=True)` is the live
+    data with none of that, through the sandbox as an agent calls it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    session.db.execute("CREATE TABLE items (name TEXT)")
+    session.db.executemany("INSERT INTO items VALUES (?)", [("milk",), ("eggs",)])
+
+    r = session.ws.run_python(
+        "testdb.reset(copy=True)\n"
+        "testdb.execute(\"INSERT INTO items VALUES ('test row')\")\n"
+        "rows = testdb.query('SELECT name FROM items ORDER BY name')"
+    )
+    assert r.error is None, r.error
+    assert r.namespace["rows"] == [("eggs",), ("milk",), ("test row",)]
+    # the copy's writes never reach the live store
+    assert session.db.query("SELECT name FROM items ORDER BY name") == [
+        ("eggs",),
+        ("milk",),
+    ]
+    # and a plain reset empties the test store again
+    r = session.ws.run_python(
+        "testdb.reset()\n"
+        "left = testdb.query(\"SELECT name FROM sqlite_master WHERE type='table'\")"
+    )
+    assert r.error is None and r.namespace["left"] == []
+
+
+def test_the_live_db_refuses_reset(studio):
+    """`reset()` exists to empty a test store; on the live one it would
+    empty the app every published version serves."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    session.db.execute("CREATE TABLE items (name TEXT)")
+    r = session.ws.run_python("db.reset()")
+    assert r.error is not None and "this is the live db" in r.error
+    assert session.db.query("SELECT name FROM sqlite_master WHERE type='table'")
+
+
 def _jsx_app(ws, html: bytes, jsx: bytes):
     ws.files.fs.makedirs("/workspace/app", exist_ok=True)
     ws.files.fs.write("/workspace/app/index.html", html)

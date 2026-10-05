@@ -23,8 +23,9 @@ your report quotes them, and the README is filled in (**Done**).
   browser: through `ws-vitest`, or the page through test_app.
 - `testdb` is an empty store beside the live `db`. A ws-pytest test runs
   `testdb.reset()`, then `call('scores', ..., db=testdb)` (`call` exists
-  only there). Browser checks and trial writes use it too: test_app
-  `bind={"db": "testdb"}`, `ws-curl --bind db=testdb` (seed it first).
+  only there). For a browser check or trial write, copy the live data in
+  with `testdb.reset(copy=True)`, then test_app `bind={"db": "testdb"}`
+  or `ws-curl --bind db=testdb`. Never undo test writes on the live `db`.
 - A 500 means the traceback is in `/workspace/app/logs/api.log`: read it
   before changing code. `ws-curl $APP_ORIGIN/api/x` tries an endpoint
   without the page; never plain `curl`, which reaches the network.
@@ -54,10 +55,9 @@ your report quotes them, and the README is filled in (**Done**).
   `app/api/_shared.py`, imported as `from app.api._shared import fn`; a
   module outside `app/` imports in the preview and fails once published.
 - `db` is LIVE: the published app, every later version and every
-  delegate use the same store. `CREATE TABLE IF NOT EXISTS`, and never
-  leave test rows in it. That creates a table but never changes one: a
-  new column on a table that exists needs `ALTER TABLE ... ADD COLUMN`,
-  run when `PRAGMA table_info` does not list it yet.
+  delegate use the same store. `CREATE TABLE IF NOT EXISTS` creates a
+  table but never changes one: a new column on a table that exists needs
+  `ALTER TABLE ... ADD COLUMN`, run when `PRAGMA table_info` lacks it.
 - If an endpoint returns more than a few thousand rows, a file download,
   or anything that isn't JSON, read `references/returns.md` first.
 

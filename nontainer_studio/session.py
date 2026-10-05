@@ -86,12 +86,15 @@ class Db:
     webapp.py idiom). Frozen serving calls handlers concurrently, so
     the store owns its own locking."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, live: "Db | None" = None) -> None:
+        """``live`` makes this a test store standing in for that one:
+        what ``reset(copy=True)`` copies."""
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._path = str(path)
         self._c = sqlite3.connect(self._path, check_same_thread=False)
         self._lock = threading.Lock()
+        self._live = live
 
     def execute(self, sql: str, params: tuple = ()) -> None:
         """A write (INSERT/UPDATE/CREATE TABLE); commits."""
@@ -112,12 +115,37 @@ class Db:
         with self._lock:
             return self._c.execute(sql, params).fetchall()
 
-    def reset(self) -> None:
+    def reset(self, copy: bool = False) -> None:
         """Drop every table, so the store reads as new. What a test
         calls first on ``testdb``, the in-memory store handed to
         ``call(..., db=testdb)``, so no test seeds rows into the live
         store every published version serves over and none inherits
-        the last test's rows."""
+        the last test's rows.
+
+        ``copy=True`` makes it a copy of the live store instead: every
+        table and row, as they are now. A browser check wants realistic
+        data, and an empty test store made seeding it a chore an agent
+        skipped by checking against the live store and restoring it by
+        hand. A copy is the live data with none of that: write to it
+        freely, and the live store never sees it. A migration can be
+        tried on one first, too.
+
+        Refused on a store that is not in memory: that is the live
+        store, and emptying it would empty the app."""
+        if self._path != ":memory:":
+            raise PermissionError(
+                "reset() empties a test store, and this is the live db: "
+                "every published version serves over it. To test, use "
+                "testdb (testdb.reset(), or testdb.reset(copy=True) for a "
+                "copy of this one)."
+            )
+        if copy:
+            if self._live is None:
+                raise ValueError("this store has no live store to copy")
+            # The live store first, always: no other path holds both.
+            with self._live._lock, self._lock:
+                self._live._c.backup(self._c)
+            return
         with self._lock:
             names = [
                 row[0]
