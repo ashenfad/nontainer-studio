@@ -83,7 +83,7 @@ def knobs_off(monkeypatch):
 def no_resume_backoff(monkeypatch):
     """A provider error resumes its turn after a wait meant for a real
     outage; a test's failures are scripted and clear at once."""
-    monkeypatch.setattr(turns, "RESUME_BACKOFF", 0)
+    monkeypatch.setattr(turns, "RESUME_BACKOFFS", (0, 0, 0))
 
 
 @pytest.fixture
@@ -3399,8 +3399,8 @@ class RunErrorAgent(FakeAgent):
 
 def test_a_provider_error_the_resume_cannot_clear_is_kept_in_memory(studio):
     """The equal-grouse amnesia: a provider error arrives as a RunError
-    STREAM EVENT, the stream ends cleanly, and the turn resumes the run
-    once. When the resume fails too, the stored status=error run would
+    STREAM EVENT, the stream ends cleanly, and the turn resumes the run.
+    When every resume fails too, the stored status=error run would
     vanish from the agent's memory without keeping — 'please continue'
     then replans from scratch while the workspace holds all the work."""
     from agno.run.base import RunStatus
@@ -3419,15 +3419,22 @@ def test_a_provider_error_the_resume_cannot_clear_is_kept_in_memory(studio):
     client.post("/api/sessions/s1/chat", json={"message": "build it"})
     events = _collect_until_done(client, "s1")
 
-    # resumed once, in place, and only then given up on
-    assert erroring.continued == [
-        {"run_id": "run-1", "session_id": "s1", "stream": True, "stream_events": True}
-    ]
+    # resumed in place, as many times as the schedule allows, and only
+    # then given up on
+    resume = {
+        "run_id": "run-1",
+        "session_id": "s1",
+        "stream": True,
+        "stream_events": True,
+    }
+    assert erroring.continued == [resume] * len(turns.RESUME_BACKOFFS)
     notices = [e["text"] for e in events if e["type"] == "notice"]
-    assert notices == ["provider error — resuming the turn where it stopped"]
-    # one error, the latest one
-    errors = [e["message"] for e in events if e["type"] == "error"]
-    assert errors == ["Provider still returning error"]
+    assert notices[0] == "provider error — resuming the turn where it stopped"
+    assert len(notices) == len(turns.RESUME_BACKOFFS)
+    # one error, naming the provider and carrying the latest message
+    (error,) = [e["message"] for e in events if e["type"] == "error"]
+    assert error.startswith("the model provider failed 4 times in a row")
+    assert "Provider still returning error" in error
 
     run = chat_db.record.runs[0]
     assert run.status == RunStatus.completed  # memory retained
@@ -7929,11 +7936,11 @@ def test_a_provider_error_resumes_the_run_where_it_stopped(scripted, caplog):
     assert "agno restarted run" not in caplog.text
 
 
-def test_a_resume_that_fails_too_ends_the_turn_and_keeps_the_run(scripted, monkeypatch):
-    """One resume, no more. When it fails the same way the turn ends in
-    an error, the file stays, and the run is kept: the next turn's model
-    reads the tool call it made and the note that the turn was cut
-    short."""
+def test_resumes_that_all_fail_end_the_turn_and_keep_the_run(scripted, monkeypatch):
+    """A bounded number of resumes. When every one fails the turn ends
+    in an error that says it was the provider, how often, and how to go
+    on; the file stays, and the run is kept: the next turn's model reads
+    the tool call it made and the note that the turn was cut short."""
     from nontainer_studio.dummy import DummyModel
 
     seen: list[list] = []
@@ -7951,12 +7958,21 @@ def test_a_resume_that_fails_too_ends_the_turn_and_keeps_the_run(scripted, monke
     session = registry.get("s1")
 
     script = WRITE_FAIL_ANSWER.replace(
-        "!fail provider overloaded", "!fail provider overloaded\n!fail still down"
+        "!fail provider overloaded",
+        "!fail provider overloaded\n!fail down\n!fail down\n!fail still down",
     )
     events = _run(client, "s1", script)
 
-    assert _notices(events) == [RESUMING]
-    assert [e["message"] for e in events if e["type"] == "error"] == ["still down"]
+    assert _notices(events) == [
+        RESUMING,
+        "provider error again — resuming in 0s (try 2 of 3)",
+        "provider error again — resuming in 0s (try 3 of 3)",
+    ]
+    (error,) = [e["message"] for e in events if e["type"] == "error"]
+    assert error == (
+        "the model provider failed 4 times in a row (last: still down). "
+        "Everything up to here is kept; send a message to continue."
+    )
     assert _prose(events) == ""
     assert session.ws.files.fs.read("/workspace/a.txt") == b"A"
     assert len(_stored_runs(registry, "s1")) == 1
@@ -7968,9 +7984,33 @@ def test_a_resume_that_fails_too_ends_the_turn_and_keeps_the_run(scripted, monke
     )
     assert any(
         m.role == "assistant"
-        and str(m.content).startswith("[turn aborted early: still down")
+        and str(m.content).startswith(
+            "[turn aborted early: the model provider failed 4 times in a row"
+        )
         for m in history
     )
+
+
+def test_a_resume_that_fails_is_followed_by_another(scripted):
+    """A provider that stalls again on the first resume, five seconds
+    after it stalled, is often fine a little later; the turn tries again
+    instead of handing the human a "go on" to type."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    script = WRITE_FAIL_ANSWER.replace(
+        "!fail provider overloaded", "!fail provider overloaded\n!fail still down"
+    )
+    events = _run(client, "s1", script)
+
+    assert _notices(events) == [
+        RESUMING,
+        "provider error again — resuming in 0s (try 2 of 3)",
+    ]
+    assert [e for e in events if e["type"] == "error"] == []
+    assert _prose(events) == "wrote a"
+    assert session.ws.files.fs.read("/workspace/a.txt") == b"A"
 
 
 def test_a_stopped_turn_is_kept_and_not_resumed(scripted):
@@ -7997,7 +8037,7 @@ def test_a_stop_during_the_wait_is_not_resumed(scripted, monkeypatch):
     """The wait before a resume is part of the turn, and the stop button
     reaches it: the run is kept as stopped by the user instead of being
     resumed, and the turn does not sit out the rest of the wait."""
-    monkeypatch.setattr(turns, "RESUME_BACKOFF", 30)
+    monkeypatch.setattr(turns, "RESUME_BACKOFFS", (30, 30, 30))
     client, registry = scripted
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")

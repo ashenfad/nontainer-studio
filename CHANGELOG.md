@@ -372,6 +372,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A provider outage gets more than one resume, and an error that
+  says it was the provider.** A run that ended in a provider error was
+  resumed once, five seconds later. Gemini through OpenRouter stalled
+  for about two minutes, then stalled again on that resume, and the
+  turn ended with "The operation was aborted". The person had to type
+  "go on" to a provider that was fine by then, and the agent blamed
+  the delegates that had just answered. A turn now resumes up to three
+  times, after 5, 30 and 60 seconds (`RESUME_BACKOFFS`), each later try
+  saying so. A stop during any wait is honored. When every try fails,
+  the error, and the note the model reads, say "the model provider
+  failed 4 times in a row (last: …). Everything up to here is kept;
+  send a message to continue."
+
 - **A delegate that stops on a lead-in is asked to finish.** A
   delegate's answer is the prose after its last tool call. One wrote
   "All 32 green. Live smoke check (GETs only — no writes to live

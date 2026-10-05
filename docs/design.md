@@ -163,9 +163,18 @@ the turn where it stopped" — waits a few seconds, and resumes the same
 run from its last tool result: the model remembers what it already did,
 and nothing is redone.
 
-It resumes once. If the resume fails too, the turn ends with the error,
-and the run stays in the agent's memory closed with a note that it was
-cut short, so "please continue" picks up from the work rather than
+It resumes up to three times, waiting longer before each: 5 seconds,
+then 30, then 60 (`RESUME_BACKOFFS`). A provider that stalls for minutes
+stalls again on a resume five seconds later, and the longer waits let a
+later resume land after the outage rather than inside it. Each later try
+says so ("provider error again — resuming in 30s (try 2 of 3)").
+
+If every resume fails too, the turn ends with an error that names the
+cause: "the model provider failed 4 times in a row (last: …). Everything
+up to here is kept; send a message to continue." A bare provider string
+("The operation was aborted") names no cause, and agents reading one
+blamed whatever was nearest. The run stays in the agent's memory closed
+with that note, so "please continue" picks up from the work rather than
 replanning it. A stop is never resumed, including one pressed while the
 turn waits to resume.
 
