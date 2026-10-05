@@ -354,6 +354,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A delegate that stops on a lead-in is asked to finish.** A
+  delegate's answer is the prose after its last tool call. One wrote
+  "All 32 green. Live smoke check (GETs only — no writes to live
+  `db`):" and its turn ended, so that line was its whole answer and the
+  report it meant to write never reached the parent. A reply ending in
+  a colon is now treated like no reply: the delegate is nudged, quoting
+  the line, to finish the step and report. If it runs out of turns, the
+  lead-in comes back with the capped note rather than being dropped.
+
 - **A delegate sent back for changes is heard from again.** Studio
   recorded a delegate's answer as delivered by the delegate's name. A
   delegate resumed with a second task answers under the same name, so
