@@ -5713,11 +5713,12 @@ def post(req):
 """
 
 
-def test_a_browser_check_writes_to_testdb_unless_it_asks_for_the_live_db(studio):
+def test_a_browser_check_bound_to_testdb_leaves_the_live_db_alone(studio):
     """Every live delegated build ended each browser check with a manual
     DELETE on the live db, which every published version serves over.
-    The studio binds `testdb` as `db` for test_app's handlers; `bind={}`
-    is the way to the live store."""
+    `bind={"db": "testdb"}` (taught by the skill, the db primer and a
+    delegate's brief) runs the page's handlers against the test store;
+    unbound, a run reaches the live one, as it always has."""
     pytest.importorskip("playwright")
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
@@ -5730,7 +5731,7 @@ def test_a_browser_check_writes_to_testdb_unless_it_asks_for_the_live_db(studio)
     testdb = ws.runtime.python_config.host_objects["testdb"]
     check = [{"assert": "document.getElementById('out').textContent === '1'"}]
 
-    result = session.runtime.test_app(check)
+    result = session.runtime.test_app(check, bind={"db": "testdb"})
     assert result.ok, render_test_app(result)
     assert result.bound == (("db", "testdb"),)
     assert testdb.query("SELECT name FROM names") == [("from the page",)]
@@ -5738,7 +5739,7 @@ def test_a_browser_check_writes_to_testdb_unless_it_asks_for_the_live_db(studio)
         "SELECT name FROM sqlite_master WHERE name = 'names'"
     )  # the live store never saw the table
 
-    result = session.runtime.test_app(check, bind={})
+    result = session.runtime.test_app(check)
     assert result.ok, render_test_app(result)
     assert session.db.query("SELECT name FROM names") == [("from the page",)]
 

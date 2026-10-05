@@ -23,8 +23,8 @@ your report quotes them, and the README is filled in (**Done**).
   browser: through `ws-vitest`, or the page through test_app.
 - `testdb` is an empty store beside the live `db`. A ws-pytest test runs
   `testdb.reset()`, then `call('scores', ..., db=testdb)` (`call` exists
-  only there). test_app's handlers read `testdb` as `db`: reset and seed
-  it from run_python first, and pass `bind={}` to check the live data.
+  only there). Browser checks and trial writes use it too: test_app
+  `bind={"db": "testdb"}`, `ws-curl --bind db=testdb` (seed it first).
 - A 500 means the traceback is in `/workspace/app/logs/api.log`: read it
   before changing code. `ws-curl $APP_ORIGIN/api/x` tries an endpoint
   without the page; never plain `curl`, which reaches the network.
