@@ -185,18 +185,18 @@ def test_a_full_delegate_forked_elsewhere_is_told_whose_conversation_it_is(
     maker = registry.open("maker")
     _turn(maker, "!text Built the dashboard.")
     builder = registry.open("builder")
-    answer = _delegate(
-        registry,
-        builder,
-        WRITE_A_NOTE,
-        fork_from=f"maker@{maker.ws.head}",
-        inherit="full",
+    # through builder's own helper, as the tool asks: its job table is
+    # where the runner reads which session the fork came from
+    answer = builder.delegates.ask(
+        WRITE_A_NOTE, fork_from=f"maker@{maker.ws.head}", inherit="full", wait=True
     )
     assert answer.status == "answered"
     child = registry.open(answer.branch)
     asked = [e for e in child.events if e["type"] == "user"][-1]
     assert "The conversation above is `maker`'s" in asked["text"]
     assert "You are a delegate of `builder`" in asked["text"]
+    # session@commit names the session it is a commit of
+    assert "Your workspace is a fork of `maker` at commit " in asked["text"]
 
 
 def test_asking_another_session_by_name_reaches_the_agent_there(registry):
@@ -213,7 +213,12 @@ def test_asking_another_session_by_name_reaches_the_agent_there(registry):
 
     child = registry.open("builder.q")
     texts = [e.get("text", "") for e in child.events if e["type"] == "user"]
-    assert any("The conversation above is `maker`'s" in t for t in texts)
+    asked = next(t for t in texts if "The conversation above is `maker`'s" in t)
+    # builder asked, and the files and the commit are maker's: a header
+    # naming builder's commit told the delegate it held builder's tree
+    head = maker.ws.head[:8]
+    assert asked.startswith("[delegated by session `builder` — ")
+    assert f"a fork of `maker` at commit {head}, not of `builder`" in asked
 
 
 def test_a_fresh_delegate_is_not_told_about_a_conversation(registry):

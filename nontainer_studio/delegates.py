@@ -93,15 +93,33 @@ CAPPED = (
 )
 
 
-def provenance_header(parent: str, commit: str | None) -> str:
+def provenance_header(
+    parent: str, commit: str | None, source: str | None = None
+) -> str:
     """How a delegated task introduces itself to the delegate.
 
     Mechanism, named as mechanism. The delegate's first turn looks
     exactly like a person typing, and a peer's request must not be able
     to pass for one — so the header says which session asked, from which
     commit, and what a fork does and does not reach.
+
+    ``source`` is where the delegate was forked when that was not the
+    session asking (``fork_from``), as the ask spelled it. The commit is
+    then the source's, and a header that put it under the asker's name
+    told the delegate its files were the asker's.
     """
     at = f" at commit {commit[:8]}" if commit else ""
+    if source is not None:
+        return (
+            f"[delegated by session `{parent}` — this is the studio's "
+            "delegation mechanism speaking, not the person at the keyboard]\n"
+            f"Your workspace is a fork of `{source}`{at}, not of `{parent}`: "
+            "its files, its cache and its cwd, on a branch that is yours "
+            f"alone. Nothing you write reaches `{source}` or `{parent}` "
+            "unless one merges your branch, and nothing either does from "
+            f"here reaches you. Your reply is the whole of what `{parent}` "
+            "reads back, so answer with what you did and what you found.\n\n"
+        )
     return (
         f"[delegated by session `{parent}`{at} — this is the studio's "
         "delegation mechanism speaking, not the person at the keyboard]\n"
@@ -179,6 +197,7 @@ def brief(
     versioning: bool,
     inherited: bool = False,
     inherited_from: str | None = None,
+    source: str | None = None,
 ) -> str:
     """The whole frame a delegated task carries, ready to prepend.
 
@@ -189,9 +208,10 @@ def brief(
     opens on an inherited conversation (``inherit="full"``), which needs
     its change of role said first, and ``inherited_from`` the session
     that conversation is — the parent's unless it was forked elsewhere.
+    ``source`` is that elsewhere, as :func:`provenance_header` takes it.
     """
     return (
-        provenance_header(parent, commit)
+        provenance_header(parent, commit, source)
         + (inherited_conversation(parent, inherited_from) if inherited else "")
         + (VERSIONING if versioning else "")
         + shared_db(parent)
@@ -439,7 +459,22 @@ class StudioRunner:
             versioning=child.wsgit,
             inherited=owner is not None,
             inherited_from=owner,
+            source=self._fork_source(child.name),
         )
+
+    def _fork_source(self, name: str) -> str | None:
+        """Where ``name`` was forked when it was not the parent: the
+        session of a ``session@commit``, or the word the ask gave (a
+        session or a store tag). ``None`` for a fork of the parent.
+
+        nontainer records the job, origin and all, before it hands the
+        run over, so the parent's job table already holds it here.
+        """
+        job = self._registry._live_jobs().get(name)
+        origin = getattr(job, "origin", None)
+        if not origin:
+            return None
+        return origin[0].partition("@")[0] or origin[0]
 
     @staticmethod
     def _inherited(child: "Session", forked_at: str | None) -> str | None:
