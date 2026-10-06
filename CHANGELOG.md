@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Agents can find and ask the human's other sessions.** A new
+  `sessions others` action lists every session but the asker's, most
+  recently active first: the name `fork_from` takes, the title, when it
+  last committed, its delegate count, and each app it published with
+  the app's description. Delegates aren't listed. An agent asked to put
+  a question to another session had only bare branch names from
+  `ws-git branch` to choose from. The delegation primer now teaches
+  `fork_from=<session>` (nontainer 0.8.13 takes a bare session name)
+  and points at `others` for finding one.
+
 - **Long conversations are compacted.** Past a budget of 60% of the
   model's context window, every earlier turn is folded into one summary
   the agent writes itself, and it is sent that summary and the turns
@@ -161,6 +171,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Asking another session carries its conversation by default.** The
+  `sessions` tool's `inherit` is now left unset unless the agent passes
+  one, so nontainer's default applies: a delegate forked from another
+  session (`fork_from`) is the agent that was there, its conversation
+  included, and a delegate of this session still starts fresh. The tool
+  passed `"fresh"` before, so a question put to another session was
+  answered from its files alone unless the agent knew to pass
+  `inherit="full"`.
+
 - **Session titles get the rail's whole width.** A row's fork and
   delete buttons were hidden until hover but still took their space,
   and the delegate count always showed beside the title, so every
@@ -260,7 +279,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is not text. The skill also says there is no `node` (JavaScript runs
   through `ws-vitest` and `test_app`), and that `call` and `testdb`
   exist only inside a `ws-pytest` run, not in run_python.
-- **Requires nontainer 0.8.11**, for test_app's `bind` and `ws-curl --bind`.
+- **Requires nontainer 0.8.13**, for `fork_from` with a bare session
+  name and an `inherit` that follows it.
 
 - **No tool-result compression.** The studio no longer has agno
   summarise old tool results at a context watermark, and
