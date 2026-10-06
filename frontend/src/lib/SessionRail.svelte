@@ -466,7 +466,10 @@
     /* The row's actions sit over the end of the title, not beside it:
        hidden and click-through at rest, so the title has the row's
        whole width and a click anywhere on it switches; shown on hover,
-       on keyboard focus within the row, and while a delete is armed. */
+       on keyboard focus within the row, and while a delete is armed.
+       Keyboard focus, not any focus: a click leaves the row's button
+       focused, and :focus-within would keep the tray over the title of
+       the session just switched to. */
     .tray {
         position: absolute;
         top: 0;
@@ -483,7 +486,7 @@
         transition: opacity 0.15s;
     }
     .row:hover .tray,
-    .row:focus-within .tray,
+    .row:has(:focus-visible) .tray,
     .row.armed .tray {
         opacity: 1;
         pointer-events: auto;

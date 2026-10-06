@@ -1480,7 +1480,19 @@ def test_the_title_has_the_row_and_the_actions_ride_over_it(page, server):
     expect(tray.locator(".waiting")).to_have_text("⑂1")
     page.mouse.move(800, 600)
     expect(tray).to_have_css("opacity", "0")
-    row.locator(".item").focus()  # keyboard focus shows it too
+
+    # a click leaves the row's button focused; that is pointer focus,
+    # and the tray goes once the pointer does
+    row.locator(".item").click()
+    page.mouse.move(800, 600)
+    expect(tray).to_have_css("opacity", "0")
+
+    # keyboard focus shows it: tab to the row's button from the one
+    # before it in the rail
+    row.locator(".item").focus()
+    page.keyboard.press("Shift+Tab")
+    page.keyboard.press("Tab")
+    expect(row.locator(".item")).to_be_focused()
     expect(tray).to_have_css("opacity", "1")
 
 
