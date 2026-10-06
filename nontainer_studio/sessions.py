@@ -343,6 +343,8 @@ class Registry(
         # title from that work, and the row has to say it is second-hand.
         asked: dict[str, list[str]] = {}
         for entry in self._manifest()["delegates"].values():
+            if entry.get("undone"):
+                continue  # an edit unsaid the ask, as every listing reads it
             source = entry.get("from")
             seen = asked.setdefault(entry["parent"], [])
             if source and source not in seen:
