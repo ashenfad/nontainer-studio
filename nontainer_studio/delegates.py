@@ -353,7 +353,9 @@ class StudioRunner:
         # Asked again (a resume), so part of the conversation again,
         # whatever an earlier edit unsaid.
         self._registry.reinstate_delegate(self._parent, session)
-        child = self._registry.open_delegate(self._parent, session)
+        child = self._registry.open_delegate(
+            self._parent, session, source=self._fork_source(session)
+        )
         try:
             prompt: str | None = self._brief(child, forked_at) + task
             asked = 0  # turns the budget counts: the task and the nudges
@@ -800,7 +802,9 @@ class DelegationMixin:
         cap = self.delegate_depth
         return cap > 0 and self.depth_of(name, manifest) >= cap
 
-    def open_delegate(self, parent: str, name: str) -> Session:
+    def open_delegate(
+        self, parent: str, name: str, *, source: str | None = None
+    ) -> Session:
         """Assemble a session over a branch ``ws.fork`` already made.
 
         A fork is a BRANCH. A branch is not a model, a toolkit, a python
@@ -838,6 +842,11 @@ class DelegationMixin:
                 # message it rewinds to (see `undo_delegates_since`)
                 "asked": now,
             }
+            if source:
+                # forked from another session's state: what `others`
+                # says a session asked, so a session whose title echoes
+                # the one it asked is not taken for the one that did it
+                manifest["delegates"][name]["from"] = source
             # A run that waited in the queue while an edit unsaid its
             # ask: its record is born undone, as the edit recorded it.
             owner = self._sessions.get(parent)

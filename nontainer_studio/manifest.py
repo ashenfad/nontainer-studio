@@ -112,8 +112,9 @@ class ManifestMixin:
     def _as_delegates(record: Any, created: Any) -> dict[str, dict]:
         """The delegates record in its shape: ``{child: {"parent",
         "touched", "kept"}}``, whatever the file held, plus ``asked``
-        (when it was asked for) and ``undone`` (an edit unsaid it) where
-        a record carries them.
+        (when it was asked for), ``undone`` (an edit unsaid it) and
+        ``from`` (where it was forked, when that was not its parent)
+        where a record carries them.
 
         It began as ``{child: parent}``, which says who forked whom and
         nothing about retention. Read one of those and the delegate
@@ -156,6 +157,8 @@ class ManifestMixin:
                 out[child]["asked"] = float(asked)
             if entry.get("undone") is True:
                 out[child]["undone"] = True
+            if isinstance(entry.get("from"), str) and entry["from"]:
+                out[child]["from"] = entry["from"]
         return out
 
     def _load_manifest(self) -> set[str]:
