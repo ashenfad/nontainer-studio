@@ -205,12 +205,14 @@ DELEGATE_STARTS = (
     "committed or not: write the files it should build against first, and "
     "put the contract in the task as well. It shares your `db` rather than "
     "a copy, and its brief tells it to test with `testdb`. `inherit` "
-    'decides which conversation it starts with. "fresh" (the default) is '
-    "none, so the task carries the context — right for a separable piece "
-    'built to a contract. "full" is this conversation up to your last '
-    "finished turn, not the one you are in — right for a second attempt at "
-    "something you have been working through. Either way the task says "
-    "what to do. "
+    'decides which conversation it starts with. "fresh", the default for a '
+    "delegate of yours, is none, so the task carries the context — right "
+    'for a separable piece built to a contract. "full" is this conversation '
+    "up to your last finished turn, not the one you are in — right for a "
+    "second attempt at something you have been working through. A delegate "
+    "forked from another session (`fork_from`) carries THAT session's "
+    'conversation unless you pass "fresh". Either way the task says what '
+    "to do. "
 )
 
 

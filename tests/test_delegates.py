@@ -841,6 +841,29 @@ def test_the_others_action_lists_the_other_sessions_by_title(registry, monkeypat
     assert len(lines) == 5
 
 
+def test_a_session_working_now_comes_before_newer_idle_ones(registry, monkeypatch):
+    """A turn in progress has not committed, so a busy session's last
+    commit is its previous turn. Sorted by that alone it could sit below
+    sessions idle since, or fall past the cutoff."""
+    for name in ("old", "new"):
+        registry.open(name)
+    busy = registry._sessions["old"]
+    monkeypatch.setattr(type(busy), "busy", property(lambda s: s.name == "old"))
+    times = {"old": 100.0, "new": 200.0}
+    monkeypatch.setattr(registry, "_last_commit_time", lambda name: times.get(name))
+    assert [r["name"] for r in registry.others("boss")] == ["old", "new"]
+
+
+def test_the_primer_says_a_fork_from_elsewhere_carries_its_conversation():
+    """The primer's word on `inherit` must not contradict the default a
+    fork from another session gets: "fresh" is the default for a
+    delegate of yours only."""
+    primer = prompts.DELEGATION_PRIMER
+    assert '"fresh", the default for a delegate of yours' in primer
+    assert "carries THAT session's conversation" in primer
+    assert '"fresh" (the default)' not in primer
+
+
 def test_others_says_how_long_ago_and_how_many_it_left_out():
     rows = [
         {
