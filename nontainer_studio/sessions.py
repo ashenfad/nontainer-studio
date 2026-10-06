@@ -322,8 +322,8 @@ class Registry(
 
     def others(self, owner: str) -> list[dict]:
         """The `others` action's rows: every session the rail lists but
-        ``owner``, most recently active first, each with the apps it
-        published.
+        ``owner``, those working now first and then the most recently
+        active, each with the apps it published.
 
         An agent asked to put a question to another session, or to
         build on what one did, had bare branch names to choose from.
@@ -352,7 +352,9 @@ class Registry(
                     "apps": apps.get(row["name"], []),
                 }
             )
-        rows.sort(key=lambda r: (-(r["active"] or 0), r["name"]))
+        # A turn in progress has not committed yet, so a busy session's
+        # last commit is its previous turn: working now outranks it.
+        rows.sort(key=lambda r: (not r["busy"], -(r["active"] or 0), r["name"]))
         return rows
 
     def _last_commit_time(self, name: str) -> float | None:
