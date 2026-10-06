@@ -469,7 +469,9 @@ def _render_others(rows: list[dict], now: float) -> str:
     The name comes first because it is what `fork_from` and every
     ws-git verb take; the title is what the session is about, as the
     human's rail shows it. A session nobody has named yet says so
-    rather than borrowing the rail's placeholder.
+    rather than borrowing the rail's placeholder. A session that asked
+    others about their work says which: its title comes from the work
+    it asked about, and what it knows of that work is second-hand.
     """
     from .titles import DEFAULT_TITLE
 
@@ -492,6 +494,8 @@ def _render_others(rows: list[dict], now: float) -> str:
             when += f", {row['delegates']} delegate" + (
                 "s" if row["delegates"] != 1 else ""
             )
+        if row.get("asked"):
+            when += "; asked " + ", ".join(row["asked"])
         lines.append(f"- {row['name']}: {title} ({when})")
         for app in row["apps"]:
             line = f"    app: {app['title']} ({app.get('current') or '?'})"

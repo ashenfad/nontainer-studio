@@ -846,6 +846,33 @@ def test_the_others_action_lists_the_other_sessions_by_title(registry, monkeypat
     assert len(lines) == 5
 
 
+def test_a_session_that_asked_another_says_so(registry):
+    """An asker's title is generated from what it asked about, so it can
+    read exactly like the session that did the work. Its row names the
+    session it asked, and the record survives a reread of the manifest."""
+    maker = registry.open("maker")
+    _turn(maker, "!text Built the dashboard.")
+    asker = registry.open("asker")
+    ask = {"action": "ask", "name": "q", "fork_from": "maker", "task": "!text Yes."}
+    _turn(asker, "!tool sessions " + json.dumps(ask) + "\n!text Asked.")
+    _await_delegates(asker)
+
+    assert registry._manifest()["delegates"]["asker.q"]["from"] == "maker"
+    rows = {r["name"]: r for r in registry.others("boss")}
+    assert rows["asker"]["asked"] == ["maker"]
+    assert rows["maker"]["asked"] == []
+    boss = registry.open("boss")
+    listed = _tool_results(_turn(boss, OTHERS), "sessions")[0]
+    assert "- asker: (untitled) (just now, 1 delegate; asked maker)" in listed
+
+
+def test_a_delegate_of_ones_own_names_no_source(registry):
+    parent = registry.open("boss")
+    _turn(parent, ASK_ASYNC)
+    _await_delegates(parent)
+    assert "from" not in registry._manifest()["delegates"]["boss.scout"]
+
+
 def test_a_session_working_now_comes_before_newer_idle_ones(registry, monkeypatch):
     """A turn in progress has not committed, so a busy session's last
     commit is its previous turn. Sorted by that alone it could sit below

@@ -338,6 +338,15 @@ class Registry(
         for app in self.list_apps():
             if app.get("session"):
                 apps.setdefault(app["session"], []).append(app)
+        # Where each session's delegates were forked from, when not from
+        # it: a session that only ASKED another one about its work gets a
+        # title from that work, and the row has to say it is second-hand.
+        asked: dict[str, list[str]] = {}
+        for entry in self._manifest()["delegates"].values():
+            source = entry.get("from")
+            seen = asked.setdefault(entry["parent"], [])
+            if source and source not in seen:
+                seen.append(source)
         rows = []
         for row in self.list():
             if row["name"] == owner:
@@ -350,6 +359,7 @@ class Registry(
                     "delegates": row["delegate_count"],
                     "active": self._last_commit_time(row["name"]),
                     "apps": apps.get(row["name"], []),
+                    "asked": asked.get(row["name"], []),
                 }
             )
         # A turn in progress has not committed yet, so a busy session's
