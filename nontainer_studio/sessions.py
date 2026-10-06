@@ -976,11 +976,12 @@ class Registry(
             # - the model call retries a transient error itself and
             #   keeps the turn's tool results (providers._with_retries);
             # - past that the run ends in error, and the turn resumes
-            #   the SAME run in place, once, from where it stopped
-            #   (server._resume_once);
-            # - if that fails too, the run is kept in the agent's memory
-            #   as an interrupted turn, and the workspace keeps what it
-            #   wrote.
+            #   the SAME run in place, from where it stopped, after a
+            #   back-off, as many times as turns.RESUME_BACKOFFS has
+            #   entries (turns._resume);
+            # - if every resume fails too, the run is kept in the
+            #   agent's memory as an interrupted turn, and the workspace
+            #   keeps what it wrote.
         )
 
     def _fold_landed(self, name: str, fold: Any) -> None:
