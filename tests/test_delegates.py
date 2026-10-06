@@ -866,6 +866,26 @@ def test_a_session_that_asked_another_says_so(registry):
     assert "- asker: (untitled) (just now, 1 delegate; asked maker)" in listed
 
 
+def test_an_ask_an_edit_unsaid_is_not_listed(registry):
+    """Editing the conversation back to before the ask unsays it, and the
+    row stops naming the session it asked."""
+    maker = registry.open("maker")
+    _turn(maker, "!text Built the dashboard.")
+    asker = registry.open("asker")
+    _turn(asker, "!text before any ask")
+    first = next(e["seq"] for e in asker.events if e["type"] == "user")
+    ask = {"action": "ask", "name": "q", "fork_from": "maker", "task": "!text Yes."}
+    _turn(asker, "!tool sessions " + json.dumps(ask) + "\n!text Asked.")
+    _await_delegates(asker)
+    assert {r["name"]: r for r in registry.others("boss")}["asker"]["asked"] == [
+        "maker"
+    ]
+
+    _edit(registry, asker, first, "!text an edited first message")
+    assert registry._manifest()["delegates"]["asker.q"].get("undone") is True
+    assert {r["name"]: r for r in registry.others("boss")}["asker"]["asked"] == []
+
+
 def test_a_delegate_of_ones_own_names_no_source(registry):
     parent = registry.open("boss")
     _turn(parent, ASK_ASYNC)
