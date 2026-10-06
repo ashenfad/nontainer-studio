@@ -18,6 +18,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `fork_from=<session>` (nontainer 0.8.13 takes a bare session name)
   and points at `others` for finding one.
 
+- **`others` says which sessions a session asked.** A session that only
+  asked another one about its work gets its title from that work, so it
+  could read exactly like the session that did it. One agent mounted two
+  identically titled sessions' trees to tell which had the files. The
+  row of a session that asked now ends with "asked golden-goblin". Each
+  delegate's manifest record keeps the session it was forked from, when
+  that wasn't its parent.
+
 - **Long conversations are compacted.** Past a budget of 60% of the
   model's context window, every earlier turn is folded into one summary
   the agent writes itself, and it is sent that summary and the turns
@@ -279,8 +287,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is not text. The skill also says there is no `node` (JavaScript runs
   through `ws-vitest` and `test_app`), and that `call` and `testdb`
   exist only inside a `ws-pytest` run, not in run_python.
-- **Requires nontainer 0.8.13**, for `fork_from` with a bare session
-  name and an `inherit` that follows it.
+- **Requires nontainer 0.8.14**, for `fork_from` with a bare session
+  name and an `inherit` that follows it (0.8.13), and for diffs and
+  answers that keep a delegate forked from another session apart from
+  that session's files (0.8.14).
 
 - **No tool-result compression.** The studio no longer has agno
   summarise old tool results at a context watermark, and
@@ -404,6 +414,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still works as a spec.
 
 ### Fixed
+
+- **A delegate forked from another session is told whose fork it is.**
+  Its header read "Your workspace is a fork of `<asker>` at commit
+  <c>", but the commit was the other session's, so the delegate was told
+  it held the asker's tree. It now names the session it was forked from
+  ("a fork of `golden-goblin` at commit 935ab643, not of `able-krill`"),
+  and the asker as the one asking.
 
 - **A provider outage gets more than one resume, and an error that
   says it was the provider.** A run that ended in a provider error was
