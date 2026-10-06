@@ -199,6 +199,23 @@ def test_a_full_delegate_forked_elsewhere_is_told_whose_conversation_it_is(
     assert "You are a delegate of `builder`" in asked["text"]
 
 
+def test_asking_another_session_by_name_reaches_the_agent_there(registry):
+    """The tool's own spelling, end to end: `fork_from` the bare name
+    and no `inherit`. The delegate opens on that session's
+    conversation — the studio's tool leaves `inherit` unset, so
+    nontainer's default for a fork from elsewhere applies."""
+    maker = registry.open("maker")
+    _turn(maker, "!text Built the dashboard.")
+    builder = registry.open("builder")
+    ask = {"action": "ask", "name": "q", "fork_from": "maker", "task": "!text Yes."}
+    _turn(builder, "!tool sessions " + json.dumps(ask) + "\n!text Asked.")
+    _await_delegates(builder)
+
+    child = registry.open("builder.q")
+    texts = [e.get("text", "") for e in child.events if e["type"] == "user"]
+    assert any("The conversation above is `maker`'s" in t for t in texts)
+
+
 def test_a_fresh_delegate_is_not_told_about_a_conversation(registry):
     parent = registry.open("boss")
     _turn(parent, "!text Noted.")
@@ -784,6 +801,68 @@ def test_a_version_with_no_origin_tag_says_so(registry):
     )
 
 
+# -- the others action: which session to ask -----------------------------------
+
+OTHERS = '!tool sessions {"action": "others"}\n!text Listed them.'
+
+
+def test_the_others_action_lists_the_other_sessions_by_title(registry, monkeypatch):
+    """An agent asked to put a question to another session had bare
+    branch names to choose from. The rows carry the human's titles,
+    most recently active first, and leave out the asker and every
+    delegate."""
+    monkeypatch.setattr(
+        summaries_mod,
+        "generate_description",
+        lambda spec, transcript: "Charts revenue by month over the sales db.",
+    )
+    boss = registry.open("boss")
+    assert _tool_results(_turn(boss, OTHERS), "sessions") == [
+        "There are no other sessions."
+    ]
+
+    registry.open("carol")  # opened first, and never named
+    alice = registry.open("alice")
+    _turn(alice, "!text Built the dashboard.")
+    _make_app(registry, alice, "Revenue dashboard")
+    bob = registry.open("bob")
+    registry.set_agent_title("bob", "County scraper")
+    _turn(bob, "!text Scraped it.")
+    _delegate(registry, bob, "!text Looked.")  # bob.<pet>: not a row
+
+    lines = _tool_results(_turn(boss, OTHERS), "sessions")[0].splitlines()
+    assert lines[0].endswith("fork_from=<name> asks one about its work:")
+    assert lines[1] == "- bob: County scraper (just now, 1 delegate)"
+    assert lines[2] == "- alice: Revenue dashboard (just now)"
+    assert lines[3] == (
+        "    app: Revenue dashboard (v1) — Charts revenue by month over the sales db."
+    )
+    assert lines[4].startswith("- carol: (untitled) (")
+    assert len(lines) == 5
+
+
+def test_others_says_how_long_ago_and_how_many_it_left_out():
+    rows = [
+        {
+            "name": f"s{i}",
+            "title": f"Session {i}",
+            "busy": i == 0,
+            "delegates": 0,
+            "active": 1_000_000 - i * 3600 * 30,
+            "apps": [],
+        }
+        for i in range(prompts.OTHERS_SHOWN + 2)
+    ]
+    lines = prompts._render_others(rows, now=1_000_000).splitlines()
+    assert lines[1] == "- s0: Session 0 (working now)"
+    assert lines[2] == "- s1: Session 1 (1d ago)"
+    assert lines[3] == "- s2: Session 2 (2d ago)"
+    assert lines[-1] == "… and 2 more, less recently active"
+    assert prompts._ago(59) == "just now"
+    assert prompts._ago(3 * 3600) == "3h ago"
+    assert prompts._ago(400 * 86400) == "1y ago"
+
+
 def test_every_other_action_is_nontainers_to_dispatch(registry, monkeypatch):
     """The studio owns the tool and one action; the rest arrive at
     `run_action` as the model sent them, over this session's own
@@ -808,7 +887,7 @@ def test_every_other_action_is_nontainers_to_dispatch(registry, monkeypatch):
         "task": "",
         "name": "",
         "paths": None,
-        "inherit": "fresh",
+        "inherit": "",  # unset: nontainer's default follows fork_from
         "fork_from": "",
         "resume": "",
         "wait": False,
@@ -839,6 +918,7 @@ def test_the_tool_is_nontainers_shape_under_nontainers_name(registry):
     assert tool.__doc__ is prompts.SESSIONS_TOOL_DESCRIPTION
     assert registry._sessions_tool(boss.name, boss.delegates).__doc__ is tool.__doc__
     assert '  action="published"' in tool.__doc__
+    assert '  action="others"' in tool.__doc__
 
     # and the agent is handed it once: nontainer's is not registered
     # beside it. The toolkit still KNOWS the helper — that is what lets

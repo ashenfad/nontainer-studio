@@ -4472,8 +4472,8 @@ def test_the_primer_says_where_else_a_delegate_can_start():
     what an ask takes is the `sessions` tool's own description, and
     saying it twice is how the two drift."""
     primer = prompts.DELEGATION_PRIMER
-    assert "fork_from=<session>@<commit>" in primer
-    assert "ws-git branch" in primer  # how the agent learns the names
+    assert "fork_from=<session>" in primer
+    assert "`others` action" in primer  # how the agent learns the names
     assert "resume" in primer
 
 

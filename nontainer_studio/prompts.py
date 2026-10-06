@@ -221,10 +221,11 @@ DELEGATION_PRIMER = (
     "diff <name>`, take all of it with `ws-git merge <name>`, or take "
     "part of it with `ws-git checkout <name> -- <paths>`. A delegate "
     "need not start from "
-    "here — `fork_from=<session>@<commit>` starts one from another "
-    "session's state, and `ws-git branch` lists the sessions there are to "
-    "name — and `resume` gives a delegate you already have its next task "
-    "instead of forking a second one. The same tool's `published` action "
+    "here — `fork_from=<session>` starts one from another session as it "
+    "is now, carrying that session's conversation, which is how to ask "
+    "another session about its work; the same tool's `others` action "
+    "lists the human's sessions with their titles — and `resume` gives a delegate you already have its next task "
+    "instead of forking a second one. Its `published` action "
     "lists the apps the human has PUBLISHED, each with an origin tag: that "
     "tag is a ref like any other, so `ws-git worktree add <dir> <tag>` "
     "mounts the session behind a published app, `ws-git checkout <tag> -- "
@@ -347,6 +348,7 @@ def _retention_primer(hours: float) -> str:
 
 _PUBLISHED_ACTION = (
     '  action="published" the human\'s apps: title, current version, origin tag\n'
+    '  action="others" the human\'s other sessions: title, last active, apps\n'
 )
 
 
@@ -355,11 +357,15 @@ An origin tag names the WHOLE session tree as it stood at that publish,
 not the `app/` subtree the URL serves. `ws-git worktree add <dir>
 <tag>` reads it under a directory, `ws-git checkout <tag> -- <paths>`
 takes files out of it, `ws-git diff <tag>` compares it with yours, and
-`sessions ask` with fork_from=<tag> and inherit="full" puts your task
-to the agent that built it, carrying its memory as of the publish —
-fresh gives you its files and no conversation. When the human asks for
-something like an app they already have, start there rather than from
-a blank page."""
+`sessions ask` with fork_from=<tag> puts your task to the agent that
+built it, carrying its memory as of the publish — inherit="fresh" gives
+you its files and no conversation. When the human asks for something
+like an app they already have, start there rather than from a blank
+page.
+
+`others` lists the human's sessions with their titles and the apps they
+published, to find the one that did the work you need: fork_from=<name>
+then asks it, as it is now."""
 
 
 def _sessions_description() -> str:
@@ -400,7 +406,7 @@ def _depth_refusal(cap: int) -> str:
         "this session is already that deep, so there is no fork to hand this "
         "to. Do the task yourself, or answer with what you have found — your "
         "reply is the whole of what reaches the session that asked. "
-        "list, result, keep, cancel and published still work."
+        "list, result, keep, cancel, published and others still work."
     )
 
 
@@ -433,6 +439,65 @@ def _render_published(rows: list[dict]) -> str:
         )
         if row.get("description"):
             lines.append(f"    {row['description']}")
+    return "\n".join(lines)
+
+
+OTHERS_SHOWN = 40
+"""Rows the `others` action lists before it says how many it left out.
+A long-lived studio holds hundreds of sessions, and the ones an agent
+might mean are the recent ones: the oldest go, by count."""
+
+
+def _ago(seconds: float) -> str:
+    """A rough age: an agent choosing a session needs "this week" from
+    "last spring", not the minute."""
+    minutes = int(max(seconds, 0) // 60)
+    if minutes < 1:
+        return "just now"
+    for size, unit in ((60 * 24 * 365, "y"), (60 * 24, "d"), (60, "h"), (1, "m")):
+        if minutes >= size:
+            return f"{minutes // size}{unit} ago"
+    return "just now"  # unreachable: minutes >= 1 matches the last unit
+
+
+def _render_others(rows: list[dict], now: float) -> str:
+    """The `others` action's answer: one line per session, most
+    recently active first, and an indented line per app it published.
+
+    The name comes first because it is what `fork_from` and every
+    ws-git verb take; the title is what the session is about, as the
+    human's rail shows it. A session nobody has named yet says so
+    rather than borrowing the rail's placeholder.
+    """
+    from .titles import DEFAULT_TITLE
+
+    if not rows:
+        return "There are no other sessions."
+    lines = [
+        "The human's other sessions, most recently active first — "
+        "name: title (last active). fork_from=<name> asks one about its work:"
+    ]
+    for row in rows[:OTHERS_SHOWN]:
+        title = row["title"] if row["title"] != DEFAULT_TITLE else "(untitled)"
+        when = (
+            "working now"
+            if row["busy"]
+            else _ago(now - row["active"])
+            if row["active"]
+            else "never committed"
+        )
+        if row["delegates"]:
+            when += f", {row['delegates']} delegate" + (
+                "s" if row["delegates"] != 1 else ""
+            )
+        lines.append(f"- {row['name']}: {title} ({when})")
+        for app in row["apps"]:
+            line = f"    app: {app['title']} ({app.get('current') or '?'})"
+            if app.get("description"):
+                line += f" — {app['description']}"
+            lines.append(line)
+    if len(rows) > OTHERS_SHOWN:
+        lines.append(f"… and {len(rows) - OTHERS_SHOWN} more, less recently active")
     return "\n".join(lines)
 
 

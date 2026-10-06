@@ -36,6 +36,7 @@ import os
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -79,6 +80,7 @@ from .prompts import (
     _depth_primer,
     _depth_refusal,
     _python_primer,
+    _render_others,
     _render_published,
     _retention_primer,
     _unit_test_primer,
@@ -317,6 +319,52 @@ class Registry(
             )
         rows.sort(key=lambda r: (-created.get(r["name"], 0), r["name"]))
         return rows
+
+    def others(self, owner: str) -> list[dict]:
+        """The `others` action's rows: every session the rail lists but
+        ``owner``, most recently active first, each with the apps it
+        published.
+
+        An agent asked to put a question to another session, or to
+        build on what one did, had bare branch names to choose from.
+        The title is the human's word for a session where they gave
+        one, and the published app's description is the closest thing
+        a session has to a summary of what it holds.
+
+        ``active`` is the time of the session's latest commit — every
+        finished turn commits — or ``None`` where the store cannot say.
+        """
+        apps: dict[str, list[dict]] = {}
+        for app in self.list_apps():
+            if app.get("session"):
+                apps.setdefault(app["session"], []).append(app)
+        rows = []
+        for row in self.list():
+            if row["name"] == owner:
+                continue
+            rows.append(
+                {
+                    "name": row["name"],
+                    "title": row["title"],
+                    "busy": row["busy"],
+                    "delegates": row["delegate_count"],
+                    "active": self._last_commit_time(row["name"]),
+                    "apps": apps.get(row["name"], []),
+                }
+            )
+        rows.sort(key=lambda r: (-(r["active"] or 0), r["name"]))
+        return rows
+
+    def _last_commit_time(self, name: str) -> float | None:
+        """When ``name``'s branch last moved, unix seconds. ``None`` for
+        a session with no branch yet (listed, never opened) or a store
+        that keeps no commits — a missing time is a gap in a listing,
+        never a reason to fail it."""
+        try:
+            head = next(self._store.repo.log(branch=name, limit=1), None)
+        except Exception:  # noqa: BLE001 - see above
+            return None
+        return head.time if head is not None else None
 
     @property
     def stopping(self) -> bool:
@@ -713,7 +761,7 @@ class Registry(
             task: str = "",
             name: str = "",
             paths: "list[str] | str | None" = None,
-            inherit: str = "fresh",
+            inherit: str = "",
             fork_from: str = "",
             resume: str = "",
             wait: bool = False,
@@ -721,6 +769,8 @@ class Registry(
             """Delegate to a fork of this session, and read it back."""
             if action == "published":
                 return _render_published(self.list_apps())
+            if action == "others":
+                return _render_others(self.others(owner), time.time())
             if action == "ask" and self.at_depth_cap(owner):
                 # Before nontainer sees it: the fork is the expensive
                 # half, and a refusal the agent can read and act on
