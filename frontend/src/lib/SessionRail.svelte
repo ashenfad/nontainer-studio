@@ -151,7 +151,11 @@
     <div class="rail-title">sessions</div>
     <div class="items">
         {#each rail.sessions as s (s.name)}
-            <div class="row" class:active={s.name === active}>
+            <div
+                class="row"
+                class:active={s.name === active}
+                class:armed={armed === s.name}
+            >
                 {#if renaming === s.name}
                     <!-- the whole row, not just the label: an input
                          nested in the switch button would swallow its
@@ -180,71 +184,90 @@
                         }}
                         ondblclick={() => startRename(s)}
                     >
-                        <span class="dot {status(s)}"></span>
+                        <!-- The dot carries the session's state at rest: a
+                             turn running (pulse), something unseen
+                             (green), and its delegates. A ring that
+                             pulses is delegates still working; a solid
+                             one is answers waiting for this session's
+                             next turn. The counts are in the tray. -->
+                        <span
+                            class="dot {status(s)}"
+                            class:answered={s.delegates}
+                            class:delegating={!s.delegates && s.delegates_running}
+                            title={s.delegates
+                                ? `${s.delegates} delegate answer${s.delegates === 1 ? '' : 's'} waiting`
+                                : s.delegates_running
+                                  ? `${s.delegates_running} delegate${s.delegates_running === 1 ? '' : 's'} working`
+                                  : ''}
+                        ></span>
                         <span class="name" title="{s.title} (double-click to rename)"
                             >{s.title}</span
                         >
-                        <!-- svelte-ignore a11y_click_events_have_key_events -->
-                        <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    </button>
+                    <!-- The row's actions, over the end of the title
+                         rather than beside it: at rest the title has the
+                         whole width, and on hover, keyboard focus, or an
+                         armed delete the tray slides over its tail. -->
+                    <div class="tray">
                         {#if s.delegates}
                             <!-- A delegate this session sent off has
                                  answered. Pull, not push: the answer is
                                  waiting and reaches the agent on this
                                  session's next turn, which is when this
                                  clears. -->
-                            <span
-                                class="waiting"
+                            <button
+                                class="chip waiting"
                                 title="{s.delegates} delegate answer{s.delegates === 1
                                     ? ''
                                     : 's'} waiting — they reach this session on its next turn. Click to list them."
                                 onclick={(e) => toggleDelegates(s, e)}
-                                >⑂{s.delegates}</span
+                                >⑂{s.delegates}</button
                             >
                         {:else if s.delegates_running}
                             <!-- Delegates at work: a parent waiting on
                                  them has ended its turn, and its own dot
                                  is quiet. This says it is not done. -->
-                            <span
-                                class="working"
+                            <button
+                                class="chip working"
                                 title="{s.delegates_running} delegate{s.delegates_running === 1
                                     ? ''
                                     : 's'} working — click to list them"
                                 onclick={(e) => toggleDelegates(s, e)}
-                                >⑂{s.delegates_running}</span
+                                >⑂{s.delegates_running}</button
                             >
                         {:else if s.delegate_count}
                             <!-- Nothing waiting, but the branches are
                                  still there and still ageing out: a way
                                  into the list, not news. -->
-                            <span
-                                class="forked"
+                            <button
+                                class="chip forked"
                                 title="{s.delegate_count} delegate{s.delegate_count === 1
                                     ? ''
                                     : 's'} — click to list them"
                                 onclick={(e) => toggleDelegates(s, e)}
-                                >⑂{s.delegate_count}</span
+                                >⑂{s.delegate_count}</button
                             >
                         {/if}
-                    </button>
-                    <button
-                        class="fork"
-                        title="fork {s.title} — same files and conversation, its own universe from here"
-                        aria-label="fork {s.title}"
-                        onclick={(e) => fork(s, e)}
-                    >
-                        ⑂
-                    </button>
-                    <button
-                        class="delete"
-                        class:armed={armed === s.name}
-                        title={armed === s.name
-                            ? 'click again to delete everything this session owns'
-                            : `delete ${s.title}`}
-                        aria-label="delete {s.title}"
-                        onclick={(e) => del(s, e)}
-                    >
-                        {armed === s.name ? 'sure?' : '×'}
-                    </button>
+                        <button
+                            class="fork"
+                            title="fork {s.title} — same files and conversation, its own universe from here"
+                            aria-label="fork {s.title}"
+                            onclick={(e) => fork(s, e)}
+                        >
+                            ⑂
+                        </button>
+                        <button
+                            class="delete"
+                            class:armed={armed === s.name}
+                            title={armed === s.name
+                                ? 'click again to delete everything this session owns'
+                                : `delete ${s.title}`}
+                            aria-label="delete {s.title}"
+                            onclick={(e) => del(s, e)}
+                        >
+                            {armed === s.name ? 'sure?' : '×'}
+                        </button>
+                    </div>
                 {/if}
             </div>
             {#if listing === s.name}
@@ -427,13 +450,43 @@
         padding: 0 0.5rem;
     }
     .row {
+        /* what the tray fades into: the row's own background, hovered
+           or not, so an armed tray left on screen blends in too */
+        --row-bg: var(--surface);
+        position: relative;
         display: flex;
         align-items: center;
         border-radius: 6px;
     }
     .row:hover,
     .row.active {
-        background: var(--surface-hover);
+        --row-bg: var(--surface-hover);
+        background: var(--row-bg);
+    }
+    /* The row's actions sit over the end of the title, not beside it:
+       hidden and click-through at rest, so the title has the row's
+       whole width and a click anywhere on it switches; shown on hover,
+       on keyboard focus within the row, and while a delete is armed. */
+    .tray {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.05rem;
+        padding-left: 1.4rem;
+        border-radius: 0 6px 6px 0;
+        background: linear-gradient(to right, transparent, var(--row-bg) 1.1rem);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s;
+    }
+    .row:hover .tray,
+    .row:focus-within .tray,
+    .row.armed .tray {
+        opacity: 1;
+        pointer-events: auto;
     }
     .row.active .item {
         color: var(--text);
@@ -465,12 +518,7 @@
         padding: 0.25rem 0.2rem;
         border-radius: 5px;
         cursor: pointer;
-        opacity: 0;
-        transition: opacity 0.15s;
         flex-shrink: 0;
-    }
-    .row:hover .fork {
-        opacity: 1;
     }
     .fork:hover {
         color: var(--accent);
@@ -485,13 +533,7 @@
         margin-right: 0.15rem;
         border-radius: 5px;
         cursor: pointer;
-        opacity: 0;
-        transition: opacity 0.15s;
         flex-shrink: 0;
-    }
-    .row:hover .delete,
-    .delete.armed {
-        opacity: 1;
     }
     .delete:hover {
         color: var(--error);
@@ -590,6 +632,12 @@
         cursor: default;
         opacity: 0.5;
     }
+    /* a delegate count in the tray: a way into the delegate list */
+    .chip {
+        border: none;
+        font-family: inherit;
+        background: none;
+    }
     .waiting {
         cursor: pointer;
         flex-shrink: 0;
@@ -635,6 +683,20 @@
     }
     .dot.unseen {
         background: var(--success);
+    }
+    /* delegates, on the dot so they show at rest: a solid ring is
+       answers waiting for the next turn, a pulsing one delegates still
+       working. The gap is the row's own background. */
+    .dot.answered {
+        box-shadow:
+            0 0 0 1.5px var(--row-bg),
+            0 0 0 3px var(--accent);
+    }
+    .dot.delegating {
+        box-shadow:
+            0 0 0 1.5px var(--row-bg),
+            0 0 0 3px var(--accent);
+        animation: pulse 1.2s ease-in-out infinite;
     }
     .new {
         padding: 0.6rem;

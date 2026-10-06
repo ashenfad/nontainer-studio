@@ -161,6 +161,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Session titles get the rail's whole width.** A row's fork and
+  delete buttons were hidden until hover but still took their space,
+  and the delegate count always showed beside the title, so every
+  title was cut short.
+  - **At rest:** a row is now its dot and its title. Its actions (the
+    delegate count, fork, delete) sit in a tray over the end of the
+    title, shown on hover, on keyboard focus within the row, and while
+    a delete is armed. Hidden, the tray lets clicks through, so the
+    whole title still switches sessions.
+  - **Delegate status moved to the dot,** so it still shows at rest: a
+    solid ring means answers are waiting for the session's next turn,
+    and a pulsing ring means delegates are still working.
+
 - **Browser checks and trial writes can use `testdb`, with the live
   data in it.** nontainer's test_app takes `bind={"db": "testdb"}` and
   `ws-curl` takes `--bind db=testdb`, handing the handlers the in-memory

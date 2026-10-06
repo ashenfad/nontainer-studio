@@ -1168,6 +1168,7 @@ def test_delete_session_from_rail(page, server):
     # two-tap delete on the ACTIVE session: × arms, 'sure?' confirms
     row = page.locator(".row", has_text="del2")
     row.hover()
+    row.hover()  # the row's actions are in its hover tray
     row.locator(".delete").click()
     expect(row.locator(".delete")).to_have_text("sure?")
     row.locator(".delete").click()
@@ -1201,6 +1202,7 @@ def test_fork_from_the_rail_switches_to_the_child(page, server):
     _title(server, "e2e-fork", "fork parent")
 
     row = page.locator(".row", has_text="fork parent")
+    row.hover()
     row.hover()
     row.locator(".fork").click()
 
@@ -1339,7 +1341,8 @@ def test_a_delegates_answer_reaches_the_parent_next_turn(page, server):
         "Sent a scout.", timeout=15000
     )
     # the delegate is a session of its own, and NOT a row in the rail
-    expect(page.locator(".rail .waiting")).to_be_visible(timeout=20000)
+    # an answer waiting shows on the parent's dot, at rest
+    expect(page.locator(".rail .dot.answered")).to_be_visible(timeout=20000)
     expect(page.locator(".rail .item", has_text="scout")).to_have_count(0)
 
     _send(page, "what did the scout say?")
@@ -1350,7 +1353,8 @@ def test_a_delegates_answer_reaches_the_parent_next_turn(page, server):
     expect(card).to_contain_text("answered")
     expect(card).to_contain_text("Found it.")
     # and delivering it clears the rail badge
-    expect(page.locator(".rail .waiting")).to_have_count(0, timeout=20000)
+    expect(page.locator(".rail .dot.answered")).to_have_count(0, timeout=20000)
+    expect(page.locator(".rail .waiting")).to_have_count(0)
 
 
 def test_an_answer_wakes_the_parent_without_a_message(browser, waking_server):
@@ -1400,7 +1404,7 @@ def test_the_strip_shows_a_delegate_at_work_until_its_answer_lands(page, server)
     label = page.locator(".delegate-strip .label")
     expect(label).to_have_text("⑂ 1 delegate working")
     row = page.locator(".rail .row", has_text="Striping")
-    expect(row.locator(".working")).to_be_visible(timeout=10000)
+    expect(row.locator(".dot.delegating")).to_be_visible(timeout=10000)
     # the work line names what was done, not "sessions ask"
     expect(page.locator(".agent-msg").last).to_contain_text("Asked 1 delegate")
 
@@ -1431,8 +1435,9 @@ def test_the_rail_lists_a_sessions_delegates_and_keeps_one(page, server):
     )
     _title(server, "e2e-keep", "keeper")
     row = page.locator(".rail .row", has_text="keeper")
-    expect(row.locator(".waiting")).to_be_visible(timeout=20000)
+    expect(row.locator(".dot.answered")).to_be_visible(timeout=20000)
 
+    row.hover()  # the count is in the hover tray
     row.locator(".waiting").click()
     listed = page.locator(".rail .delegate")
     expect(listed).to_have_count(1, timeout=10000)
@@ -1445,6 +1450,38 @@ def test_the_rail_lists_a_sessions_delegates_and_keeps_one(page, server):
     # so that is where a keep has to land
     record = json.loads((server.store / "sessions.json").read_text())["delegates"]
     assert record["e2e-keep.scout"]["kept"] is True
+
+
+def test_the_title_has_the_row_and_the_actions_ride_over_it(page, server):
+    """At rest a row is its dot and its title, the title as wide as the
+    row allows; the count, fork and delete sit in a tray over the end of
+    it, shown on hover and on keyboard focus, and click-through when
+    hidden so the whole title switches sessions."""
+    page.goto(f"{server}/?session=e2e-tray")
+    _send(
+        page,
+        '!tool sessions {"action": "ask", "name": "scout", '
+        '"task": "!text Had a look."}\n'
+        "!text Sent a scout.",
+    )
+    _title(server, "e2e-tray", "A title long enough to need the whole row")
+    row = page.locator(".rail .row", has_text="A title long")
+    expect(row.locator(".dot.answered")).to_be_visible(timeout=20000)
+    tray = row.locator(".tray")
+    page.mouse.move(800, 600)  # off the rail
+    expect(tray).to_have_css("opacity", "0")
+    expect(tray).to_have_css("pointer-events", "none")
+    name, whole = row.locator(".name").bounding_box(), row.bounding_box()
+    # the title runs to the row's end, less its own padding
+    assert name["x"] + name["width"] > whole["x"] + whole["width"] - 16
+
+    row.hover()
+    expect(tray).to_have_css("opacity", "1")
+    expect(tray.locator(".waiting")).to_have_text("⑂1")
+    page.mouse.move(800, 600)
+    expect(tray).to_have_css("opacity", "0")
+    row.locator(".item").focus()  # keyboard focus shows it too
+    expect(tray).to_have_css("opacity", "1")
 
 
 def test_a_delegate_opens_read_only_and_the_crumb_leads_back(page, server):
@@ -1461,7 +1498,7 @@ def test_a_delegate_opens_read_only_and_the_crumb_leads_back(page, server):
     )
     _title(server, "e2e-drill", "driller")
     row = page.locator(".rail .row", has_text="driller")
-    expect(row.locator(".waiting")).to_be_visible(timeout=20000)
+    expect(row.locator(".dot.answered")).to_be_visible(timeout=20000)
 
     # straight at the child, the way a reload lands: the shell has only
     # the name and has to ask the server what it is looking at
@@ -1684,8 +1721,9 @@ def test_the_rail_listing_opens_a_delegate(page, server):
     )
     _title(server, "e2e-open", "opener")
     row = page.locator(".rail .row", has_text="opener")
-    expect(row.locator(".waiting")).to_be_visible(timeout=20000)
+    expect(row.locator(".dot.answered")).to_be_visible(timeout=20000)
 
+    row.hover()  # the count is in the hover tray
     row.locator(".waiting").click()
     listed = page.locator(".rail .delegate")
     expect(listed).to_have_count(1, timeout=10000)
@@ -1712,7 +1750,7 @@ def test_deleting_the_parent_moves_the_view_off_its_delegate(page, server):
     )
     _title(server, "e2e-cascade", "doomed")
     row = page.locator(".rail .row", has_text="doomed")
-    expect(row.locator(".waiting")).to_be_visible(timeout=20000)
+    expect(row.locator(".dot.answered")).to_be_visible(timeout=20000)
 
     page.goto(f"{server}/?session=e2e-cascade.scout")
     expect(page.locator(".delegate-bar")).to_be_visible(timeout=20000)
@@ -1720,6 +1758,7 @@ def test_deleting_the_parent_moves_the_view_off_its_delegate(page, server):
     # the rail still shows the parent (the delegate has no row of its
     # own), and its delete is two taps
     row = page.locator(".rail .row", has_text="doomed")
+    row.hover()  # the delete is in the hover tray
     row.locator("button.delete").click()
     row.locator("button.delete").click()
 
