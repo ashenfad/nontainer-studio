@@ -13,7 +13,9 @@ import time
 
 import pytest
 from agno.models.response import ModelResponse
+from nontainer import conversation
 from nontainer.errors import BranchExpired
+from nontainer.planes import LEGACY_RUN_PREFIX, LEGACY_SESSION_KEY
 from nontainer.sessions import Sessions
 
 from nontainer_studio import config, delegates, prompts, turns
@@ -174,6 +176,36 @@ def test_a_full_delegate_is_told_whose_conversation_it_opens_on(registry):
     assert "The conversation above is `boss`'s" in asked["text"]
     assert "Do not address the person" in asked["text"]
     assert asked["text"].endswith(WRITE_A_NOTE)
+
+
+def test_a_parent_still_on_the_old_plane_is_named_as_the_conversations_owner(
+    registry,
+):
+    """A session last written before nontainer 0.9.0 keeps its
+    conversation under ``__agno__/`` until its next turn. A full
+    delegate forked from it reads that plane at the fork point, and is
+    told whose conversation it opens on all the same."""
+    parent = registry.open("boss")
+    _turn(parent, "!text Noted.")
+    kv = parent.ws.provider.kv
+    index = conversation.index_of(parent.ws)
+    record = conversation.read_record(kv, index)
+    runs = conversation.read_runs(kv, index.runs, index)
+    conversation.clear(kv)
+    kv[LEGACY_SESSION_KEY] = dict(
+        record, session_id=index.session, run_ids=list(index.runs)
+    )
+    for run_id, body in runs.items():
+        kv[LEGACY_RUN_PREFIX + run_id] = body
+    parent.ws.commit(info={"tool": "test"})
+    assert conversation.index_of(parent.ws).legacy
+
+    answer = _delegate(registry, parent, WRITE_A_NOTE, inherit="full")
+    assert answer.status == "answered"
+    child = registry.open(answer.branch)
+    asked = [e for e in child.events if e["type"] == "user"][-1]
+    assert "The conversation above is `boss`'s" in asked["text"]
+    assert not conversation.index_of(child.ws).legacy
 
 
 def test_a_full_delegate_forked_elsewhere_is_told_whose_conversation_it_is(

@@ -712,7 +712,6 @@ def test_web_reaches_the_agent_and_never_a_published_app(studio, monkeypatch):
 
 
 def test_without_web_the_agent_is_neither_given_nor_told_of_it(studio, monkeypatch):
-
     monkeypatch.setenv("OPENROUTER_API_KEY", "x")
     monkeypatch.setenv("NONTAINER_STUDIO_WEB", "off")
     monkeypatch.setenv("NONTAINER_STUDIO_MEDIA", "off")
@@ -6368,7 +6367,7 @@ createRoot(document.getElementById('root')).render(
     assert result.ok, render_test_app(result)
 
 
-def test_fork_holds_the_turn_lock_and_lets_go_after(scripted):
+def test_fork_holds_the_turn_lock_and_lets_go_after(scripted, monkeypatch):
     """The busy check is a reservation, not a snapshot: the session's
     turn lock is held for the whole fork, so a chat request that arrives
     mid-fork waits rather than committing under it."""
@@ -6378,17 +6377,15 @@ def test_fork_holds_the_turn_lock_and_lets_go_after(scripted):
     _run(client, "s1", _script("/workspace/a.txt", "A", "wrote a"))
 
     seen = {}
-    original = sessions_mod.fork_session
+    original = type(session.ws).fork
 
     def spying_fork(ws, name, **kw):
-        seen["locked_during_fork"] = session.turn_lock.locked()
+        if ws is session.ws:
+            seen["locked_during_fork"] = session.turn_lock.locked()
         return original(ws, name, **kw)
 
-    sessions_mod.fork_session = spying_fork
-    try:
-        child = registry.fork(session)
-    finally:
-        sessions_mod.fork_session = original
+    monkeypatch.setattr(type(session.ws), "fork", spying_fork)
+    child = registry.fork(session)
     assert seen["locked_during_fork"] is True
     assert not session.busy
     assert not child.busy

@@ -179,6 +179,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Requires nontainer 0.9.0, which stores the conversation on a
+  harness-neutral plane.** A session's conversation moves from
+  `__agno__/` to `__conversation__/` on its next turn, in that turn's
+  own commit. After that, nontainer releases older than 0.9.0 can't
+  read it. The studio now reaches the conversation through core:
+  - **A delegate that inherited a conversation** is recognised from the
+    conversation index (its runs, and the session it was forked from),
+    not from agno's session record.
+  - **A fresh fork from the rail** is `ws.fork(inherit="fresh")`, as a
+    delegate's is. The child holds no conversation, and the agent
+    starts one on its first turn. It used to keep agno's session record
+    with its runs cleared, which took a second commit.
+  - **Deleting a session** no longer clears its conversation first. The
+    branch deletion takes it with everything else.
+
 - **Asking another session carries its conversation by default.** The
   `sessions` tool's `inherit` is now left unset unless the agent passes
   one, so nontainer's default applies: a delegate forked from another
