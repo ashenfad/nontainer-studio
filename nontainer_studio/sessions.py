@@ -48,7 +48,7 @@ from nontainer import (
     validate_session_id,
 )
 from nontainer.adapters.agno import WorkspaceTools
-from nontainer.adapters.agno_db import KvgitStoreDb, fork_session
+from nontainer.adapters.agno_db import KvgitStoreDb
 from nontainer.apps import AppRuntime, AppsConfig, enable_apps
 from nontainer.inbox import Inbox
 from nontainer.sessions import Sessions, run_action
@@ -1115,7 +1115,11 @@ class Registry(
             rel = self._db_of(session.name, self._manifest())
             self._record(name, session.model, db=rel)
         try:
-            child_ws = fork_session(session.ws, name, conversation=conversation, at=at)
+            # A fresh fork holds no conversation at all, and the agent
+            # starts one on the child's first turn.
+            child_ws = session.ws.fork(
+                name, at=at, inherit="full" if conversation == "inherit" else "fresh"
+            )
             # The fork inherits the PARENT's python config, and with it
             # a `db` host object built for another session's workspace.
             # Let it go and reopen over a config of the child's own —
@@ -1186,15 +1190,8 @@ class Registry(
         name = session.name
         doomed = [name] + self.delegates_of(name)
         for victim in doomed:
-            # Before the session leaves the registry: the db reaches the
-            # conversation through workspace_for, which would otherwise
-            # reopen the session it is being asked to erase. Best-effort
-            # — the branch deletion below takes the conversation with it
-            # either way, and nothing may block a delete.
-            try:
-                self.db.delete_session(victim)
-            except Exception:
-                pass
+            # The conversation lives in the branch, and the branch
+            # deletion below takes it with everything else.
             with self._lock:
                 live = self._sessions.pop(victim, None)
                 manifest = self._manifest()

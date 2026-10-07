@@ -43,8 +43,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from nontainer import Answer
-from nontainer.planes import CONVERSATION_SESSION_KEY
+from nontainer import Answer, conversation
 from nontainer.sessions import render_answer
 
 if TYPE_CHECKING:
@@ -489,23 +488,21 @@ class StudioRunner:
         and neither needs to be told whose conversation it is reading.
 
         The session named is the one the fork rebound the conversation
-        from (``session_data["forked_from_session_id"]``), which is the
+        from (the conversation index's ``forked_from``), which is the
         fork point's own session: the parent, or wherever ``fork_from``
         started the delegate.
         """
         if forked_at is None:
             return None
         provider = child.ws.provider
-        mine = provider.kv.get(CONVERSATION_SESSION_KEY) or {}
-        held = list(mine.get("run_ids") or [])
+        mine = conversation.index_of(child.ws)
         try:
-            at = provider.key_at(forked_at, CONVERSATION_SESSION_KEY) or {}
+            at = conversation.index_at(provider, forked_at)
         except Exception:  # noqa: BLE001 - an unreadable point inherits nothing
             return None
-        if not held or held != list(at.get("run_ids") or []):
+        if mine is None or not mine.runs or at is None or mine.runs != at.runs:
             return None
-        origin = (mine.get("session_data") or {}).get("forked_from_session_id")
-        return origin or at.get("session_id") or ""
+        return mine.forked_from or at.session or ""
 
     def _turn(self, child: "Session", prompt: str) -> tuple[str, str | None]:
         """One turn, run the way a human's turn runs; its prose and error.
