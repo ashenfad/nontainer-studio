@@ -312,6 +312,43 @@ class _Ended(Exception):
         self.answer = answer
 
 
+async def _on_thread(
+    call: Callable[[], Any], *, undo: Callable[[Any], Any] | None = None
+) -> Any:
+    """``call()`` on a worker thread, and its result; a cancel waits for
+    the thread rather than abandoning it.
+
+    A thread cannot be stopped. Abandoned, it would go on opening or
+    closing a session's handles after shutdown had closed the store
+    they belong to, and the run's own cleanup would have run before it
+    finished. So a cancel is held until the thread is done and raised
+    after it, and ``undo`` is given the result of a call that succeeded
+    once nobody was waiting for it.
+    """
+    work = asyncio.ensure_future(asyncio.to_thread(call))
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(work)
+        except asyncio.CancelledError:
+            if work.cancelled():
+                raise
+            # the thread may have finished as the cancel came, and what
+            # it returned is still to be undone
+            cancelled = True
+            continue
+        except BaseException:
+            if cancelled:
+                raise asyncio.CancelledError from None
+            raise
+        break
+    if cancelled:
+        if undo is not None:
+            await _on_thread(lambda: undo(result))
+        raise asyncio.CancelledError
+    return result
+
+
 class StudioRunner:
     """``SessionRunner`` over one parent session's delegates.
 
@@ -359,24 +396,30 @@ class StudioRunner:
         and a sqlite connection held open per finished delegate would
         outlive every reason to have them.
         """
-        if self._registry.stopping:
-            return Answer(text=_failed_text("", SHUT_DOWN), status="failed")
-        turns = self._budget(budget)
         registry = self._registry
+        if registry.stopping:
+            return _shut_down()
+        turns = self._budget(budget)
+        parent = self._parent
+        source = self._fork_source(session)
         # Asked again (a resume), so part of the conversation again,
         # whatever an earlier edit unsaid.
-        await asyncio.to_thread(registry.reinstate_delegate, self._parent, session)
-        child = await asyncio.to_thread(
-            registry.open_delegate,
-            self._parent,
-            session,
-            source=self._fork_source(session),
+        await _on_thread(lambda: registry.reinstate_delegate(parent, session))
+        child = await _on_thread(
+            lambda: registry.open_delegate(parent, session, source=source),
+            # a child opened as the run was cancelled is let go here,
+            # since the release below is never reached
+            undo=lambda _: registry.release(session),
         )
         try:
-            brief = await asyncio.to_thread(self._brief, child, forked_at)
+            # Shutdown can begin while the child opens, and nothing
+            # would wait for its turn.
+            if registry.stopping:
+                return _shut_down()
+            brief = await _on_thread(lambda: self._brief(child, forked_at))
             return await self._answer(child, brief + task, turns)
         finally:
-            await asyncio.to_thread(registry.release, session)
+            await _on_thread(lambda: registry.release(session))
 
     async def _answer(self, child: "Session", prompt: str, turns: int) -> Answer:
         """The delegate's turns, run until it settles (``auntil_settled``),
@@ -556,6 +599,11 @@ _LOCK_POLL = 0.05
 
 SHUT_DOWN = "the studio shut down"
 """Why a delegate asked for as the studio stopped did nothing."""
+
+
+def _shut_down() -> Answer:
+    """The answer of a delegate whose run met the studio shutting down."""
+    return Answer(text=_failed_text("", SHUT_DOWN), status="failed")
 
 
 def _capped(partial: str) -> Answer:
@@ -1239,12 +1287,24 @@ class DelegationMixin:
         if session is not None:
             undelivered = {job.name for job in session.answered_delegates()}
         ttl = self.delegate_ttl
+        entries = {
+            child: entry
+            for child, entry in manifest["delegates"].items()
+            if entry["parent"] == name and (undone or not entry.get("undone"))
+        }
+        # A run still on its way to `open_delegate` has a job and no
+        # record yet. It is out all the same, and the strip, which
+        # refreshes on the ask, has to see it then: nothing tells it
+        # again before the answer, and an answer that waits for the
+        # human sends nothing at all.
+        recorded = manifest["delegates"]
+        unsaid = session.undone_delegates if session is not None else set()
+        for child, job in live.items():
+            if child in recorded or child in unsaid or job.status != "running":
+                continue
+            entries[child] = {"touched": job.started, "kept": None}
         rows = []
-        for child, entry in manifest["delegates"].items():
-            if entry["parent"] != name:
-                continue
-            if entry.get("undone") and not undone:
-                continue
+        for child, entry in entries.items():
             job = live.get(child)
             touched, kept = self._freshest(entry, job)
             running = job is not None and job.status == "running"
