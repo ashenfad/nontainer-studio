@@ -16,7 +16,7 @@ from agno.models.response import ModelResponse
 from nontainer import conversation
 from nontainer.errors import BranchExpired
 from nontainer.planes import LEGACY_RUN_PREFIX, LEGACY_SESSION_KEY
-from nontainer.sessions import Sessions
+from nontainer.sessions import Sessions, Settled
 
 from nontainer_studio import config, delegates, prompts, turns
 from nontainer_studio import session as session_mod
@@ -68,7 +68,7 @@ def _db_of(registry, name: str) -> str:
 def _delegate(registry, parent, task, **kw):
     """Ask, wait, answer — the blocking form, so a test is a straight line."""
     runner = delegates.StudioRunner(registry, parent.name, delegates.DELEGATE_TURNS)
-    with Sessions(parent.ws, runner) as helper:
+    with Sessions(parent.ws, runner, loop=registry.delegate_loop()) as helper:
         return helper.ask(task, wait=True, **kw)
 
 
@@ -320,7 +320,7 @@ def test_a_delegate_that_never_replies_is_capped(registry, monkeypatch):
     )
     parent = registry.open("boss")
     runner = delegates.StudioRunner(registry, parent.name, 2)
-    with Sessions(parent.ws, runner) as helper:
+    with Sessions(parent.ws, runner, loop=registry.delegate_loop()) as helper:
         answer = helper.ask("!text ignored", wait=True)
 
     assert answer.status == "capped"
@@ -351,7 +351,7 @@ def test_a_reply_that_trails_off_on_a_lead_in_is_nudged_to_finish(
     monkeypatch.setattr(delegates.StudioRunner, "_turn", turn)
     parent = registry.open("boss")
     runner = delegates.StudioRunner(registry, parent.name, 3)
-    with Sessions(parent.ws, runner) as helper:
+    with Sessions(parent.ws, runner, loop=registry.delegate_loop()) as helper:
         answer = helper.ask("!text ignored", wait=True)
 
     assert answer.status == "answered"
@@ -370,7 +370,7 @@ def test_a_delegate_that_keeps_trailing_off_is_capped_with_what_it_said(
     )
     parent = registry.open("boss")
     runner = delegates.StudioRunner(registry, parent.name, 2)
-    with Sessions(parent.ws, runner) as helper:
+    with Sessions(parent.ws, runner, loop=registry.delegate_loop()) as helper:
         answer = helper.ask("!text ignored", wait=True)
 
     assert answer.status == "capped"
@@ -392,11 +392,15 @@ def test_a_lead_in_while_its_own_delegates_work_is_a_wait_not_a_stop(
         ]
     )
     prompts = []
-    waits = iter(["answered", "none"])
     monkeypatch.setattr(delegates, "_reply", lambda child, since: next(replies))
-    monkeypatch.setattr(
-        delegates.StudioRunner, "_await_own_answers", lambda self, child: next(waits)
-    )
+
+    async def wakes_once(run_turn, sessions, inbox, *, prompt, max_wakes):
+        """The wait, as it goes when the delegate's own delegates are
+        out after its first reply and then answer."""
+        await run_turn(prompt)
+        return Settled(await run_turn(None), wakes=1)
+
+    monkeypatch.setattr(delegates, "auntil_settled", wakes_once)
     real_turn = delegates.StudioRunner._turn
 
     def turn(self, child, prompt):
@@ -406,7 +410,7 @@ def test_a_lead_in_while_its_own_delegates_work_is_a_wait_not_a_stop(
     monkeypatch.setattr(delegates.StudioRunner, "_turn", turn)
     parent = registry.open("boss")
     runner = delegates.StudioRunner(registry, parent.name, 2)
-    with Sessions(parent.ws, runner) as helper:
+    with Sessions(parent.ws, runner, loop=registry.delegate_loop()) as helper:
         answer = helper.ask("!text ignored", wait=True)
 
     assert answer.status == "answered"
@@ -1915,48 +1919,19 @@ def test_no_cap_no_limit(tmp_path):
         registry.close()
 
 
-def _turn_that_reports_its_cancel(loop, seen, *, sleep=10):
-    async def turn():
-        try:
-            await asyncio.sleep(sleep)
-        except asyncio.CancelledError:
-            seen.append("cancelled")
-            raise
-        seen.append("finished")
-
-    return loop.create_task(turn())
-
-
-def test_a_turn_registered_after_the_sweep_is_stopped_on_arrival(registry):
-    """`sessions ask` queues a worker, and a worker still on its way
-    to registering when shutdown swept the table is one the sweep
-    never saw. Registering after the sweep is what stops it."""
+def test_a_delegate_asked_after_the_sweep_answers_without_a_turn(registry):
+    """`sessions ask` puts a run on the loop, and one that starts once
+    shutdown has swept the jobs in flight is one the sweep never saw.
+    It answers at once rather than start a turn the close would then
+    wait out."""
+    parent = registry.open("boss")
     assert registry.stop_delegate_runs() == []
-    loop = asyncio.new_event_loop()
-    seen = []
-    try:
-        task = _turn_that_reports_its_cancel(loop, seen)
-        registry.hold_delegate_run("boss.scout", loop, task)
-        with pytest.raises(asyncio.CancelledError):
-            loop.run_until_complete(task)
-    finally:
-        registry.drop_delegate_run("boss.scout")
-        loop.close()
-    assert seen == ["cancelled"]
 
+    answer = parent.delegates.ask("!text Found it.", name="scout", wait=True)
 
-def test_a_turn_registered_before_any_sweep_runs(registry):
-    """The control: with no sweep behind it, registering stops nothing."""
-    loop = asyncio.new_event_loop()
-    seen = []
-    try:
-        task = _turn_that_reports_its_cancel(loop, seen, sleep=0)
-        registry.hold_delegate_run("boss.scout", loop, task)
-        loop.run_until_complete(task)
-    finally:
-        registry.drop_delegate_run("boss.scout")
-        loop.close()
-    assert seen == ["finished"]
+    assert answer.status == "failed"
+    assert delegates.SHUT_DOWN in answer.text
+    assert not (registry._store.path / "events" / "boss.scout.jsonl").exists()
 
 
 def test_a_delegate_past_the_cap_stops_calling_and_still_answers(tmp_path):
@@ -2169,9 +2144,9 @@ class BlockingModel(DummyModel):
 
 
 def test_closing_the_registry_does_not_wait_out_a_delegates_turn(tmp_path):
-    """Closing a session joins its delegate workers, so a delegate
-    mid-turn used to hold Ctrl-C for as many turns as it had left.
-    The turns are asked to stop first."""
+    """Closing a session waits for its delegates' runs, so a delegate
+    mid-turn would hold Ctrl-C for as many turns as it had left. The
+    runs are stopped first."""
     entered = threading.Event()
     registry = sessions_mod.Registry(
         model_factory=lambda *a, **k: BlockingModel(entered),
@@ -2202,10 +2177,9 @@ def test_closing_the_registry_does_not_wait_out_a_delegates_turn(tmp_path):
     assert errors == [{"type": "error", "message": turns.STOPPED_AT_SHUTDOWN, "seq": 1}]
     assert cut[-1]["type"] == "done"  # the turn was closed out, not abandoned
 
-    # and the job it belonged to resolved, in words
-    answer = parent.delegates.result("boss.scout")
-    assert answer.status == "failed"
-    assert answer.text == turns.STOPPED_AT_SHUTDOWN
+    # and the job it belonged to resolved: stopped, as a cancel stops it
+    [job] = parent.delegates.list()
+    assert job.status == "cancelled"
 
 
 # -- an answer that lands mid-turn -------------------------------------------
