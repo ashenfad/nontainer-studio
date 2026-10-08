@@ -179,6 +179,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Requires nontainer 0.10.0.** Its async delegate runners and
+  `until_settled` are what the delegation below is built on.
+
 - **Delegates run on the server's loop.** Each delegate is a task beside
   the human's turns rather than a thread with an event loop of its own,
   and waits on its own delegates through nontainer's `until_settled`.
