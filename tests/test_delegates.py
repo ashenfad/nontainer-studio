@@ -2182,6 +2182,85 @@ def test_closing_the_registry_does_not_wait_out_a_delegates_turn(tmp_path):
     assert job.status == "cancelled"
 
 
+def test_a_run_not_yet_recorded_is_listed_as_running(registry, monkeypatch):
+    """The strip refreshes on the ask, which can come before the run has
+    written its record, and an answer that waits for the human tells it
+    nothing more. So a running job is listed from the moment it exists."""
+    parent = registry.open("boss")
+    entered, gate = threading.Event(), threading.Event()
+    opened = registry.open_delegate
+
+    def slow_open(*args, **kwargs):
+        entered.set()
+        assert gate.wait(20)
+        return opened(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "open_delegate", slow_open)
+    parent.delegates.ask("!text Found it.", name="scout")
+    try:
+        assert entered.wait(20), "the run never began opening its child"
+        [row] = registry.delegate_rows("boss")
+        assert row["name"] == "boss.scout"
+        assert row["status"] == "running" and row["known"]
+        assert row["task"] == "!text Found it." and not row["delivered"]
+        assert registry.parent_of("boss.scout") is None  # no record yet
+    finally:
+        gate.set()
+    parent.delegates.wait(timeout=20)
+    [row] = registry.delegate_rows("boss")
+    assert row["status"] == "answered"
+
+
+def test_a_delegate_opened_as_shutdown_cancels_it_is_released(registry, monkeypatch):
+    """Shutdown can cancel a run while a worker thread is still opening
+    its child, and a thread cannot be stopped. The run waits it out, so
+    the child it opened is released before the store closes rather
+    than left open on a closed one."""
+    parent = registry.open("boss")
+    entered, gate = threading.Event(), threading.Event()
+    opened = registry.open_delegate
+
+    def slow_open(*args, **kwargs):
+        entered.set()
+        assert gate.wait(20)
+        return opened(*args, **kwargs)
+
+    released = []
+    release = registry.release
+
+    def tracking_release(name):
+        released.append(name)
+        release(name)
+
+    monkeypatch.setattr(registry, "open_delegate", slow_open)
+    monkeypatch.setattr(registry, "release", tracking_release)
+    parent.delegates.ask("!text Found it.", name="scout")
+    assert entered.wait(20), "the run never began opening its child"
+
+    errors = []
+
+    def close():
+        try:
+            registry.close()
+        except BaseException as e:  # noqa: BLE001 - reported below
+            errors.append(e)
+
+    closer = threading.Thread(target=close)
+    closer.start()
+    deadline = time.monotonic() + 20
+    while not registry.stopping and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert registry.stopping
+    gate.set()
+    closer.join(20)
+
+    assert not closer.is_alive() and errors == []
+    assert released == ["boss.scout"]
+    assert registry._sessions == {}
+    [job] = parent.delegates.list()
+    assert job.status == "cancelled"
+
+
 # -- an answer that lands mid-turn -------------------------------------------
 
 

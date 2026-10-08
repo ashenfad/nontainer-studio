@@ -441,6 +441,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The strip shows a delegate from the moment it is asked.** The
+  listing left out a run that had not yet written its record, so a
+  strip that refreshed on the ask could miss a delegate that then
+  answered without anything telling it to look again.
+
 - **A delegate forked from another session is told whose fork it is.**
   Its header read "Your workspace is a fork of `<asker>` at commit
   <c>", but the commit was the other session's, so the delegate was told
