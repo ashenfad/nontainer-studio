@@ -23,10 +23,10 @@ Three rules hold this together:
   parent's db file, so a delegate writes to the store its parent is
   looking at rather than to a copy of it, the way a real subagent
   does.
-- **The runner never takes the parent's turn lock.** It is called on a
-  worker thread inside ``Sessions.ask`` while the parent's own turn is
-  still running, so touching the parent's lock would deadlock the turn
-  that asked. It takes the CHILD's lock, which nothing else holds.
+- **The runner never takes the parent's turn lock.** Its run starts
+  inside ``Sessions.ask`` while the parent's own turn is still running,
+  so touching the parent's lock would deadlock the turn that asked. It
+  takes the CHILD's lock, which nothing else holds.
 - **The task arrives with a provenance header.** A delegate reads its
   task as the "user" message of its first turn, and the studio's user is
   a person. The header says whose delegation this is and what a fork
@@ -44,7 +44,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from nontainer import Answer, conversation
-from nontainer.sessions import render_answer
+from nontainer.sessions import auntil_settled, render_answer
 
 if TYPE_CHECKING:
     from .session import Session
@@ -303,14 +303,26 @@ def answer_message(name: str, answer: Answer) -> str:
     )
 
 
+class _Ended(Exception):
+    """A delegate's turns ended before it settled: ``answer`` is what
+    goes back."""
+
+    def __init__(self, answer: Answer) -> None:
+        super().__init__(answer.text)
+        self.answer = answer
+
+
 class StudioRunner:
     """``SessionRunner`` over one parent session's delegates.
 
     Built per parent because the answer's frame is per parent: the
     header names the session that asked, and the child's row names
     that session's db file, so what the delegate writes lands in the
-    store its parent is looking at. ``Sessions`` calls :meth:`run` on a
-    worker thread of its own, one call per delegate.
+    store its parent is looking at.
+
+    Async: ``Sessions`` runs each delegate as a task on the registry's
+    loop, the server's own while it serves, so a delegate's turns run
+    where a human's do, and stopping one is cancelling its task.
     """
 
     def __init__(self, registry: "Registry", parent: str, turns: int) -> None:
@@ -321,7 +333,7 @@ class StudioRunner:
     def __repr__(self) -> str:
         return f"<StudioRunner for {self._parent!r}: {self._turns} turn(s)>"
 
-    def run(
+    async def run(
         self,
         session: str,
         task: str,
@@ -337,99 +349,97 @@ class StudioRunner:
         delegate opens with names it, and the child's own branch cannot
         be asked, since the fork writes commits of its own on top.
 
-        A turn stopped from outside — the studio shutting down on a
-        delegate mid-run — comes back as a ``failed`` answer saying so
-        in words, rather than as prose that simply stops: the caller
-        reads a status, and "it shut down" is a different fact from
-        "it had nothing more to say".
+        A run that starts once the studio is shutting down answers
+        ``failed`` at once rather than start a turn nothing would wait
+        for. One stopped mid-turn is cancelled, which ends its job
+        cancelled; its transcript says why (``_run_turn``).
 
         The child's handles are released at the end either way: its
         branch is what the parent merges from, and an agent, a workspace
         and a sqlite connection held open per finished delegate would
         outlive every reason to have them.
         """
+        if self._registry.stopping:
+            return Answer(text=_failed_text("", SHUT_DOWN), status="failed")
         turns = self._budget(budget)
+        registry = self._registry
         # Asked again (a resume), so part of the conversation again,
         # whatever an earlier edit unsaid.
-        self._registry.reinstate_delegate(self._parent, session)
-        child = self._registry.open_delegate(
-            self._parent, session, source=self._fork_source(session)
+        await asyncio.to_thread(registry.reinstate_delegate, self._parent, session)
+        child = await asyncio.to_thread(
+            registry.open_delegate,
+            self._parent,
+            session,
+            source=self._fork_source(session),
         )
         try:
-            prompt: str | None = self._brief(child, forked_at) + task
-            asked = 0  # turns the budget counts: the task and the nudges
-            partial = ""  # a reply that trailed off, kept if nothing better comes
+            brief = await asyncio.to_thread(self._brief, child, forked_at)
+            return await self._answer(child, brief + task, turns)
+        finally:
+            await asyncio.to_thread(registry.release, session)
+
+    async def _answer(self, child: "Session", prompt: str, turns: int) -> Answer:
+        """The delegate's turns, run until it settles (``auntil_settled``),
+        and what it answers with.
+
+        A turn's reply is its prose. One that has none is nudged
+        (``NUDGE``), and the task and its nudges spend ``turns``; past
+        them the answer is ``capped``. A turn that errored ends with a
+        ``failed`` answer. A reply while delegates of its own are out is
+        the delegate waiting for them, as the primer tells every agent
+        to: their answers wake it, as they wake a human's session,
+        spending its wake budget rather than ``turns``, and its answer is
+        the reply it gives once they are in. A settled reply that trails
+        off on a lead-in is asked to finish, on ``turns`` as a nudge is.
+        """
+        asked = 0  # turns the budget counts: the task and the nudges
+        partial = ""  # a reply that trailed off, kept if nothing better comes
+
+        async def run_turn(message: str | None) -> str:
+            nonlocal asked
             while True:
-                if prompt is not None:
+                if message is not None:
                     if asked == turns:
-                        if partial:
-                            return Answer(
-                                text=partial + "\n\n" + CAPPED, status="capped"
-                            )
-                        return Answer(text=CAPPED, status="capped")
+                        raise _Ended(_capped(partial))
                     asked += 1
-                text, error = self._turn(child, prompt)
+                text, error = await self._turn(child, message)
                 # The error first, and always. A turn that streamed prose
                 # and THEN died has both, and prose that simply stops
                 # reads as a finished answer — so a run that failed says
                 # so, whatever it managed to say on the way.
                 if error:
-                    return Answer(text=_failed_text(text, error), status="failed")
-                if not text:
-                    prompt = NUDGE
-                    continue
-                # A reply while delegates of its own are still out is the
-                # delegate waiting for them, as the primer tells every
-                # agent to. Their answers wake it, as they wake a human's
-                # session, and its answer is the reply it gives once they
-                # are in. Woken turns spend its wake budget, not this one.
-                waited = self._await_own_answers(child)
-                if waited == "none":
-                    # A lead-in is unfinished only when nothing is
-                    # coming: "Waiting for results:" with delegates of
-                    # its own still out is the wait above, not a stop.
-                    if _trails_off(text):
-                        partial = text
-                        tail = text.rstrip().splitlines()[-1][-120:]
-                        prompt = TRAILED_OFF.format(tail=tail)
-                        continue
-                    return Answer(text=text)
-                if waited == "stopping":
-                    return Answer(
-                        text=_failed_text(text, "the studio shut down"), status="failed"
+                    raise _Ended(
+                        Answer(text=_failed_text(text, error), status="failed")
                     )
-                if waited == "spent":
-                    return Answer(text=_unwaited_text(text, self._outstanding(child)))
-                prompt = None  # a woken turn: the answers are its message
-        finally:
-            self._registry.release(session)
+                if text:
+                    return text
+                message = NUDGE
+
+        try:
+            while True:
+                settled = await auntil_settled(
+                    run_turn,
+                    child.delegates,
+                    child.inbox,
+                    prompt=prompt,
+                    max_wakes=max(0, child.wakes_left),
+                )
+                if settled.unread:
+                    return Answer(
+                        text=_unwaited_text(settled.reply, list(settled.unread))
+                    )
+                # A lead-in is unfinished only when nothing is coming:
+                # "Waiting for results:" with delegates of its own still
+                # out is a wait, not a stop.
+                if not _trails_off(settled.reply):
+                    return Answer(text=settled.reply)
+                partial = settled.reply
+                tail = partial.rstrip().splitlines()[-1][-120:]
+                prompt = TRAILED_OFF.format(tail=tail)
+        except _Ended as ended:
+            return ended.answer
 
     # -- internals ---------------------------------------------------------
-
-    @staticmethod
-    def _outstanding(child: "Session") -> list[str]:
-        """The child's own delegates still working, or answered and not
-        yet delivered to it."""
-        return child.delegates.outstanding() if child.delegates is not None else []
-
-    def _await_own_answers(self, child: "Session") -> str:
-        """Wait for one of the child's own delegates to answer.
-
-        ``"answered"`` when one has and a woken turn may run; ``"none"``
-        when nothing is outstanding, so its reply is its answer;
-        ``"spent"`` when answers are coming but its wake budget is not;
-        ``"stopping"`` when the studio is shutting down. Between turns,
-        so no turn of the child's is held while it waits.
-        """
-        if not self._outstanding(child):
-            return "none"
-        while True:
-            if self._registry.stopping:
-                return "stopping"
-            if child.delegates.wait(timeout=_AWAIT_SLICE):
-                return "answered" if child.wakes_left > 0 else "spent"
-            if not self._outstanding(child):
-                return "none"
 
     def _budget(self, budget: Any) -> int:
         """``budget`` as a turn count, or the registry's default.
@@ -504,24 +514,19 @@ class StudioRunner:
             return None
         return mine.forked_from or at.session or ""
 
-    def _turn(self, child: "Session", prompt: str) -> tuple[str, str | None]:
+    async def _turn(
+        self, child: "Session", prompt: str | None
+    ) -> tuple[str, str | None]:
         """One turn, run the way a human's turn runs; its prose and error.
 
         ``_run_turn`` is the studio's agent loop — the same streaming,
         the same transcript events, the same repair of an aborted run —
         so a delegate's session records what it did in the same shape
-        every other session does. Imported here rather than at load time
-        because ``turns`` imports this module for the messages that frame
-        an answer, and two modules importing each other at load would
-        close a cycle.
-
-        Its own event loop: the runner is on a worker thread, and a
-        delegate's turn must not depend on a server loop being there to
-        borrow (nor block one for as long as the delegate takes). The
-        loop and the turn's task are handed to the registry for as long
-        as the turn runs, because a loop nobody else can reach is a
-        turn nobody can stop: shutdown would wait out every turn a
-        delegate had left.
+        every other session does. ``prompt`` None is a woken turn, which
+        opens with the answers and notes waiting for it. Imported here
+        rather than at load time because ``turns`` imports this module
+        for the messages that frame an answer, and two modules importing
+        each other at load would close a cycle.
 
         The registry goes with it, as it does from the routes. A
         delegate may delegate, and what its own job table knows about
@@ -531,45 +536,34 @@ class StudioRunner:
         goes with it, so a turn run without the registry loses a keep
         the delegate asked for and the branch is swept from under it.
 
-        Writing those handles down takes the registry's lock for the
-        moment it takes to write them, the way opening and releasing
-        the child already do. The only TURN lock this touches is still
-        the child's: the parent's turn is running on the thread that
-        asked, and reaching for its lock would deadlock it.
+        The only TURN lock this touches is the child's: the parent's
+        turn is still running, and reaching for its lock would deadlock
+        it. It is taken without blocking the loop, which every other
+        turn shares.
         """
         from .turns import _run_turn
 
-        child.turn_lock.acquire()  # _run_turn releases it
+        while not child.turn_lock.acquire(blocking=False):  # _run_turn releases it
+            await asyncio.sleep(_LOCK_POLL)
         since = child.next_seq
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            task = loop.create_task(_run_turn(child, prompt, self._registry))
-            self._registry.hold_delegate_run(child.name, loop, task)
-            try:
-                loop.run_until_complete(task)
-            except asyncio.CancelledError:
-                # Asked for: somebody reached in and stopped this turn.
-                # `_run_turn` has already written why into the child's
-                # transcript, which is where the answer is read from.
-                pass
-            finally:
-                self._registry.drop_delegate_run(child.name)
-                # What `asyncio.run` did on the way out, kept: an
-                # unfinished async generator or a worker thread the
-                # turn started outlives the loop otherwise.
-                loop.run_until_complete(loop.shutdown_asyncgens())
-                loop.run_until_complete(loop.shutdown_default_executor())
-        finally:
-            asyncio.set_event_loop(None)
-            loop.close()
+        await _run_turn(child, prompt, self._registry)
         return _reply(child, since)
 
 
-#: How long a delegate waiting on delegates of its own blocks for an
-#: answer before it looks again whether the studio is shutting down, in
-#: seconds. An answer ends the wait at once; this bounds only shutdown.
-_AWAIT_SLICE = 1.0
+#: How often a delegate's turn looks again for its session's turn lock
+#: while something else holds it, in seconds.
+_LOCK_POLL = 0.05
+
+SHUT_DOWN = "the studio shut down"
+"""Why a delegate asked for as the studio stopped did nothing."""
+
+
+def _capped(partial: str) -> Answer:
+    """The answer of a delegate that ran out of turns without a reply,
+    with the reply that trailed off when it gave one."""
+    if partial:
+        return Answer(text=partial + "\n\n" + CAPPED, status="capped")
+    return Answer(text=CAPPED, status="capped")
 
 
 def _clip(text: Any, limit: int) -> str | None:
@@ -675,7 +669,7 @@ class DelegationMixin:
     session.
 
     A mixin over the registry's state (``_lock``, ``_store``,
-    ``_sessions``, ``_pinned``, ``_delegate_runs``, ``_stopping``) and its
+    ``_sessions``, ``_pinned``, ``_stopping``) and its
     manifest methods, which ``Registry`` brings.
     """
 
@@ -1408,51 +1402,35 @@ class DelegationMixin:
             if row["name"] == child
         )
 
-    def hold_delegate_run(self, name: str, loop: Any, task: Any) -> None:
-        """Take the handles on a delegate turn that has just started.
-
-        One per child, because a branch runs one job at a time: the
-        helper refuses a second run on a child the first is still
-        driving.
-
-        A turn that arrives after the shutdown sweep is asked to stop
-        the way the sweep asks: `sessions ask` queues a worker, and a
-        worker still on its way here when the sweep read the table is
-        one the sweep never saw. Posted to the loop rather than
-        cancelled outright, so the turn starts, meets the cancel at its
-        first await, and writes why into the child's transcript like
-        any other stopped turn.
-        """
-        with self._lock:
-            self._delegate_runs[name] = (loop, task)
-            stopping = self._stopping
-        if stopping:
-            loop.call_soon_threadsafe(task.cancel)
-
-    def drop_delegate_run(self, name: str) -> None:
-        """Give up the handles on a delegate turn that has ended,
-        cancelled or not."""
-        with self._lock:
-            self._delegate_runs.pop(name, None)
-
     def stop_delegate_runs(self) -> list[str]:
-        """Ask every delegate turn in flight to stop; returns the
-        children asked, sorted.
+        """Stop every delegate run in flight; returns the children
+        stopped, sorted.
 
-        Asking, not waiting: the cancel is posted to each turn's own
-        loop and this returns at once. What waits is whoever joins the
-        helpers afterwards, and by then the turns are unwinding rather
-        than starting their next one. A turn that ends on its own
-        between the read and the post is not an error — the loop is
-        closed, the post raises, and the turn it would have stopped is
-        already over.
+        Stopping, not waiting: each running job is cancelled through
+        the helper that asked for it, which cancels its task, and this
+        returns at once. What waits is whoever closes the helpers
+        afterwards, and by then the turns are unwinding rather than
+        starting their next one. The flag goes up first, under the
+        lock, so a run that starts after this has read the tables
+        answers at once instead of starting a turn (see
+        ``StudioRunner.run``).
         """
         with self._lock:
             self._stopping = True
-            runs = sorted(self._delegate_runs.items())
-        for name, (loop, task) in runs:
+            helpers = [
+                s.delegates for s in self._sessions.values() if s.delegates is not None
+            ]
+        stopped: list[str] = []
+        for helper in helpers:
             try:
-                loop.call_soon_threadsafe(task.cancel)
-            except RuntimeError as e:  # one loop already gone, not the rest
-                log.info("delegates: %s's turn could not be stopped (%s)", name, e)
-        return [name for name, _ in runs]
+                running = [job.name for job in helper.list() if job.status == "running"]
+            except Exception:  # noqa: BLE001 - a closed helper runs nothing
+                continue
+            for name in running:
+                try:
+                    helper.cancel(name)
+                except Exception as e:  # noqa: BLE001 - the rest still stop
+                    log.info("delegates: %s could not be stopped (%s)", name, e)
+                    continue
+                stopped.append(name)
+        return sorted(stopped)

@@ -179,6 +179,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Delegates run on the server's loop.** Each delegate is a task beside
+  the human's turns rather than a thread with an event loop of its own,
+  and waits on its own delegates through nontainer's `until_settled`.
+
+- **Shutdown cancels a delegate mid-turn.** Its transcript still says
+  the studio shut down, and its job now ends cancelled rather than
+  failed.
+
 - **Requires nontainer 0.9.0, which stores the conversation on a
   harness-neutral plane.** A session's conversation moves from
   `__agno__/` to `__conversation__/` on its next turn, in that turn's

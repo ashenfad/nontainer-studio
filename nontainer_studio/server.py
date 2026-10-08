@@ -1094,6 +1094,9 @@ def build_app(registry: Registry) -> Starlette:
 
     @asynccontextmanager
     async def lifespan(app: Any):
+        # Delegates run on this loop, where the routes that follow their
+        # transcripts listen: set before any request opens a session.
+        registry.serve_on(asyncio.get_running_loop())
         # The sweep needs a loop to be scheduled on, and this is the
         # only place the studio has one for the life of the server. No
         # TTL, no timer: 0 is retention off, not retention every hour
@@ -1118,7 +1121,7 @@ def build_app(registry: Registry) -> Starlette:
             if sweeper is not None:
                 sweeper.cancel()
                 await asyncio.gather(sweeper, return_exceptions=True)
-            registry.close()
+            await registry.aclose()
 
     verbs = HTTP_VERBS
     preview_verbs = verbs + ["OPTIONS"]

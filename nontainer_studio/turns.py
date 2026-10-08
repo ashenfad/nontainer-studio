@@ -27,10 +27,9 @@ log = logging.getLogger(__name__)
 STOPPED_AT_SHUTDOWN = "the studio shut down while this turn was running"
 """Why a turn ended when nothing in it went wrong.
 
-It reaches two readers and must serve both: the human, who sees the
-turn stop mid-sentence and needs the reason to be the studio rather
-than the model, and a delegate's runner, which reads the error off
-the transcript and reports it as the answer to whoever asked.
+The human sees the turn stop mid-sentence and needs the reason to be
+the studio rather than the model, on a delegate's transcript as on any
+other session's.
 """
 
 

@@ -30,6 +30,7 @@ delegates (``delegates``) and publishing (``publishing``).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -168,16 +169,15 @@ class Registry(
         # `_pin`). In memory only, because the flag it stands for is:
         # both die with this process.
         self._pinned: set[str] = set()
-        # Delegate turns in flight, by child name: the loop each is
-        # running on and the task that is the turn. A delegate's turn
-        # runs on a loop of its own, on a worker thread of its
-        # parent's helper, and nothing else can reach in — so the
-        # handles are kept here, where shutdown can ask a turn to stop
-        # instead of waiting out every turn the delegate has left.
-        self._delegate_runs: dict[str, tuple[Any, Any]] = {}
-        # Set by the shutdown sweep and never cleared: a turn that
-        # registers after the sweep has already run is stopped on
-        # arrival, so nothing the sweep could not see starts afterwards.
+        # Where delegates run: every helper's runs are tasks on this
+        # loop. The server's own while it serves (`serve_on`), so a
+        # delegate's turns emit where the routes that follow them
+        # listen; a loop of the registry's own on a thread otherwise.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._own_loop: _LoopThread | None = None
+        # Set by the shutdown sweep and never cleared: a run that
+        # starts after the sweep has already run answers at once, so
+        # nothing the sweep could not see starts a turn afterwards.
         self._stopping = False
         #: Called with a session's name when one of its delegates
         #: answers (see ``DelegationMixin.set_wake_hook``).
@@ -385,6 +385,25 @@ class Registry(
         """Whether the studio is shutting down its delegates' work."""
         with self._lock:
             return self._stopping
+
+    def serve_on(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Run delegates on ``loop`` from now on: the server's, set as
+        it starts and before it opens a session. A helper is bound to
+        its loop when it is built, so one built earlier keeps the loop
+        it was built with."""
+        with self._lock:
+            self._loop = loop
+
+    def delegate_loop(self) -> asyncio.AbstractEventLoop:
+        """The loop a new session's delegates run on: the server's, or,
+        outside one, a loop of the registry's own on a thread, started
+        the first time a session needs it."""
+        with self._lock:
+            if self._loop is not None:
+                return self._loop
+            if self._own_loop is None:
+                self._own_loop = _LoopThread()
+            return self._own_loop.loop
 
     # -- titles: display only, never identity ------------------------------
 
@@ -710,6 +729,7 @@ class Registry(
             ws,
             StudioRunner(self, name, self._delegate_turns),
             budget=self._delegate_turns,
+            loop=self.delegate_loop(),
             # nontainer says when an answer lands; whether that starts a
             # turn is the studio's (see DelegationMixin._answer_landed).
             on_answer=lambda job, answer: self._answer_landed(name),
@@ -1032,9 +1052,9 @@ class Registry(
     def _close_session(session: Session) -> None:
         """Release one session's handles, in dependency order."""
         if session.delegates is not None:
-            # joins the delegate workers; their branches stay, because a
-            # delegate's work is in the store and closing the helper that
-            # asked for it must not throw that away
+            # waits for the delegates' runs; their branches stay, because
+            # a delegate's work is in the store and closing the helper
+            # that asked for it must not throw that away
             session.delegates.close()
         close_runtime = getattr(session.runtime, "close", None)
         if callable(close_runtime):  # reap dispatch workers
@@ -1381,16 +1401,30 @@ class Registry(
 
     # -- branching a version back into a conversation -----------------------
 
+    async def aclose(self) -> None:
+        """:meth:`close`, from the loop the delegates run on: their runs
+        are stopped, then awaited there, and the rest of the close runs
+        on a thread. The server closes through this, since closing a
+        helper from its own loop would wait on runs that loop is the
+        one to finish."""
+        self.stop_delegate_runs()
+        with self._lock:
+            helpers = [
+                s.delegates for s in self._sessions.values() if s.delegates is not None
+            ]
+        await asyncio.gather(*(h.aclose() for h in helpers), return_exceptions=True)
+        await asyncio.to_thread(self.close)
+
     def close(self) -> None:
         # First, before anything joins anything: closing a session
-        # joins its delegate workers, and a delegate mid-turn would
-        # hold that join for the rest of its turns. Stopping the turns
+        # waits for its delegates' runs, and a delegate mid-turn would
+        # hold that wait for the rest of its turns. Stopping the runs
         # is what turns Ctrl-C into a wait of seconds.
         self.stop_delegate_runs()
-        # Sessions go OUTSIDE the lock. Closing one joins its delegate
-        # workers, and a delegate still running is inside `open_delegate`
-        # on a thread of its own, waiting for this same lock — holding it
-        # across the join is a deadlock between the two.
+        # Sessions go OUTSIDE the lock. Closing one waits for its
+        # delegates' runs, and a run still starting is inside
+        # `open_delegate` on a thread, waiting for this same lock —
+        # holding it across the wait is a deadlock between the two.
         with self._lock:
             live = list(self._sessions.values())
             self._sessions.clear()
@@ -1412,3 +1446,25 @@ class Registry(
             # Last: the store outlives every workspace opened through
             # it, so it closes once nothing is still holding a branch.
             self._store.close()
+            own, self._own_loop = self._own_loop, None
+        if own is not None:
+            own.stop()
+
+
+class _LoopThread:
+    """An event loop on a daemon thread of its own: where delegates run
+    when no server loop is there to run them on."""
+
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self.loop.run_forever, name="studio-delegates", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the loop and close it. Called once every helper on it
+        has closed, so no run is left to cut short."""
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self._thread.join()
+        self.loop.close()

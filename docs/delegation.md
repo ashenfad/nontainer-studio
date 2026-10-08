@@ -135,10 +135,12 @@ and never polls.
   answers wait for the human's next message, as they do with `0`.
 - **A delegate is woken by its runner, not the server.** A reply it
   gives while delegates of its own are still out is it waiting, not its
-  answer: the runner blocks on its helper's `wait()` for their answers, runs a woken turn with
-  them, and returns the reply it gives then. Those turns spend the
-  delegate's own wake budget. If that runs out, or the studio shuts
-  down, the answer says which of its delegates it never read.
+  answer: the runner waits for their answers (nontainer's
+  `until_settled`), runs a woken turn with them, and returns the reply
+  it gives then. A message left in the delegate's queue after its last
+  tool call is read the same way. Those turns spend the delegate's own
+  wake budget. If that runs out, the answer says which of its delegates
+  it never read.
 
 The text says whose answer it is and that this is the delegation
 mechanism rather than the person at the keyboard: an answer is evidence
@@ -167,11 +169,13 @@ Its branch stays and ages out like any other. Asking it again by name
 ask but before the answer is the other case: the ask still stands, so
 the next turn delivers the answer again.
 
-Shutting the studio down does not wait for a delegate. Each delegate turn
-runs on a loop the registry can reach, and closing asks every turn in
-flight to stop before it joins the workers. A stopped turn is kept like
-any other cut turn — the child's memory keeps what it did — and the
-job resolves as `failed` saying the studio shut down mid-run.
+Shutting the studio down does not wait for a delegate. Each delegate runs
+as a task on the server's own loop, where a human's turns run, and
+closing cancels every run in flight before it waits for them. A stopped
+turn is kept like any other cut turn — the child's memory keeps what it
+did, and its transcript says the studio shut down — and the job ends
+cancelled. A delegate asked as the studio is shutting down answers
+`failed` at once rather than start a turn.
 
 ## Budget and caps
 
@@ -188,8 +192,8 @@ it the calls are refused with a tool result saying so and the turn
 carries on to its reply. A human's session carries no such cap.
 
 **Delegation does not nest forever.** A delegate is a full agent on the
-parent's model, with four delegate workers of its own, so nesting
-multiplies rather than adds. `NONTAINER_STUDIO_DELEGATE_DEPTH` counts
+parent's model, with up to four delegates of its own running at once,
+so nesting multiplies rather than adds. `NONTAINER_STUDIO_DELEGATE_DEPTH` counts
 hops from the session a human started: 2 by default, so that session
 delegates and its delegates delegate, and the generation after them reads
 a refusal on `sessions ask` telling it to do the task itself and answer
