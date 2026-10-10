@@ -306,7 +306,6 @@ class AgexDriver:
             raise RuntimeError(
                 "the agex loop needs agex: install nontainer-studio[agex]"
             ) from e
-        from agex.agent import MAX_STEPS
         from agex.providers import Settings
         from nontainer.adapters.render import PYTHON_UI_NOTE, resolve_tools_mode
         from nontainer.adapters.tools import Toolset
@@ -331,9 +330,9 @@ class AgexDriver:
             model,
             primer=spec.instructions,
             settings=Settings(thinking=_effort()),
-            # a capped turn's model calls: each of its tool calls, and
-            # the reply after the last
-            max_steps=spec.tool_calls + 1 if spec.tool_calls else MAX_STEPS,
+            # counted per call, as agno's tool_call_limit is, however
+            # many calls a reply makes
+            max_tool_calls=spec.tool_calls,
             compaction=spec.compaction,
         )
         self.session = agent.session(
