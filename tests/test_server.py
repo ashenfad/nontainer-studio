@@ -3272,6 +3272,32 @@ def test_a2ui_projects_a_turn_into_a_v0_9_surface(studio):
     assert data["next"] == session.next_seq
 
 
+def test_a2ui_snapshot_cursor_misses_nothing_published_mid_projection(
+    studio, monkeypatch
+):
+    """The snapshot's cursor is read with the snapshot: an event that
+    lands while it is projected is past the cursor, so the next poll
+    has it."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    session.publish({"type": "notice", "text": "before"})
+    feed = server._A2uiTurns.feed
+    late: list[int] = []
+
+    def feed_then_publish(self, seq, event):
+        if not late:
+            session.publish({"type": "notice", "text": "during"})
+            late.append(session.next_seq - 1)
+        return feed(self, seq, event)
+
+    monkeypatch.setattr(server._A2uiTurns, "feed", feed_then_publish)
+    data = client.get("/api/sessions/s1/a2ui?wait=0").json()
+    assert data["next"] <= late[0]
+    events = client.get(f"/api/sessions/s1/events?since={data['next']}&wait=0")
+    assert late[0] in [e["seq"] for e in events.json()["events"]]
+
+
 def test_a2ui_empty_turn_emits_nothing(studio):
     """A turn with no prose and no artifacts renders no surface."""
     client, registry = studio
