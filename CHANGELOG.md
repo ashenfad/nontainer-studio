@@ -179,6 +179,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Turns drive the agent through a `TurnDriver`.** `turns.py` reads
+  nontainer's turn events from a session's driver (`drivers.py`), and
+  `AgnoDriver` is the agno loop, so a second loop can sit behind the
+  same turns; nothing a person sees changes.
+
 - **Runs on a pinned commit of nontainer's main until its next
   release.** CI installs with uv, so it tests that commit too.
 

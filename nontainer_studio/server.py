@@ -513,11 +513,10 @@ def build_app(registry: Registry) -> Starlette:
 
     @with_session
     async def cancel(request: Any, session: Any) -> Any:
-        """Stop the running turn GRACEFULLY: agno's cancel-by-run-id
-        raises at the loop's next cancellation point (a mid-flight tool call
-        finishes first), the run persists with its partial work, and
-        the turn ends with a RunCancelled event -> 'turn stopped'
-        notice. Nothing is torn down — the next prompt just works."""
+        """Stop the running turn GRACEFULLY: the driver's cancel-by-run-id
+        stops the loop at its next cancellation point (a mid-flight tool
+        call finishes first), the run persists with its partial work,
+        and the turn ends cancelled -> 'turn stopped' notice. Nothing is torn down — the next prompt just works."""
         if not session.busy:
             return JSONResponse({"error": "no turn is running"}, status_code=409)
         # the run id lands with the first streamed event; a stop click
@@ -530,7 +529,7 @@ def build_app(registry: Registry) -> Starlette:
             return JSONResponse(
                 {"error": "turn not started yet; try again"}, status_code=409
             )
-        await session.agent.acancel_run(session.run_id)
+        await session.driver.cancel(session.run_id)
         return JSONResponse({"ok": True})
 
     @with_session

@@ -1035,10 +1035,10 @@ def test_the_tool_is_nontainers_shape_under_nontainers_name(registry):
     # beside it. The toolkit still KNOWS the helper — that is what lets
     # it hand a delegate's answer over mid-turn — but it learned it
     # after construction, which is the half that registers no tool.
-    toolkit = boss.agent.tools[0]
+    toolkit = boss.driver.agent.tools[0]
     assert toolkit.sessions is boss.delegates
     assert [f for f in toolkit.functions if f == "sessions"] == []
-    assert [getattr(t, "__name__", None) for t in boss.agent.tools].count(
+    assert [getattr(t, "__name__", None) for t in boss.driver.agent.tools].count(
         "sessions"
     ) == 1
 
@@ -1240,7 +1240,7 @@ def test_no_verb_no_delegation_half(registry, monkeypatch):
     primer = prompts._delegation_primer(True, False)
     assert primer is prompts.NO_VERSIONING_PRIMER
     assert "ws-git" not in primer
-    assert "ws-git" not in session.agent.instructions
+    assert "ws-git" not in session.driver.agent.instructions
     # and a delegate of that session opens with the same honesty
     assert delegates.VERSIONING not in delegates.brief("boss", None, versioning=False)
     assert delegates.VERSIONING in delegates.brief("boss", None, versioning=True)
@@ -1734,7 +1734,7 @@ def test_the_primer_says_the_number_and_the_verb(registry, tmp_path):
     assert "24 hours" in primer
     assert "sessions keep" in primer
     assert prompts._retention_primer(0) == ""
-    assert primer in registry.open("boss").agent.instructions
+    assert primer in registry.open("boss").driver.agent.instructions
 
     off = sessions_mod.Registry(
         model_factory=lambda *a, **k: DummyModel(),
@@ -1743,7 +1743,7 @@ def test_the_primer_says_the_number_and_the_verb(registry, tmp_path):
         delegate_ttl=0,
     )
     try:
-        assert "is swept" not in off.open("boss").agent.instructions
+        assert "is swept" not in off.open("boss").driver.agent.instructions
     finally:
         off.close()
 
@@ -1754,7 +1754,7 @@ def test_the_primer_says_what_a_delegate_starts_from(registry):
     contract into the task for want of knowing that. The primer says
     what a delegate starts from, that it shares the db, and which
     `inherit` to choose."""
-    instructions = registry.open("boss").agent.instructions
+    instructions = registry.open("boss").driver.agent.instructions
     assert "starts from your tree as it is the moment you ask" in instructions
     assert "It shares your `db`" in instructions
     assert '"full" is this conversation up to your last finished turn' in instructions
@@ -1766,7 +1766,9 @@ def test_the_primer_says_what_a_delegate_starts_from(registry):
 def _tool(session):
     """The `sessions` tool as the agent holds it."""
     return next(
-        t for t in session.agent.tools if getattr(t, "__name__", "") == "sessions"
+        t
+        for t in session.driver.agent.tools
+        if getattr(t, "__name__", "") == "sessions"
     )
 
 
@@ -1870,9 +1872,11 @@ def test_only_the_session_at_the_cap_is_told_about_it(registry):
     for in prompt, so it is told to the one it binds."""
     grandchild = _nest(registry, "boss", "boss.scout", "boss.scout.finch")
 
-    assert prompts.DEPTH_CAP_PRIMER in grandchild.agent.instructions
+    assert prompts.DEPTH_CAP_PRIMER in grandchild.driver.agent.instructions
     for name in ("boss", "boss.scout"):
-        assert prompts.DEPTH_CAP_PRIMER not in (registry.open(name).agent.instructions)
+        assert prompts.DEPTH_CAP_PRIMER not in (
+            registry.open(name).driver.agent.instructions
+        )
 
 
 # -- the tool-call cap: a delegate's loop has nobody watching it ------------
@@ -1898,8 +1902,8 @@ def test_only_a_delegates_agent_carries_the_cap(registry):
     parent = registry.open("boss")
     child = registry.open_delegate("boss", "boss.scout")
 
-    assert parent.agent.tool_call_limit is None
-    assert child.agent.tool_call_limit == registry.delegate_tool_calls == 60
+    assert parent.driver.agent.tool_call_limit is None
+    assert child.driver.agent.tool_call_limit == registry.delegate_tool_calls == 60
 
 
 def test_no_cap_no_limit(tmp_path):
@@ -1914,7 +1918,7 @@ def test_no_cap_no_limit(tmp_path):
     try:
         registry.open("boss")
         child = registry.open_delegate("boss", "boss.scout")
-        assert child.agent.tool_call_limit is None
+        assert child.driver.agent.tool_call_limit is None
     finally:
         registry.close()
 
