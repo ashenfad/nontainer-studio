@@ -39,6 +39,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The agex loop (NONTAINER_STUDIO_LOOP=agex): unreleased while agex is
+# rebuilt, so a git source below pins it.
+agex = ["agex"]
 dev = [
     "ruff",
     "pytest",
@@ -46,6 +49,8 @@ dev = [
     "httpx2",  # starlette TestClient
     # the browser tests; run `uv run playwright install chromium` once
     "playwright",
+    # the tests drive both loops
+    "agex",
 ]
 # NONTAINER_STUDIO_EXECUTOR=dud / dud-vm. dud needs 3.11+; the marker
 # keeps the 3.10 floor for everyone not opting in. The floor is stated
@@ -71,6 +76,9 @@ build-backend = "hatchling.build"
 # lock isn't committed, so the commit is pinned here, and moved on by
 # hand. At the release this goes, and the floor above rises to it.
 nontainer = { git = "https://github.com/ashenfad/nontainer", rev = "59fe19349264f83d34caeb2fd839713ab266fd89" }
+# agex is unreleased until its shape freeze; a commit of its rebuild
+# branch, moved on by hand, as nontainer's above is.
+agex = { git = "https://github.com/ashenfad/agex", rev = "de19c135454f307d14b30cd678b774ab9e3e71be" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["nontainer_studio"]

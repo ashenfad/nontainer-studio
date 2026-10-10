@@ -46,6 +46,7 @@ from nontainer import (
     PythonConfig,
     Store,
     Workspace,
+    conversation,
     validate_session_id,
 )
 from nontainer.adapters.agno import WorkspaceTools
@@ -69,10 +70,12 @@ from .config import (
     _ws_kwargs,
     apps_config,
     executor_runs_commands,
+    loop_choice,
     sessions_tool_enabled,
     wsgit_enabled,
 )
 from .delegates import DELEGATE_TURNS, DelegationMixin, StudioRunner
+from .drivers import DriverSpec
 from .manifest import ManifestMixin
 from .prompts import (
     SESSIONS_TOOL_DESCRIPTION,
@@ -87,6 +90,7 @@ from .prompts import (
     _unit_test_primer,
     _versioning_primer,
 )
+from .providers import agex_model as _agex_model
 from .publishing import PublishingMixin
 from .session import (
     Db,
@@ -131,8 +135,12 @@ class Registry(
         delegate_ttl: float | None = None,
         delegate_depth: int | None = None,
         delegate_tool_calls: int | None = None,
+        agex_model: Callable[[str], Any] | None = None,
     ) -> None:
         self._model_factory = model_factory  # (spec) -> agno Model
+        # (spec) -> what agex's Agent takes: a model name, a pydantic-ai
+        # Model, or a provider (a scripted one, in tests)
+        self._agex_model = agex_model or _agex_model
         self._default_model = default_model
         # The budget every delegate runs under unless its asker names
         # one. A studio setting, not nontainer's: nontainer passes the
@@ -736,13 +744,15 @@ class Registry(
         # it: a model switch rebuilds the toolkit, and a queue that
         # moved with it would drop whatever was waiting.
         inbox = Inbox()
+        loop = self._loop_of(name, ws)
         session = Session(
             name=name,
             ws=ws,
             runtime=runtime,
             driver=self._build_driver(
-                name, ws, runtime, model, delegates, wsgit=wsgit, inbox=inbox
+                name, ws, runtime, model, delegates, wsgit=wsgit, inbox=inbox, loop=loop
             ),
+            loop=loop,
             db=db,
             turn_lock=threading.Lock(),
             model=model,
@@ -824,6 +834,69 @@ class Registry(
         sessions_tool.__doc__ = SESSIONS_TOOL_DESCRIPTION
         return sessions_tool
 
+    def _driver_spec(
+        self,
+        name: str,
+        ws: Workspace,
+        runtime: AppRuntime,
+        model: str | None = None,
+        delegates: Any = None,
+        *,
+        wsgit: bool = False,
+        inbox: Inbox | None = None,
+    ) -> DriverSpec:
+        """What this session's loop is built from, whichever loop it is:
+        its instructions, its tools' shape, and its bounds."""
+        from . import providers
+
+        spec_model = model or self._default_model
+        # The `sessions` tool is registered only where there is a helper
+        # to delegate through, which is nontainer's gate for it too: an
+        # agent told to delegate with nothing to delegate to spends a
+        # call finding out. NONTAINER_STUDIO_SESSIONS is the studio's
+        # own gate on top of that — the helper is built either way, and
+        # with the knob off nothing hands the agent a name for it.
+        delegation = delegates is not None and sessions_tool_enabled()
+        # A turn's tool loop has no bound of its own. A human's session
+        # needs none — somebody is watching it and the stop button
+        # reaches it — but a delegate's turn has neither, so the calls
+        # it may spend are capped. Whether this session is a delegate is
+        # the record the studio wrote when it opened one, which is
+        # written before the open that builds this.
+        tool_calls = self.delegate_tool_calls if self.is_delegate(name) else 0
+        return DriverSpec(
+            session=name,
+            ws=ws,
+            runtime=runtime,
+            inbox=inbox if inbox is not None else Inbox(),
+            delegates=delegates,
+            model=spec_model,
+            # studio-owned context: nontainer's tool descriptions cover
+            # the MECHANICS (workspace, handlers, curl); this covers the
+            # product the human is looking at (preview, artifacts,
+            # commits, publish). The retention sentence rides with
+            # delegation: what it describes is a delegate's branch, and
+            # an agent with no way to fork one has nothing for it to be
+            # about.
+            instructions=(
+                STUDIO_PRIMER
+                + _versioning_primer(wsgit)
+                + _unit_test_primer(ws)
+                + _delegation_primer(delegation, wsgit)
+                + _depth_primer(delegation and self.at_depth_cap(name))
+                + (_retention_primer(self.delegate_ttl_hours) if delegation else "")
+            ),
+            # text-only models must not receive screenshot media — the
+            # call AFTER an image-bearing tool result 400s ("no
+            # endpoints support image input"), losing the turn. Model
+            # switches rebuild the driver, so this stays correct.
+            vision=providers.supports_vision(spec_model),
+            python_primer=_python_primer(),
+            sessions_tool=self._sessions_tool(name, delegates) if delegation else None,
+            compaction=providers.compaction_policy(spec_model),
+            tool_calls=tool_calls or None,
+        )
+
     def _build_driver(
         self,
         name: str,
@@ -834,16 +907,38 @@ class Registry(
         *,
         wsgit: bool = False,
         inbox: Inbox,
+        loop: str = "agno",
     ) -> Any:
-        """The loop a session's turns drive: its agno agent, as a
-        driver. The driver takes the inbox's deliveries into the turn's
-        stream, so it is built over the session's own inbox."""
-        from .drivers import AgnoDriver
+        """The loop a session's turns drive, ``loop`` naming which: its
+        agno agent or its agex session, as a driver. Either takes the
+        inbox's deliveries into the turn's stream, so it is built over
+        the session's own inbox."""
+        from .drivers import AgexDriver, AgnoDriver
 
+        if loop == "agex":
+            spec = self._driver_spec(
+                name, ws, runtime, model, delegates, wsgit=wsgit, inbox=inbox
+            )
+            return AgexDriver(spec, self._agex_model(spec.model))
         agent = self._build_agent(
             name, ws, runtime, model, delegates, wsgit=wsgit, inbox=inbox
         )
         return AgnoDriver(agent, inbox, name)
+
+    def _loop_of(self, name: str, ws: Workspace) -> str:
+        """The loop session ``name`` runs on. One holding a conversation
+        stays on the loop that wrote it: each stores its own format, and
+        neither reads the other's. A delegate with none yet runs on its
+        parent's, and a new session on the loop ``NONTAINER_STUDIO_LOOP``
+        picks."""
+        index = conversation.index_of(ws)
+        if index is not None:
+            return "agex" if index.harness == "agex" else "agno"
+        parent = self._manifest()["delegates"].get(name, {}).get("parent")
+        live = self._sessions.get(parent) if parent else None
+        if live is not None:
+            return live.loop
+        return loop_choice()
 
     def _build_agent(
         self,
@@ -867,8 +962,9 @@ class Registry(
         survives the rebuild a model switch does."""
         from agno.agent import Agent
 
-        from . import providers
-
+        spec = self._driver_spec(
+            name, ws, runtime, model, delegates, wsgit=wsgit, inbox=inbox
+        )
         toolkit = WorkspaceTools(
             ws,
             apps=runtime,
@@ -877,7 +973,7 @@ class Registry(
             # of its actions reads the app registry; passing a helper
             # here would register nontainer's beside it and the model
             # would be handed the name twice.
-            python_primer=_python_primer(),
+            python_primer=spec.python_primer,
             # The conversation commits with the files. Naming the db
             # here is what stands the toolkit's own turn hook down:
             # agno runs post hooks BEFORE it persists the run, so a
@@ -887,11 +983,7 @@ class Registry(
             # turn's trailing commit, so the head stamped on the next
             # `user` event includes the conversation.
             session_db=self.db,
-            # text-only models must not receive screenshot media — the
-            # call AFTER an image-bearing tool result 400s ("no
-            # endpoints support image input"), losing the turn. Model
-            # switches rebuild the agent, so this stays correct.
-            vision=providers.supports_vision(model or self._default_model),
+            vision=spec.vision,  # see _driver_spec
             inbox=inbox,
         )
         # Assigned rather than passed as `sessions=`: the toolkit reads
@@ -901,13 +993,6 @@ class Registry(
         # `sessions` tool beside the studio's.
         if delegates is not None:
             toolkit.sessions = delegates
-        # The `sessions` tool is registered only where there is a helper
-        # to delegate through, which is nontainer's gate for it too: an
-        # agent told to delegate with nothing to delegate to spends a
-        # call finding out. NONTAINER_STUDIO_SESSIONS is the studio's
-        # own gate on top of that — the helper is built either way, and
-        # with the knob off nothing hands the agent a name for it.
-        delegation = delegates is not None and sessions_tool_enabled()
 
         # Compaction: past a per-model budget, every earlier turn is
         # folded into one summary for the model, while the transcript
@@ -916,7 +1001,7 @@ class Registry(
         # happens: the first build runs before the session exists, and
         # a model switch rebuilds this agent.
         compaction = None
-        policy = providers.compaction_policy(model or self._default_model)
+        policy = spec.compaction
         if policy is not None:
             from nontainer.adapters.agno_compaction import CompactingCompression
 
@@ -924,19 +1009,9 @@ class Registry(
                 ws, policy, on_fold=lambda fold: self._fold_landed(name, fold)
             )
 
-        # A turn is one agno run and one agno run is a tool loop with
-        # no bound of its own. A human's session needs none — somebody
-        # is watching it and the stop button reaches it — but a
-        # delegate's turn has neither, so the calls it may spend are
-        # capped. Whether this session is a delegate is the record the
-        # studio wrote when it opened one, which is written before the
-        # open that builds this agent.
-        tool_calls = self.delegate_tool_calls if self.is_delegate(name) else 0
-
         return Agent(
             model=self._model_factory(model),
-            tools=[toolkit]
-            + ([self._sessions_tool(name, delegates)] if delegation else []),
+            tools=[toolkit] + ([spec.sessions_tool] if spec.sessions_tool else []),
             compression_manager=compaction,
             # Tool calls this run may spend, and None where there is
             # no cap. Past the limit agno answers each further call
@@ -948,7 +1023,7 @@ class Registry(
             # budget is the other end of that: a turn that ends
             # without prose spends one, and running out of turns
             # resolves the answer as `capped`.
-            tool_call_limit=tool_calls or None,
+            tool_call_limit=spec.tool_calls,
             # `begin_turn` puts back in the queue any note a run handed
             # out and then dropped. agno runs pre hooks when a run
             # starts and not when a run is continued, so a turn resumed
@@ -973,17 +1048,7 @@ class Registry(
             # the MECHANICS (workspace, handlers, curl); this covers the
             # product the human is looking at (preview, artifacts,
             # commits, publish)
-            # The retention sentence rides with delegation: what it
-            # describes is a delegate's branch, and an agent with no way
-            # to fork one has nothing for it to be about.
-            instructions=(
-                STUDIO_PRIMER
-                + _versioning_primer(wsgit)
-                + _unit_test_primer(ws)
-                + _delegation_primer(delegation, wsgit)
-                + _depth_primer(delegation and self.at_depth_cap(name))
-                + (_retention_primer(self.delegate_ttl_hours) if delegation else "")
-            ),
+            instructions=spec.instructions,
             # Durable chat, keyed by the session name and stored in that
             # session's own workspace branch: after a server restart the
             # agent still remembers the conversation (and the jsonl
@@ -1278,6 +1343,7 @@ class Registry(
             session.delegates,
             wsgit=session.wsgit,
             inbox=session.inbox,
+            loop=session.loop,
         )
         session.model = spec
         with self._lock:
