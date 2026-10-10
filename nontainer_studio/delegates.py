@@ -692,7 +692,7 @@ def _reply(child: "Session", since: int) -> tuple[str, str | None]:
     """
     runs: list[list[str]] = [[]]
     error: str | None = None
-    for event in child.events:
+    for event in child.snapshot():
         if event.get("seq", -1) < since:
             continue
         kind = event.get("type")
@@ -1346,7 +1346,7 @@ class DelegationMixin:
         session = self._sessions.get(child)
         if session is None:
             return None
-        for event in reversed(session.events):
+        for event in reversed(session.snapshot()):
             kind = event.get("type")
             if kind == "tool_start":
                 return {

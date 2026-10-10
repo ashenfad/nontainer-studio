@@ -16,8 +16,11 @@
 //   {type:'text',   delta}           — streamed reply tokens
 //   {type:'thinking', delta}         — native model reasoning (when the
 //                                      model/provider exposes it)
-//   {type:'tool_start', name, args}
-//   {type:'tool_end',   name, result}
+//   {type:'tool_start', name, call_id, args}
+//   {type:'tool_end',   name, call_id, is_error, result}
+//                                    — a tool call and its result, paired
+//                                      by call_id (a log from before it
+//                                      was carried pairs by name)
 //   {type:'artifact', name, path, kind} — a ui = {...} artifact the turn
 //                                      produced; server-harvested from the
 //                                      tool result's [ui artifacts: ...] note
@@ -361,6 +364,7 @@ export class SessionRuntime {
             this.#agentItems().push({
                 kind: 'tool',
                 name: ev.name,
+                callId: ev.call_id ?? null,
                 args: ev.args,
                 result: null,
                 running: true,
@@ -368,18 +372,22 @@ export class SessionRuntime {
             })
         } else if (ev.type === 'tool_end') {
             // tool calls can run in PARALLEL (several starts, then the
-            // ends) — pair by name first, oldest open call wins. The
-            // search spans the whole turn rather than the message being
+            // ends) — pair by call id; an event from before ids were
+            // carried pairs by name, oldest open call first. The search
+            // spans the whole turn rather than the message being
             // written: a message the human interjected splits the
             // agent's message in two, and the call this result belongs
             // to opened before the split.
             const open = this.#openTools()
-            let tool = open.find((i) => i.name === ev.name) ?? open[0]
+            let tool = ev.call_id
+                ? open.find((i) => i.callId === ev.call_id)
+                : open.find((i) => i.name === ev.name) ?? open[0]
             if (!tool) {
-                tool = { kind: 'tool', name: ev.name, args: '', running: false }
+                tool = { kind: 'tool', name: ev.name, callId: ev.call_id ?? null, args: '', running: false }
                 this.#agentItems().push(tool)
             }
             tool.result = ev.result
+            tool.error = !!ev.is_error
             tool.running = false
             this.#harvest(ev.result, tool)
         } else if (ev.type === 'artifact') {

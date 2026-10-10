@@ -179,6 +179,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Runs on a pinned commit of nontainer's main until its next
+  release.** CI installs with uv, so it tests that commit too.
+
 - **Requires nontainer 0.10.0.** Its async delegate runners and
   `until_settled` are what the delegation below is built on.
 
@@ -440,6 +443,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still works as a spec.
 
 ### Fixed
+
+- **Tool calls pair by id, and a failed one says so.** Parallel calls
+  of one tool no longer swap results (`call_id`), and a call that
+  raised shows as failed (`is_error`).
+
+- **The transcript takes events from any thread or loop.** A follower
+  no longer misses an event published from another loop, such as a
+  delegate's when no server runs it.
 
 - **The strip shows a delegate from the moment it is asked.** The
   listing left out a run that had not yet written its record, so a

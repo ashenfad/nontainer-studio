@@ -2783,7 +2783,8 @@ def test_a_delegates_answer_is_its_final_reply_not_its_narration():
     from nontainer_studio.delegates import _reply
 
     def turn(*events):
-        return SimpleNamespace(events=[dict(e, seq=i) for i, e in enumerate(events)])
+        stamped = [dict(e, seq=i) for i, e in enumerate(events)]
+        return SimpleNamespace(events=stamped, snapshot=lambda: list(stamped))
 
     narrated = turn(
         {"type": "user", "text": "build it"},

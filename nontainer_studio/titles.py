@@ -243,7 +243,7 @@ class TitlesMixin:
         stands — through the projection, so an edit's rewind lowers it
         the way it lowers everything else."""
         return sum(
-            1 for _, e in cls._visible(list(session.events)) if e.get("type") == "user"
+            1 for _, e in cls._visible(session.snapshot()) if e.get("type") == "user"
         )
 
     @classmethod
@@ -256,7 +256,7 @@ class TitlesMixin:
         next five turns.
         """
         asked = False
-        for _, event in cls._visible(list(session.events)):
+        for _, event in cls._visible(session.snapshot()):
             kind = event.get("type")
             if kind == "user":
                 asked = True

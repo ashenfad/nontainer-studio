@@ -126,6 +126,7 @@ def _client_events(ev: Any) -> list[dict]:
             {
                 "type": "tool_start",
                 "name": getattr(tool, "tool_name", "?"),
+                "call_id": getattr(tool, "tool_call_id", None),
                 "args": _tool_args(tool),
             }
         ]
@@ -138,10 +139,15 @@ def _client_events(ev: Any) -> list[dict]:
         # so the tool box shows the tool's own output and nothing else.
         if isinstance(result, str):
             result, _ = split(result)
+        # A call that raised completes too, its error as the result,
+        # and agno follows it with a ToolCallError: the flag on the
+        # completed call is what says so.
         events: list[dict] = [
             {
                 "type": "tool_end",
                 "name": getattr(tool, "tool_name", "?"),
+                "call_id": getattr(tool, "tool_call_id", None),
+                "is_error": bool(getattr(tool, "tool_call_error", False)),
                 "result": _short(result),
             }
         ]
@@ -337,10 +343,7 @@ async def _run_turn(session: Any, message: str | None, registry: Any = None) -> 
     # What the lock is held FOR, which is what decides whether a
     # message arriving now is queued or refused.
     session.in_turn = True
-    # And where a tool's worker thread reaches the transcript: this
-    # turn's loop owns the event buffer.
-    session.loop = asyncio.get_running_loop()
-    session.loop.run_in_executor(None, _warm, session)
+    asyncio.get_running_loop().run_in_executor(None, _warm, session)
     from_queue: list[str] = []
     try:
         while True:
