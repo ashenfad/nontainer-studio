@@ -283,6 +283,27 @@ def wsgit_enabled() -> bool:
     return _flag("NONTAINER_STUDIO_WSGIT") or _flag("NONTAINER_STUDIO_SESSIONS")
 
 
+LOOPS = ("agno", "agex")
+"""The loops a session can run on: agno's, and agex's."""
+
+
+def loop_choice() -> str:
+    """``NONTAINER_STUDIO_LOOP``: the loop a NEW session runs on,
+    ``agno`` (the default) or ``agex``.
+
+    A session that already holds a conversation stays on the loop that
+    wrote it, whatever this says (each loop stores its own format, and
+    neither reads the other's), and a delegate runs on its parent's.
+    ``agex`` needs the ``agex`` extra installed.
+    """
+    raw = (os.getenv("NONTAINER_STUDIO_LOOP") or "agno").strip().lower()
+    if raw not in LOOPS:
+        raise ValueError(
+            f"NONTAINER_STUDIO_LOOP={raw!r}: expected one of {', '.join(LOOPS)}"
+        )
+    return raw
+
+
 def sessions_tool_enabled() -> bool:
     """``NONTAINER_STUDIO_SESSIONS``: whether the agent is given the
     ``sessions`` tool, its handle on delegation and on what the human

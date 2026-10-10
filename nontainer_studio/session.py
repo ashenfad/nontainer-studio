@@ -203,6 +203,10 @@ class Session:
     """The running turn's asyncio task. Held so the event loop's weak
     reference isn't the only one (the classic create_task GC footgun)."""
 
+    loop: str = "agno"
+    """The loop the session runs on, ``agno`` or ``agex``: the one that
+    wrote its conversation (see ``Registry._loop_of``)."""
+
     run_id: str | None = None
     """The running turn's run id, as soon as the stream reveals it —
     the handle the stop button cancels by."""

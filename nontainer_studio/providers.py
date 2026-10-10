@@ -347,6 +347,19 @@ def _effort() -> str:
     return os.getenv("NONTAINER_STUDIO_EFFORT") or _DEFAULT_EFFORT
 
 
+def agex_model(spec: str) -> str:
+    """The model agex's ``Agent`` takes for ``spec``: its name in
+    pydantic-ai's ``provider:model`` form, which agex resolves itself
+    (each provider through its own extra)."""
+    provider, model = parse_spec(spec)
+    if provider == "dummy":
+        raise ValueError(
+            "the dummy model runs on the agno loop only for now; open the "
+            "session with NONTAINER_STUDIO_LOOP=agno"
+        )
+    return f"{provider}:{model}"
+
+
 def supports_vision(spec: str | None) -> bool:
     """Whether the spec'd model accepts image input — gates screenshot
     attachment (WorkspaceTools(vision=...)): text-only models 400 on

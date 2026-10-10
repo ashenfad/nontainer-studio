@@ -8,7 +8,8 @@ loop behind it, so the studio's policy (the queue, waking, resuming a
 provider error, the transcript's events) is one thing whatever loop a
 session runs.
 
-:class:`AgnoDriver` is the agno loop.
+A session's loop is built from a :class:`DriverSpec`, whichever loop
+it is: :class:`AgnoDriver` is agno's, :class:`AgexDriver` agex's.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from agno.run.cancel import ais_cancelled
@@ -38,7 +40,34 @@ from nontainer.turns import (
 
 log = logging.getLogger(__name__)
 
-__all__ = ["AgnoDriver", "TurnDriver"]
+__all__ = ["AgexDriver", "AgnoDriver", "DriverSpec", "TurnDriver"]
+
+
+@dataclass
+class DriverSpec:
+    """What a session's loop is built from, whichever loop it is."""
+
+    session: str
+    ws: Any
+    runtime: Any
+    """The session's app runtime, which ``test_app`` drives."""
+    inbox: Inbox
+    delegates: Any
+    """The session's ``Sessions`` helper, whose answers the loop
+    delivers on a tool result; ``None`` where it has none."""
+    model: str
+    """The model spec (``provider:model``)."""
+    instructions: str
+    vision: bool
+    """Whether the model takes images: ``view_image``, and screenshots
+    seen rather than named."""
+    python_primer: str
+    sessions_tool: Callable[..., str] | None
+    """The studio's ``sessions`` tool, where the agent may delegate."""
+    compaction: Any
+    """A ``nontainer.compaction.Policy``, or ``None`` for never."""
+    tool_calls: int | None
+    """The tool calls a turn may spend, or ``None`` for no cap."""
 
 
 class TurnDriver(Protocol):
@@ -257,3 +286,112 @@ class _AgnoEvents:
         if self._error is not None:
             return RunEnded(status="interrupted", message=str(self._error))
         return RunEnded(status="completed")
+
+
+class AgexDriver:
+    """An agex session as a :class:`TurnDriver`.
+
+    agex streams turn events itself, deliveries and folds among them,
+    and keeps a cancelled or failed run with its closing note, so this
+    passes its stream through. The session offers the studio's tools:
+    a nontainer ``Toolset`` with the app runtime, the python primer and
+    ``vision``, and the studio's own ``sessions`` tool in place of
+    nontainer's (agex's ``toolset=`` and ``tools=``).
+    """
+
+    def __init__(self, spec: DriverSpec, model: Any) -> None:
+        try:
+            from agex import Agent
+        except ImportError as e:
+            raise RuntimeError(
+                "the agex loop needs agex: install nontainer-studio[agex]"
+            ) from e
+        from agex.agent import MAX_STEPS
+        from agex.providers import Settings
+        from nontainer.adapters.render import PYTHON_UI_NOTE, resolve_tools_mode
+        from nontainer.adapters.tools import Toolset
+
+        from .providers import _effort
+
+        ws = spec.ws
+        primer = spec.python_primer
+        if resolve_tools_mode(ws, "auto") == "split":
+            # the studio renders artifacts beside the reply, so it is the
+            # one to promise they do (as the agno toolkit's run_python)
+            primer += PYTHON_UI_NOTE.replace(
+                "__WS__", "" if ws.root == "/" else ws.root
+            )
+        toolset = Toolset(
+            ws, apps=spec.runtime, python_primer=primer, vision=spec.vision
+        )
+        tools = []
+        if spec.sessions_tool is not None:
+            tools.append(_sessions_tool(ws, spec.delegates, spec.sessions_tool))
+        agent = Agent(
+            model,
+            primer=spec.instructions,
+            settings=Settings(thinking=_effort()),
+            # a capped turn's model calls: each of its tool calls, and
+            # the reply after the last
+            max_steps=spec.tool_calls + 1 if spec.tool_calls else MAX_STEPS,
+            compaction=spec.compaction,
+        )
+        self.session = agent.session(
+            ws,
+            inbox=spec.inbox,
+            sessions=spec.delegates,
+            toolset=toolset,
+            tools=tools,
+        )
+        self._cancelled: set[str] = set()
+
+    def run(self, prompt: str) -> AsyncIterator[TurnEvent]:
+        return self._follow(self.session.stream(prompt))
+
+    def resume(self, run_id: str) -> AsyncIterator[TurnEvent]:
+        # agex continues the last turn, which is the interrupted one
+        return self._follow(self.session.stream(resume=True))
+
+    async def cancel(self, run_id: str) -> None:
+        # recorded, so a stop pressed while no turn runs (between a
+        # provider error and its resume) is still seen
+        self._cancelled.add(run_id)
+        self.session.cancel()
+
+    async def is_cancelled(self, run_id: str) -> bool:
+        return run_id in self._cancelled
+
+    def keep(self, run_id: str | None, note: str) -> None:
+        """agex keeps a cancelled or failed run with its closing note,
+        and an interrupted one as it stood; nothing to do."""
+
+    def folded(self, fold: Any) -> None:
+        """agex streams its own folds; nothing reaches it from outside."""
+
+    async def _follow(self, stream: Any) -> AsyncIterator[TurnEvent]:
+        ended = False
+        try:
+            async for event in stream:
+                yield event
+            ended = True
+        finally:
+            if not ended:
+                # an agex turn goes on when nobody watches it; the studio
+                # stopping to watch (shutting down) means the turn stops
+                self.session.cancel()
+
+
+def _sessions_tool(ws: Any, delegates: Any, call: Callable[..., str]) -> Any:
+    """The studio's ``sessions`` function as a tool in the protocol's
+    shape, with the arguments nontainer's own ``sessions`` tool takes."""
+    from nontainer.adapters.tools import Tool, ToolOutput, Toolset
+
+    (nontainers,) = [
+        t for t in Toolset(ws, sessions=delegates).tools() if t.name == "sessions"
+    ]
+    return Tool(
+        name="sessions",
+        description=call.__doc__ or nontainers.description,
+        parameters=nontainers.parameters,
+        call=lambda **arguments: ToolOutput(text=call(**arguments)),
+    )

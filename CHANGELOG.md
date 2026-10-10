@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Sessions can run on agex: `NONTAINER_STUDIO_LOOP=agex`.** A new
+  session runs on the loop the knob picks (agno by default), one with a
+  conversation on the loop that wrote it, and a delegate on its
+  parent's; an agex session has the same tools as an agno one. Needs
+  the `agex` extra.
+
 - **Agents can find and ask the human's other sessions.** A new
   `sessions others` action lists every session but the asker's, most
   recently active first: the name `fork_from` takes, the title, when it
