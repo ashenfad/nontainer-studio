@@ -78,7 +78,7 @@ build-backend = "hatchling.build"
 nontainer = { git = "https://github.com/ashenfad/nontainer", rev = "59fe19349264f83d34caeb2fd839713ab266fd89" }
 # agex is unreleased until its shape freeze; a commit of its rebuild
 # branch, moved on by hand, as nontainer's above is.
-agex = { git = "https://github.com/ashenfad/agex", rev = "b7f2c88dbc4990637bd499719a778b71902f7849" }
+agex = { git = "https://github.com/ashenfad/agex", rev = "8c43796fb3b76fb7859a46516e96d445b50cf968" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["nontainer_studio"]
