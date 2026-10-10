@@ -547,11 +547,9 @@ def build_app(registry: Registry) -> Starlette:
             return JSONResponse({"error": "since must be an integer"}, status_code=400)
 
         if request.query_params.get("wait") == "0":
+            events, after = session.snapshot_with_next()
             return JSONResponse(
-                {
-                    "events": [e for e in session.snapshot() if e["seq"] >= since],
-                    "next": session.next_seq,
-                }
+                {"events": [e for e in events if e["seq"] >= since], "next": after}
             )
 
         async def stream() -> AsyncIterator[str]:
@@ -591,8 +589,9 @@ def build_app(registry: Registry) -> Starlette:
             # Snapshot before offloading: compaction slice-replaces the
             # tail and trims the front past MAX_EVENTS, and under an
             # iteration those shifts skip/double events (a skipped `done`
-            # silently folds one turn into the next).
-            events_snapshot = session.snapshot()
+            # silently folds one turn into the next). The cursor is the
+            # snapshot's own: events keep arriving while it projects.
+            events_snapshot, after = session.snapshot_with_next()
 
             def project() -> list[dict]:
                 # Project the WHOLE buffer (so surface tracking for
@@ -605,7 +604,7 @@ def build_app(registry: Registry) -> Starlette:
                 return [m for m in out if m["cursor"] >= since]
 
             messages = await anyio.to_thread.run_sync(project)
-            return JSONResponse({"messages": messages, "next": session.next_seq})
+            return JSONResponse({"messages": messages, "next": after})
 
         async def stream() -> AsyncIterator[str]:
             projector = _A2uiTurns(name, read_bytes, file_url)

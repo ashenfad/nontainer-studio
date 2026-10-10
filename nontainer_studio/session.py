@@ -335,8 +335,15 @@ class Session:
         ``events`` mid-iteration (compaction replaces the tail, the
         window trims the front). A shallow copy is enough: compaction
         replaces event dicts, never mutates them."""
+        return self.snapshot_with_next()[0]
+
+    def snapshot_with_next(self) -> tuple[list[dict], int]:
+        """The snapshot, and the seq the next event will get, read
+        together: a cursor read apart from its snapshot could pass an
+        event published in between, which a poller resuming from it
+        would never see."""
         with self._sink:
-            return list(self.events)
+            return list(self.events), self.next_seq
 
     def _compact_and_flush(self) -> None:
         """Caller holds ``_sink``. Compact the unflushed tail,
