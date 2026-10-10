@@ -87,6 +87,7 @@
         {#if line.subject}<span class="act-rest" class:code={line.code}>{line.subject}</span
             >{/if}
         {#if pictures}<span class="act-rest">{pictures}</span>{/if}
+        {#if tool.error}<span class="act-rest failed">· failed</span>{/if}
         <span class="act-chev">⌄</span>
     </button>
     {#if open}
@@ -123,7 +124,7 @@
         <pre
             class="block result"
             class:pass={verdict === 'pass'}
-            class:fail={verdict === 'fail'}>{tool.result}</pre>
+            class:fail={verdict === 'fail' || tool.error}>{tool.result}</pre>
     {/if}
 
     {#if tool.images?.length}
@@ -171,6 +172,9 @@
         color: var(--success);
     }
     .result.fail {
+        color: var(--error);
+    }
+    .failed {
         color: var(--error);
     }
     .step-images {

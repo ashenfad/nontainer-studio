@@ -9,9 +9,10 @@ on:
 jobs:
   # The python matrix: no browser, no node — every test that needs one
   # skips cleanly without chromium, so this stays fast and the `browser`
-  # job below is what actually runs them. pip ignores [tool.uv.sources],
-  # so nontainer resolves from PyPI here — CI tests the studio against
-  # the RELEASED core, which is what a fresh install gets.
+  # job below is what actually runs them. Installed with `uv pip`, which
+  # honours [tool.uv.sources]: while pyproject pins nontainer to a commit
+  # of its main (between releases), CI tests that commit, as the studio
+  # runs on it; with no pin, the RELEASED core, as a fresh install gets.
   test:
     strategy:
       matrix:
@@ -27,13 +28,14 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
+    - uses: astral-sh/setup-uv@v6
+
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
         # [dud] too: its subprocess rung needs no hypervisor and no guest
         # image, so the host-object smoke test runs on both runners. The
         # extra's own marker keeps it off 3.10, where it importorskips.
-        pip install -e ".[dev,dud]"
+        uv pip install --system -e ".[dev,dud]"
 
     - name: Run tests
       run: |
@@ -64,10 +66,10 @@ jobs:
       with:
         python-version: "3.12"
 
+    - uses: astral-sh/setup-uv@v6
+
     - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+      run: uv pip install --system -e ".[dev]"
 
     - name: Install Playwright browser
       run: python -m playwright install --with-deps chromium

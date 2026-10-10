@@ -221,17 +221,6 @@ class Session:
     indicator, the answer injected next turn) reads these jobs, and
     closing the session has to join their workers."""
 
-    loop: Any = None
-    """The event loop the running turn is on.
-
-    A tool runs on a worker thread, so anything discovered there — a
-    message delivered from the inbox, say — reaches the transcript
-    through this: ``emit`` is a coroutine on the loop that owns the
-    event buffer. A session's turns do not all run on the same loop (a
-    delegate's runner makes one of its own), so it is recorded per
-    turn rather than once.
-    """
-
     in_turn: bool = False
     """Whether the holder of ``turn_lock`` is an agent turn.
 
@@ -305,10 +294,26 @@ class Session:
     buffer in memory until the next non-delta event compacts + flushes
     them — disk only ever carries the compacted form."""
 
-    new_event: asyncio.Condition = field(default_factory=asyncio.Condition)
+    _sink: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    """Guards the transcript's state (``events``, ``next_seq``,
+    ``flush_idx``, ``_waiters``). A thread lock rather than an asyncio
+    one: events arrive from any thread and any loop (a tool's worker
+    thread, a delegate's loop), and an asyncio primitive belongs to the
+    one loop that first used it."""
+
+    _waiters: set[tuple[asyncio.AbstractEventLoop, asyncio.Future]] = field(
+        default_factory=set, repr=False
+    )
+    """Followers waiting for the next event, each with the loop it waits
+    on: a new event wakes each on its own loop."""
 
     async def emit(self, event: dict) -> None:
-        async with self.new_event:
+        self.publish(event)
+
+    def publish(self, event: dict) -> None:
+        """Add ``event`` to the transcript and wake its followers. Safe
+        from any thread or loop; it doesn't block on any loop."""
+        with self._sink:
             # ts: when it happened, in epoch seconds. The transcript
             # reads durations off it ("Thought for 12s"); a merged delta
             # run keeps its first chunk's.
@@ -320,10 +325,21 @@ class Session:
             # within the live delta run (crash loses at most that).
             if event["type"] not in _DELTA_TYPES:
                 self._compact_and_flush()
-            self.new_event.notify_all()
+            waiters, self._waiters = self._waiters, set()
+        for loop, waiter in waiters:
+            _wake(loop, waiter)
+
+    def snapshot(self) -> list[dict]:
+        """The transcript as it stands, copied under the lock: what a
+        reader iterates, since a publish from another thread may reshape
+        ``events`` mid-iteration (compaction replaces the tail, the
+        window trims the front). A shallow copy is enough: compaction
+        replaces event dicts, never mutates them."""
+        with self._sink:
+            return list(self.events)
 
     def _compact_and_flush(self) -> None:
-        """Caller holds ``new_event``. Compact the unflushed tail,
+        """Caller holds ``_sink``. Compact the unflushed tail,
         append it to the jsonl, then trim memory to the tail window
         (flushed events only — nothing is ever dropped before it's on
         disk)."""
@@ -349,15 +365,30 @@ class Session:
         import bisect
 
         cursor = max(0, since)
+        loop = asyncio.get_running_loop()
         while True:
-            async with self.new_event:
-                while not self.events or self.events[-1]["seq"] < cursor:
-                    await self.new_event.wait()
+            with self._sink:
+                ready = bool(self.events) and self.events[-1]["seq"] >= cursor
+                if not ready:
+                    # registered under the lock, so an event published
+                    # after the check can't miss it
+                    waiter = (loop, loop.create_future())
+                    self._waiters.add(waiter)
+            if not ready:
+                try:
+                    await waiter[1]
+                finally:
+                    with self._sink:
+                        self._waiters.discard(waiter)
+                continue
             while True:
-                idx = bisect.bisect_left(self.events, cursor, key=lambda e: e["seq"])
-                if idx >= len(self.events):
+                with self._sink:
+                    idx = bisect.bisect_left(
+                        self.events, cursor, key=lambda e: e["seq"]
+                    )
+                    event = self.events[idx] if idx < len(self.events) else None
+                if event is None:
                     break
-                event = self.events[idx]
                 yield event["seq"], event
                 cursor = event["seq"] + 1
 
@@ -397,7 +428,7 @@ class Session:
         """Names of those of ``jobs`` whose current answer the
         transcript does not show — the tail, then the whole log when
         the tail is full and cannot answer (as :meth:`undelivered`)."""
-        shown = _deliveries(self.events)
+        shown = _deliveries(self.snapshot())
         missing = {job.name for job in jobs if not _shows(shown, job)}
         if missing and len(self.events) >= MAX_EVENTS and self.log_path is not None:
             shown = _deliveries(_read_log(self.log_path))
@@ -421,7 +452,7 @@ class Session:
         "what the transcript now says" does: the log is append-only, and
         a cut is an event rather than a deletion.
         """
-        return self._delivered_in(self.events)
+        return self._delivered_in(self.snapshot())
 
     @staticmethod
     def _delivered_in(events: list) -> set:
@@ -473,11 +504,18 @@ class Session:
         return out
 
 
-_EMIT_TIMEOUT = 10.0
-"""Seconds a delivery waits for its transcript event to land. A bound
-rather than a promise: the wait is on a tool's worker thread, and a
-loop that has stopped answering must not hold the tool result the
-model is waiting for."""
+def _wake(loop: asyncio.AbstractEventLoop, waiter: asyncio.Future) -> None:
+    """Resolve a follower's ``waiter`` on its own loop; a loop already
+    closed has no follower left to wake."""
+
+    def wake() -> None:
+        if not waiter.done():
+            waiter.set_result(None)
+
+    try:
+        loop.call_soon_threadsafe(wake)
+    except RuntimeError:
+        pass
 
 
 def _delivery_event(note: Note) -> dict:
@@ -516,24 +554,18 @@ def _record_delivery(session: "Session") -> Callable:
     was just handed.
 
     Called on the worker thread the tool ran on, since that is where
-    the delivery happens, so each event is handed to the loop the turn
-    is on and waited for: the transcript then says the note arrived
-    BEFORE the tool result it rode out with, which is the order it
-    happened in. A failure is logged and nothing more — the notes are
-    already in the result the model is about to read, and an exception
-    escaping here would replace that result with an error.
+    the delivery happens, and published there before the tool returns:
+    the transcript then says the note arrived BEFORE the tool result it
+    rode out with, which is the order it happened in. A failure is
+    logged and nothing more — the notes are already in the result the
+    model is about to read, and an exception escaping here would replace
+    that result with an error.
     """
 
     def record(notes: "list[Note]") -> None:
-        loop = session.loop
         for note in notes:
             try:
-                if loop is None:
-                    raise RuntimeError("no event loop is carrying this turn")
-                future = asyncio.run_coroutine_threadsafe(
-                    session.emit(_delivery_event(note)), loop
-                )
-                future.result(timeout=_EMIT_TIMEOUT)
+                session.publish(_delivery_event(note))
             except Exception:  # noqa: BLE001 - the tool result wins
                 log.warning(
                     "inbox: note %s reached the model but not the transcript",
@@ -548,24 +580,19 @@ def record_fold(session: "Session", fold: Any) -> None:
     """Put a compaction marker in the transcript.
 
     Called by nontainer's compaction on the worker thread the summary
-    was written on, mid-turn, so the event is handed to the loop the
-    turn is on and waited for, as a delivery's is. A failure is logged
-    and nothing more: the fold is recorded either way, and the marker
-    is only the person's view of it.
+    was written on, mid-turn, and published there, as a delivery is. A
+    failure is logged and nothing more: the fold is recorded either way,
+    and the marker is only the person's view of it.
     """
-    loop = session.loop
     try:
-        if loop is None:
-            raise RuntimeError("no event loop is carrying this turn")
-        event = {
-            "type": "compaction",
-            "turns": fold.runs,
-            "summary": fold.summary,
-            "tokens_before": fold.tokens_before,
-            "tokens_after": fold.tokens_after,
-        }
-        asyncio.run_coroutine_threadsafe(session.emit(event), loop).result(
-            timeout=_EMIT_TIMEOUT
+        session.publish(
+            {
+                "type": "compaction",
+                "turns": fold.runs,
+                "summary": fold.summary,
+                "tokens_before": fold.tokens_before,
+                "tokens_after": fold.tokens_after,
+            }
         )
     except Exception:  # noqa: BLE001 - the fold stands without its marker
         log.warning(

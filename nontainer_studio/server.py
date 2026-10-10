@@ -490,7 +490,7 @@ def build_app(registry: Registry) -> Starlette:
         if not message:
             return JSONResponse({"error": "empty message"}, status_code=400)
         target = (
-            next((e for e in session.events if e.get("seq") == seq), None)
+            next((e for e in session.snapshot() if e.get("seq") == seq), None)
             if isinstance(seq, int) and not isinstance(seq, bool)
             else None
         )
@@ -549,7 +549,7 @@ def build_app(registry: Registry) -> Starlette:
         if request.query_params.get("wait") == "0":
             return JSONResponse(
                 {
-                    "events": [e for e in session.events if e["seq"] >= since],
+                    "events": [e for e in session.snapshot() if e["seq"] >= since],
                     "next": session.next_seq,
                 }
             )
@@ -588,15 +588,11 @@ def build_app(registry: Registry) -> Starlette:
             return f"/api/sessions/{name}/file?path={quote(path)}"
 
         if request.query_params.get("wait") == "0":
-            # Snapshot ON THE LOOP THREAD before offloading: emit() also
-            # runs on the loop, but its compaction slice-replaces the tail
-            # and trims the front past MAX_EVENTS — under a worker-thread
+            # Snapshot before offloading: compaction slice-replaces the
+            # tail and trims the front past MAX_EVENTS, and under an
             # iteration those shifts skip/double events (a skipped `done`
-            # silently folds one turn into the next). A shallow copy is
-            # enough: compaction replaces event dicts, never mutates them.
-            # (The native /events?wait=0 reads on the loop, so only this
-            # thread-offloaded projection needs the copy.)
-            events_snapshot = list(session.events)
+            # silently folds one turn into the next).
+            events_snapshot = session.snapshot()
 
             def project() -> list[dict]:
                 # Project the WHOLE buffer (so surface tracking for

@@ -323,6 +323,98 @@ def test_tool_result_without_note_emits_no_artifact_events(studio):
     assert not any(e["type"] == "artifact" for e in events)
 
 
+def test_tool_events_carry_the_call_id_and_whether_it_failed():
+    """A tool's start and end carry agno's call id, so the client pairs
+    them when calls run in parallel; a call that raised ends with
+    ``is_error``, and agno's ToolCallError after it adds nothing."""
+    from agno.models.response import ToolExecution
+    from agno.run.agent import RunEvent
+
+    started = ToolExecution(
+        tool_call_id="c1", tool_name="terminal", tool_args={"command": "ls"}
+    )
+    assert turns._client_events(
+        SimpleNamespace(event=RunEvent.tool_call_started.value, tool=started)
+    ) == [
+        {
+            "type": "tool_start",
+            "name": "terminal",
+            "call_id": "c1",
+            "args": {"command": "ls"},
+        }
+    ]
+    failed = ToolExecution(
+        tool_call_id="c1", tool_name="terminal", tool_call_error=True, result="boom"
+    )
+    assert turns._client_events(
+        SimpleNamespace(event=RunEvent.tool_call_completed.value, tool=failed)
+    ) == [
+        {
+            "type": "tool_end",
+            "name": "terminal",
+            "call_id": "c1",
+            "is_error": True,
+            "result": "boom",
+        }
+    ]
+    assert (
+        turns._client_events(
+            SimpleNamespace(
+                event=RunEvent.tool_call_error.value, tool=failed, error="boom"
+            )
+        )
+        == []
+    )
+    ok = ToolExecution(tool_call_id="c2", tool_name="terminal", result="a.txt")
+    (ended,) = turns._client_events(
+        SimpleNamespace(event=RunEvent.tool_call_completed.value, tool=ok)
+    )
+    assert ended["is_error"] is False
+
+
+def test_the_transcript_takes_events_from_any_thread_and_loop(studio):
+    """A follower waiting on one loop sees what is published from a
+    worker thread, and from a coroutine on another thread's own loop
+    (a delegate's, when no server loop runs it)."""
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    since = session.next_seq
+
+    async def follow(n: int) -> list[str]:
+        got: list[str] = []
+        async for _, event in session.follow(since):
+            got.append(event["text"])
+            if len(got) == n:
+                return got
+        return got
+
+    async def main() -> list[str]:
+        # each thread starts while the follower's loop is idle, waiting:
+        # a wake that isn't thread-safe never reaches it
+        following = asyncio.ensure_future(follow(1))
+        await asyncio.sleep(0.05)
+        worker = threading.Thread(
+            target=session.publish, args=({"type": "notice", "text": "thread"},)
+        )
+        worker.start()
+        got = await asyncio.wait_for(following, timeout=5)
+        worker.join()
+        following = asyncio.ensure_future(follow(2))
+        await asyncio.sleep(0.05)
+        other = threading.Thread(
+            target=lambda: asyncio.run(
+                session.emit({"type": "notice", "text": "other loop"})
+            )
+        )
+        other.start()
+        got = await asyncio.wait_for(following, timeout=5)
+        other.join()
+        return got
+
+    assert asyncio.run(main()) == ["thread", "other loop"]
+
+
 def test_starter_skills_are_mounted_read_only(studio):
     """A session is given the repo's starter skills as read-only mounts
     under /workspace/skills: listed and readable, but not its files. No

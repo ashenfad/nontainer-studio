@@ -1390,7 +1390,7 @@ class PublishingMixin:
         marker = next(
             (
                 e
-                for e in reversed(session.events)
+                for e in reversed(session.snapshot())
                 if e.get("type") == "publish"
                 and e.get("token") == token
                 and e.get("version") == version
@@ -1400,7 +1400,7 @@ class PublishingMixin:
         if marker is None:
             return None
         seq = marker.get("seq", 0)
-        prefix = [e for e in session.events if e.get("seq", 0) <= seq]
+        prefix = [e for e in session.snapshot() if e.get("seq", 0) <= seq]
         return [event for _, event in _visible(prefix)]
 
     def restore_to_publish(self, session: Session, seq: int) -> int:
@@ -1422,7 +1422,7 @@ class PublishingMixin:
         now. The version the marker names is a publication of its own
         and outlives the session either way.
         """
-        event = next((e for e in session.events if e.get("seq") == seq), None)
+        event = next((e for e in session.snapshot() if e.get("seq") == seq), None)
         head = event.get("head") if event else None
         if event is None or event.get("type") != "publish" or not head:
             raise ValueError(f"event {seq} is not a publish marker")

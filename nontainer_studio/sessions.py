@@ -1287,7 +1287,7 @@ class Registry(
 
         The agent's title rewinds too — it named the session from a
         conversation that is being unsaid."""
-        event = next((e for e in session.events if e.get("seq") == seq), None)
+        event = next((e for e in session.snapshot() if e.get("seq") == seq), None)
         head = event.get("head") if event else None
         if event is None or event.get("type") != "user" or not head:
             raise ValueError(f"event {seq} is not an editable user message")
@@ -1307,9 +1307,9 @@ class Registry(
         and the redo is the same verb said about the commit this one
         stepped off.
         """
-        cut = next((e for e in session.events if e.get("seq") == seq), None)
+        cut = next((e for e in session.snapshot() if e.get("seq") == seq), None)
         surviving = None
-        prior = [e for e in session.events if e["seq"] < seq]
+        prior = [e for e in session.snapshot() if e["seq"] < seq]
         for _, ev in self._visible(prior):
             # A title event carries the label that was in force and,
             # under ``agent``, the generated name beneath it — plus the
