@@ -48,13 +48,19 @@ class Scripts:
 
 
 @pytest.fixture
-def studio(tmp_path):
+def delegate_tool_calls():
+    return None
+
+
+@pytest.fixture
+def studio(tmp_path, delegate_tool_calls):
     scripts = Scripts()
     registry = sessions_mod.Registry(
         model_factory=lambda *a: None,
         store=tmp_path,
         default_model=MODEL,
         agex_model=scripts.provider,
+        delegate_tool_calls=delegate_tool_calls,
     )
     # a title is a model call of its own, on the session's model spec;
     # none here, where the spec names no model anybody serves
@@ -233,3 +239,46 @@ def test_a_delegate_runs_on_its_parents_loop(studio, monkeypatch):
     (child,) = [n for n in registry._manifest()["delegates"] if n.startswith("s1.")]
     # its conversation is one agex wrote: reopened, it stays on agex
     assert registry.open(child).loop == "agex"
+
+
+@pytest.mark.parametrize("delegate_tool_calls", [2])
+def test_a_delegates_tool_calls_are_capped_per_call(studio, monkeypatch):
+    """The cap counts calls, as agno's does: three in one reply under a
+    cap of two, and the third is not run."""
+    monkeypatch.setenv("NONTAINER_STUDIO_SESSIONS", "1")
+    client, registry, scripts = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    scripts.steps["SCOUT"] = [
+        ModelStep(
+            tool_calls=tuple(
+                ToolCall(
+                    name="file_write",
+                    args={"path": f"/workspace/{n}.txt", "content": n},
+                )
+                for n in "abc"
+            )
+        ),
+        says("wrote two"),
+    ]
+    scripts.steps["s1"] = [
+        ModelStep(
+            tool_calls=(
+                ToolCall(
+                    name="sessions",
+                    args={
+                        "action": "ask",
+                        "name": "scout",
+                        "task": "SCOUT write a, b and c",
+                        "wait": True,
+                    },
+                ),
+            )
+        ),
+        says("the scout wrote two"),
+    ]
+    scripts.steps = {"SCOUT": scripts.steps["SCOUT"], "s1": scripts.steps["s1"]}
+    _chat(client, "s1", "s1: get them written")
+    (child,) = [n for n in registry._manifest()["delegates"] if n.startswith("s1.")]
+    files = registry.open(child).ws.files
+    assert files.exists("/workspace/a.txt") and files.exists("/workspace/b.txt")
+    assert not files.exists("/workspace/c.txt")
