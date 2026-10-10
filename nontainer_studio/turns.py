@@ -1,7 +1,10 @@
-"""How a turn runs: the agent's stream turned into transcript events, the
-chain of turns a message and its queue lead to, resuming a run that hit
-a provider error, keeping a cut run in the agent's memory, and waking a
-session whose delegates have answered.
+"""How a turn runs: the driver's turn events turned into transcript
+events, the chain of turns a message and its queue lead to, resuming a
+run that hit a provider error, keeping a cut run in the agent's memory,
+and waking a session whose delegates have answered.
+
+The loop itself is the session's driver (``drivers.py``); nothing here
+knows which loop it is.
 
 Decoupled from any request: a turn is a server-side task, and the
 routes in ``server.py`` only start one.
@@ -12,12 +15,23 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
-from agno.run.cancel import ais_cancelled
-from nontainer.adapters.agno import keep_aborted_run
 from nontainer.adapters.render import artifact_kind, parse_artifacts_note
-from nontainer.inbox import split
+from nontainer.turns import (
+    Compacted,
+    Delivered,
+    DeliveredNote,
+    RunEnded,
+    RunStarted,
+    TextDelta,
+    ThinkingDelta,
+    ToolEnded,
+    ToolStarted,
+    TurnEvent,
+    Usage,
+)
 
 from . import delegates
 from .config import _delegate_wakes
@@ -80,12 +94,11 @@ def _short_middle(value: Any, limit: int = 2_000) -> str:
     return text[:head] + "\n…[truncated]…\n" + text[-tail:]
 
 
-def _tool_args(tool: Any) -> Any:
+def _tool_args(args: Any) -> Any:
     """Structured args when possible (the client renders tool calls
     per-type: highlighted code, file diffs, terminal commands), a
     capped string otherwise. Values are capped generously — file
     contents ARE the rendering."""
-    args = getattr(tool, "tool_args", None)
     if isinstance(args, dict):
         shaped = {
             k: _short(v, 16_000) if isinstance(v, str) else v for k, v in args.items()
@@ -98,57 +111,61 @@ def _tool_args(tool: Any) -> Any:
     return _short(args if args is not None else "")
 
 
-def _client_events(ev: Any) -> list[dict]:
-    kind = getattr(ev, "event", "")
-    if kind == "RunContent":
-        # native model thinking rides RunContent as a per-chunk
-        # reasoning_content delta (Claude thinking, OpenRouter
-        # reasoning, Gemini thoughts, Responses summaries) — a chunk
-        # can carry thinking, prose, or both
-        out = []
-        think = getattr(ev, "reasoning_content", None)
-        if isinstance(think, str) and think:
-            out.append({"type": "thinking", "delta": think})
-        delta = getattr(ev, "content", None)
-        if isinstance(delta, str) and delta:
-            out.append({"type": "text", "delta": delta})
-        return out
-    if kind == "ReasoningContentDelta":
-        # agno's reasoning-manager stream (reasoning=True agents) —
-        # same client treatment as native thinking
-        think = getattr(ev, "reasoning_content", None)
-        if isinstance(think, str) and think:
-            return [{"type": "thinking", "delta": think}]
-        return []
-    if kind == "ToolCallStarted":
-        tool = getattr(ev, "tool", None)
+def _delivery_event(note: DeliveredNote) -> dict:
+    """The transcript event for a note the model has just read.
+
+    A delegate's answer taken mid-turn is the SAME fact as one
+    collected between turns, so it is the same `delegate` event: the
+    delivery record, `Session.undelivered` and the rail's waiting count
+    all read that event and would each miss an answer written down any
+    other way. Everything else is the person this session works for,
+    speaking mid-turn — an `interject`, which carries no `head` because
+    there is no pre-turn commit to rewind to: the turn it landed in
+    began before it was said, so an edit cannot start from here.
+    """
+    if note.kind == "mechanism" and note.job:
+        answer = note.answer
+        if answer is None:
+            return {
+                "type": "delegate",
+                "name": note.job,
+                "status": "answered",
+                "text": note.text,
+            }
+        return {
+            "type": "delegate",
+            "name": note.job,
+            "status": answer.status,
+            "text": delegates.answer_message(note.job, answer),
+            **delegates.answer_run(answer),
+        }
+    return {"type": "interject", "id": note.id, "text": note.text}
+
+
+def _client_events(ev: TurnEvent) -> list[dict]:
+    """The transcript events for one turn event. ``RunStarted`` and
+    ``RunEnded`` are the turn's own business (see ``_follow_run``)."""
+    if isinstance(ev, TextDelta):
+        return [{"type": "text", "delta": ev.text}]
+    if isinstance(ev, ThinkingDelta):
+        return [{"type": "thinking", "delta": ev.text}]
+    if isinstance(ev, ToolStarted):
         return [
             {
                 "type": "tool_start",
-                "name": getattr(tool, "tool_name", "?"),
-                "call_id": getattr(tool, "tool_call_id", None),
-                "args": _tool_args(tool),
+                "name": ev.name,
+                "call_id": ev.call_id or None,
+                "args": _tool_args(ev.args),
             }
         ]
-    if kind == "ToolCallCompleted":
-        tool = getattr(ev, "tool", None)
-        result = getattr(tool, "result", "")
-        # A message queued mid-turn rides out appended to the tool
-        # result that delivered it. The transcript shows it as its own
-        # `interject` (or `delegate`) event, in the slot it arrived in —
-        # so the tool box shows the tool's own output and nothing else.
-        if isinstance(result, str):
-            result, _ = split(result)
-        # A call that raised completes too, its error as the result,
-        # and agno follows it with a ToolCallError: the flag on the
-        # completed call is what says so.
+    if isinstance(ev, ToolEnded):
         events: list[dict] = [
             {
                 "type": "tool_end",
-                "name": getattr(tool, "tool_name", "?"),
-                "call_id": getattr(tool, "tool_call_id", None),
-                "is_error": bool(getattr(tool, "tool_call_error", False)),
-                "result": _short(result),
+                "name": ev.name,
+                "call_id": ev.call_id or None,
+                "is_error": ev.is_error,
+                "result": _short(ev.result),
             }
         ]
         # First-class artifact events: parse the RAW (uncapped) result —
@@ -157,40 +174,49 @@ def _client_events(ev: Any) -> list[dict]:
         # The note stays inside tool_end.result (the model-facing
         # affordance); these events are additive, and the client dedupes
         # by path against its legacy note-regex fallback.
-        if isinstance(result, str):
-            for name, path in parse_artifacts_note(result):
-                events.append(
-                    {
-                        "type": "artifact",
-                        "name": name,
-                        "path": path,
-                        "kind": artifact_kind(path),
-                    }
-                )
+        for name, path in parse_artifacts_note(ev.result):
+            events.append(
+                {
+                    "type": "artifact",
+                    "name": name,
+                    "path": path,
+                    "kind": artifact_kind(path),
+                }
+            )
         return events
-    if kind == "RunCancelled":
-        return [{"type": "notice", "text": "turn stopped"}]
-    if kind == "ModelRequestCompleted":
+    if isinstance(ev, Delivered):
+        # A message queued mid-turn rides out on the tool result that
+        # delivered it, and the transcript shows it as its own event,
+        # in the slot it arrived in, before that result.
+        return [_delivery_event(note) for note in ev.notes]
+    if isinstance(ev, Compacted):
+        return [
+            {
+                "type": "compaction",
+                "turns": ev.runs,
+                "summary": ev.summary,
+                "tokens_before": ev.tokens_before,
+                "tokens_after": ev.tokens_after,
+            }
+        ]
+    if isinstance(ev, Usage):
         # context-usage telemetry for the UI (one per model call; the
         # frontend keeps only the latest)
-        tokens = getattr(ev, "input_tokens", None)
-        if tokens:
-            return [
-                {
-                    "type": "usage",
-                    "input_tokens": tokens,
-                    "cached_tokens": getattr(ev, "cache_read_tokens", None) or 0,
-                }
-            ]
-        return []
+        return [
+            {
+                "type": "usage",
+                "input_tokens": ev.input_tokens,
+                "cached_tokens": ev.cached_tokens,
+            }
+        ]
     return []
 
 
 def _settle_inbox(session: Any) -> None:
     """Close the delivery of notes this turn already handed the model.
 
-    agno runs no post hook for a cancelled or errored run, so nothing
-    settles the inbox on those endings — and ``_keep_aborted_run``
+    A loop may settle nothing on a cancelled or errored run (agno runs
+    no post hook for one) — and ``_keep_aborted_run``
     keeps the run's messages in the agent's memory, which means the
     model DID read whatever rode out with them. Left unsettled, the
     next turn's pre hook would put those notes back in the queue and
@@ -203,11 +229,10 @@ def _keep_aborted_run(session: Any, run_id: str | None, note: str) -> None:
     """Keep a run that errored or was cancelled in the agent's memory,
     closed with ``note`` as the reason it ended early.
 
-    agno's history leaves out runs whose status is error or cancelled,
-    so without this the model forgets a turn whose files are still in
-    the workspace. The work up to the cut is real: the run is marked
-    completed and closed with a note saying the turn was cut short
-    (nontainer's ``keep_aborted_run``).
+    A loop's history can leave such a run out (agno's does), so without
+    this the model forgets a turn whose files are still in the
+    workspace. The work up to the cut is real: the driver keeps the run,
+    closed with a note saying the turn was cut short.
 
     Best-effort. It runs on every way a turn can fail, including the
     ones where the turn handler is already unwinding, so a failure here
@@ -215,7 +240,7 @@ def _keep_aborted_run(session: Any, run_id: str | None, note: str) -> None:
     memory, while raising would cost the transcript its `done`.
     """
     try:
-        keep_aborted_run(getattr(session.agent, "db", None), session.name, run_id, note)
+        session.driver.keep(run_id, note)
     except Exception:
         log.warning(
             "could not keep aborted run %s of session %s",
@@ -267,38 +292,54 @@ class _RunState:
         self.errored: str | None = None
 
 
-async def _follow_run(session: Any, stream: Any, state: _RunState) -> None:
-    """Stream one agno run's events into the session's transcript.
+class _RunFailed(Exception):
+    """A run that ended ``failed``: anything but a provider error the
+    turn may resume from. Raised so the turn ends the way it does on
+    any exception out of the run."""
+
+
+async def _follow_run(
+    session: Any, stream: AsyncIterator[TurnEvent], state: _RunState
+) -> None:
+    """Stream one run's turn events into the session's transcript.
 
     Records the run id on the session as soon as the stream reveals it
-    — the handle the stop button cancels by. A ``RunError`` is recorded
-    in ``state`` and not emitted: a provider failure ends the stream
-    cleanly (no exception), and whether it becomes the turn's `error`
-    is the turn's decision, made once it knows whether the run resumed.
+    — the handle the stop button cancels by. An interrupted run (a
+    provider error) is recorded in ``state`` and not emitted: whether
+    it becomes the turn's `error` is the turn's decision, made once it
+    knows whether the run resumed. A failed one raises
+    :class:`_RunFailed`.
     """
     async for ev in stream:
-        state.run_id = getattr(ev, "run_id", None) or state.run_id
-        session.run_id = state.run_id
-        kind = getattr(ev, "event", "")
-        state.cancelled = state.cancelled or kind == "RunCancelled"
-        if kind == "RunError":
-            state.errored = getattr(ev, "content", None) or "provider error"
-            continue
-        for payload in _client_events(ev):
-            await session.emit(payload)
+        if isinstance(ev, RunStarted):
+            state.run_id = ev.run_id
+            session.run_id = ev.run_id
+        elif isinstance(ev, RunEnded):
+            if ev.status == "cancelled":
+                state.cancelled = True
+                await session.emit({"type": "notice", "text": "turn stopped"})
+            elif ev.status == "interrupted":
+                state.errored = ev.message or "provider error"
+            elif ev.status == "failed":
+                raise _RunFailed(ev.message or "the run failed")
+        else:
+            for payload in _client_events(ev):
+                await session.emit(payload)
 
 
-async def _stopped_while_waiting(run_id: str | None, seconds: float) -> bool:
+async def _stopped_while_waiting(
+    session: Any, run_id: str | None, seconds: float
+) -> bool:
     """Wait ``seconds``; True as soon as a stop reaches ``run_id``.
 
-    The stop button cancels by run id through agno, which records the
-    intent even for a run that is not running at the moment. Reading
-    that record is how a stop pressed between a failure and its resume
-    is seen at all."""
+    The stop button cancels by run id through the driver, which records
+    the intent even for a run that is not running at the moment.
+    Reading that record is how a stop pressed between a failure and its
+    resume is seen at all."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + seconds
     while True:
-        if run_id is not None and await ais_cancelled(run_id):
+        if run_id is not None and await session.driver.is_cancelled(run_id):
             return True
         left = deadline - loop.time()
         if left <= 0:
@@ -572,11 +613,7 @@ async def _one_turn(
             + [note for _, note in notes]
             + [delegates.WAKE_MESSAGE if woken else message]
         )
-        await _follow_run(
-            session,
-            session.agent.arun(prompt, stream=True, stream_events=True),
-            state,
-        )
+        await _follow_run(session, session.driver.run(prompt), state)
         failures = 0
         while state.errored is not None and not state.cancelled:
             failures += 1
@@ -584,8 +621,8 @@ async def _one_turn(
                 break
             await _resume(session, state, failures)
         if state.cancelled:
-            # agno leaves a cancelled run out of the agent's history;
-            # keeping it keeps the partial work in the agent's memory
+            # a loop's history may leave a cancelled run out; keeping
+            # it keeps the partial work in the agent's memory
             await asyncio.to_thread(
                 _keep_aborted_run, session, state.run_id, "stopped by the user"
             )
@@ -611,9 +648,9 @@ async def _one_turn(
         _settle_inbox(session)
         raise
     except Exception as e:
-        # An exception out of the run loop — from the first run or from
-        # its resume — ends the turn here. agno stamps a stored run
-        # status=error and its history skips error runs, so the run is
+        # A failed run, or an exception out of the run loop — from the
+        # first run or from its resume — ends the turn here. A loop's
+        # history may skip an errored run (agno's does), so the run is
         # kept to hold the turn's real work in the agent's memory.
         await session.emit({"type": "error", "message": _short_middle(str(e))})
         await asyncio.to_thread(
@@ -625,7 +662,7 @@ async def _one_turn(
         # done BEFORE the lock releases: the buffer is the permanent
         # source of truth (replays reconstruct it forever), so a next
         # turn's `user` event must never precede this turn's `done`.
-        # It carries the turn's agno run_id and the workspace head at
+        # It carries the turn's run id and the workspace head at
         # turn end — the commit <-> conversation mapping that lets a
         # rewind put the agent's memory back in sync with the files.
         session.run_id = None
@@ -644,9 +681,9 @@ async def _resume(session: Any, state: _RunState, attempt: int = 1) -> None:
     stopped mid-turn with its tool calls done and their files written.
     Restarting from the user message would forget that work while the
     files stay; resuming the SAME run keeps every message it has, and
-    the model picks up after its last tool result. agno 3 continues an
-    errored run in place under its own run id (a completed run would be
-    forked instead, which is why the run is kept only after this).
+    the model picks up after its last tool result. The driver continues
+    the run in place under its own run id (agno would fork a completed
+    run instead, which is why the run is kept only after this).
 
     A bounded number of times, with a growing wait (``RESUME_BACKOFFS``).
     When the last resume fails too, the turn ends: the run is kept as an
@@ -654,16 +691,15 @@ async def _resume(session: Any, state: _RunState, attempt: int = 1) -> None:
     pressed during a wait is honored — the turn ends stopped, not
     resumed.
 
-    Only a ``RunError`` event leads here. An exception out of the run
-    loop is not a provider hiccup the next call can clear — it is the
-    studio, a tool hook or agno itself failing — and resuming into it
-    would repeat it.
+    Only an interrupted run leads here. A failed one is not a provider
+    hiccup the next call can clear — it is the studio, a tool hook or
+    the loop itself failing — and resuming into it would repeat it.
 
     On return ``state`` says how the turn ended: ``cancelled`` for a
     stop, ``errored`` holding the resume's own error when it failed
     the same way, and neither when the resumed run completed. An
-    exception out of the resume (agno refusing it, say) propagates to
-    the turn's own handler.
+    resume that fails outright (the loop refusing it, say) raises to the
+    turn's own handler.
     """
     wait = RESUME_BACKOFFS[attempt - 1]
     text = "provider error — resuming the turn where it stopped"
@@ -673,7 +709,7 @@ async def _resume(session: Any, state: _RunState, attempt: int = 1) -> None:
             f"(try {attempt} of {len(RESUME_BACKOFFS)})"
         )
     await session.emit({"type": "notice", "text": text})
-    if await _stopped_while_waiting(state.run_id, wait):
+    if await _stopped_while_waiting(session, state.run_id, wait):
         state.cancelled = True
         await session.emit({"type": "notice", "text": "turn stopped"})
         return
@@ -683,16 +719,8 @@ async def _resume(session: Any, state: _RunState, attempt: int = 1) -> None:
     # that may not finish.
     _settle_inbox(session)
     state.errored = None
-    await _follow_run(
-        session,
-        session.agent.acontinue_run(
-            run_id=state.run_id,
-            session_id=session.name,
-            stream=True,
-            stream_events=True,
-        ),
-        state,
-    )
+    assert state.run_id is not None  # an interrupted run has started
+    await _follow_run(session, session.driver.resume(state.run_id), state)
 
 
 async def _name_the_session(session: Any, registry: Any) -> None:

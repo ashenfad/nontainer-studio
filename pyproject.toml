@@ -70,7 +70,7 @@ build-backend = "hatchling.build"
 # main, so the studio's use shakes out what is unreleased there. The
 # lock isn't committed, so the commit is pinned here, and moved on by
 # hand. At the release this goes, and the floor above rises to it.
-nontainer = { git = "https://github.com/ashenfad/nontainer", rev = "41996186e460de23ff170456f1f666e5cd451fd0" }
+nontainer = { git = "https://github.com/ashenfad/nontainer", rev = "6471a59823421e642fb8bce5aafc6f4de0515d84" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["nontainer_studio"]

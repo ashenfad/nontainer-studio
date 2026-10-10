@@ -94,9 +94,7 @@ from .session import (
     Session,
     SweptSessionError,
     _load_events,
-    _record_delivery,
     _visible,
-    record_fold,
 )
 from .skills import SkillsMixin
 from .titles import (
@@ -742,7 +740,7 @@ class Registry(
             name=name,
             ws=ws,
             runtime=runtime,
-            agent=self._build_agent(
+            driver=self._build_driver(
                 name, ws, runtime, model, delegates, wsgit=wsgit, inbox=inbox
             ),
             db=db,
@@ -753,9 +751,6 @@ class Registry(
             inbox=inbox,
             log_path=log_dir / f"{name}.jsonl",
         )
-        # After the session exists, because what a delivery records is
-        # a transcript event on it.
-        inbox.on_delivered = _record_delivery(session)
         # What an edit unsaid stays unsaid across a restart.
         session.undone_delegates = {
             child
@@ -828,6 +823,27 @@ class Registry(
         sessions_tool.__name__ = "sessions"
         sessions_tool.__doc__ = SESSIONS_TOOL_DESCRIPTION
         return sessions_tool
+
+    def _build_driver(
+        self,
+        name: str,
+        ws: Workspace,
+        runtime: AppRuntime,
+        model: str | None = None,
+        delegates: Any = None,
+        *,
+        wsgit: bool = False,
+        inbox: Inbox,
+    ) -> Any:
+        """The loop a session's turns drive: its agno agent, as a
+        driver. The driver takes the inbox's deliveries into the turn's
+        stream, so it is built over the session's own inbox."""
+        from .drivers import AgnoDriver
+
+        agent = self._build_agent(
+            name, ws, runtime, model, delegates, wsgit=wsgit, inbox=inbox
+        )
+        return AgnoDriver(agent, inbox, name)
 
     def _build_agent(
         self,
@@ -1005,10 +1021,11 @@ class Registry(
         )
 
     def _fold_landed(self, name: str, fold: Any) -> None:
-        """A fold was made in ``name``'s turn: mark it in the transcript."""
+        """A fold was made in ``name``'s turn: hand it to the turn's
+        stream, which marks it in the transcript."""
         session = self.get(name)
         if session is not None:
-            record_fold(session, fold)
+            session.driver.folded(fold)
 
     # -- delegates: sessions the registry did not create ----------------------
 
@@ -1249,11 +1266,11 @@ class Registry(
     # -- model switching ----------------------------------------------------
 
     def set_model(self, session: Session, spec: str) -> None:
-        """Rebuild the session's agent on a different model. The chat
-        db is keyed by session_id, so the new agent keeps the whole
+        """Rebuild the session's driver on a different model. The chat
+        db is keyed by session_id, so the new driver keeps the whole
         conversation — switch models mid-project freely. Raises
         ValueError (via the model factory) on an unknown spec."""
-        session.agent = self._build_agent(
+        session.driver = self._build_driver(
             session.name,
             session.ws,
             session.runtime,

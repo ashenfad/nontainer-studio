@@ -14,7 +14,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from nontainer import Workspace
 from nontainer.apps import AppRuntime
@@ -23,10 +23,9 @@ from nontainer.errors import (
     SessionIdError,
     SessionsError,
 )
-from nontainer.inbox import Inbox, Note
+from nontainer.inbox import Inbox
 
 from .config import _delegate_wakes
-from .delegates import answer_message, answer_run
 
 log = logging.getLogger(__name__)
 
@@ -187,13 +186,15 @@ class Session:
     name: str
     ws: Workspace
     runtime: AppRuntime
-    agent: Any
+    driver: Any
+    """The loop this session's turns drive (``drivers.TurnDriver``),
+    rebuilt on a model switch."""
     db: Db
     turn_lock: threading.Lock
     model: str | None = None
     """This session's model spec (``provider:model``). Switchable mid-
     session — chat memory lives in the db keyed by session_id, so a
-    rebuilt agent keeps the conversation."""
+    rebuilt driver keeps the conversation."""
     """One agent turn at a time per session — chat 409s while a turn
     runs. Turns run as server-side tasks decoupled from the HTTP
     request, so disconnects/reloads/session switches never abort work."""
@@ -203,8 +204,8 @@ class Session:
     reference isn't the only one (the classic create_task GC footgun)."""
 
     run_id: str | None = None
-    """The running turn's agno run id, as soon as the stream reveals it
-    — the handle the stop button needs (agno's cancel-by-run-id)."""
+    """The running turn's run id, as soon as the stream reveals it —
+    the handle the stop button cancels by."""
 
     wsgit: bool = False
     """Whether the agent can type ``ws-git`` in this session's terminal:
@@ -523,88 +524,6 @@ def _wake(loop: asyncio.AbstractEventLoop, waiter: asyncio.Future) -> None:
         loop.call_soon_threadsafe(wake)
     except RuntimeError:
         pass
-
-
-def _delivery_event(note: Note) -> dict:
-    """The transcript event for a note the model has just read.
-
-    A delegate's answer taken mid-turn is the SAME fact as one
-    collected between turns, so it is the same `delegate` event: the
-    delivery record, `Session.undelivered` and the rail's waiting count
-    all read that event and would each miss an answer written down any
-    other way. Everything else is the person this session works for,
-    speaking mid-turn — an `interject`, which carries no `head` because
-    there is no pre-turn commit to rewind to: the turn it landed in
-    began before it was said, so an edit cannot start from here.
-    """
-    if note.kind == "mechanism" and note.job:
-        answer = note.answer
-        if answer is None:
-            return {
-                "type": "delegate",
-                "name": note.job,
-                "status": "answered",
-                "text": note.text,
-            }
-        return {
-            "type": "delegate",
-            "name": note.job,
-            "status": answer.status,
-            "text": answer_message(note.job, answer),
-            **answer_run(answer),
-        }
-    return {"type": "interject", "id": note.id, "text": note.text}
-
-
-def _record_delivery(session: "Session") -> Callable:
-    """The session's ``Inbox.on_delivered``: write down what the model
-    was just handed.
-
-    Called on the worker thread the tool ran on, since that is where
-    the delivery happens, and published there before the tool returns:
-    the transcript then says the note arrived BEFORE the tool result it
-    rode out with, which is the order it happened in. A failure is
-    logged and nothing more — the notes are already in the result the
-    model is about to read, and an exception escaping here would replace
-    that result with an error.
-    """
-
-    def record(notes: "list[Note]") -> None:
-        for note in notes:
-            try:
-                session.publish(_delivery_event(note))
-            except Exception:  # noqa: BLE001 - the tool result wins
-                log.warning(
-                    "inbox: note %s reached the model but not the transcript",
-                    note.id,
-                    exc_info=True,
-                )
-
-    return record
-
-
-def record_fold(session: "Session", fold: Any) -> None:
-    """Put a compaction marker in the transcript.
-
-    Called by nontainer's compaction on the worker thread the summary
-    was written on, mid-turn, and published there, as a delivery is. A
-    failure is logged and nothing more: the fold is recorded either way,
-    and the marker is only the person's view of it.
-    """
-    try:
-        session.publish(
-            {
-                "type": "compaction",
-                "turns": fold.runs,
-                "summary": fold.summary,
-                "tokens_before": fold.tokens_before,
-                "tokens_after": fold.tokens_after,
-            }
-        )
-    except Exception:  # noqa: BLE001 - the fold stands without its marker
-        log.warning(
-            "compaction: a fold reached the model but not the transcript", exc_info=True
-        )
 
 
 def _load_events(log_path: Path | None) -> list[dict]:

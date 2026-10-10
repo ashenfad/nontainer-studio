@@ -52,6 +52,13 @@ class FakeAgent:
         yield SimpleNamespace(event="RunCompleted")
 
 
+def _drive_with(session, agent) -> None:
+    """Swap the agno agent a live session's turns drive."""
+    from nontainer_studio.drivers import AgnoDriver
+
+    session.driver = AgnoDriver(agent, session.inbox, session.name)
+
+
 class GatedAgent(FakeAgent):
     """A FakeAgent that holds its turn open until a gate is set —
     a delegate that is still running while the test looks at it."""
@@ -323,18 +330,51 @@ def test_tool_result_without_note_emits_no_artifact_events(studio):
     assert not any(e["type"] == "artifact" for e in events)
 
 
-def test_tool_events_carry_the_call_id_and_whether_it_failed():
+def test_the_agno_driver_maps_tool_calls_with_their_id_and_failure():
     """A tool's start and end carry agno's call id, so the client pairs
     them when calls run in parallel; a call that raised ends with
     ``is_error``, and agno's ToolCallError after it adds nothing."""
     from agno.models.response import ToolExecution
     from agno.run.agent import RunEvent
+    from nontainer.turns import RunStarted, ToolEnded, ToolStarted
 
+    from nontainer_studio.drivers import _AgnoEvents
+
+    events = _AgnoEvents()
     started = ToolExecution(
         tool_call_id="c1", tool_name="terminal", tool_args={"command": "ls"}
     )
+    assert events.feed(
+        SimpleNamespace(
+            event=RunEvent.tool_call_started.value, tool=started, run_id="r1"
+        )
+    ) == [
+        RunStarted(run_id="r1"),
+        ToolStarted(call_id="c1", name="terminal", args={"command": "ls"}),
+    ]
+    failed = ToolExecution(
+        tool_call_id="c1", tool_name="terminal", tool_call_error=True, result="boom"
+    )
+    assert events.feed(
+        SimpleNamespace(event=RunEvent.tool_call_completed.value, tool=failed)
+    ) == [ToolEnded(call_id="c1", name="terminal", result="boom", is_error=True)]
+    assert (
+        events.feed(
+            SimpleNamespace(
+                event=RunEvent.tool_call_error.value, tool=failed, error="boom"
+            )
+        )
+        == []
+    )
+
+
+def test_tool_events_carry_the_call_id_and_whether_it_failed():
+    """The transcript's tool events carry the call id (None where a loop
+    gave none, so the client pairs by name) and whether it failed."""
+    from nontainer.turns import ToolEnded, ToolStarted
+
     assert turns._client_events(
-        SimpleNamespace(event=RunEvent.tool_call_started.value, tool=started)
+        ToolStarted(call_id="c1", name="terminal", args={"command": "ls"})
     ) == [
         {
             "type": "tool_start",
@@ -343,11 +383,8 @@ def test_tool_events_carry_the_call_id_and_whether_it_failed():
             "args": {"command": "ls"},
         }
     ]
-    failed = ToolExecution(
-        tool_call_id="c1", tool_name="terminal", tool_call_error=True, result="boom"
-    )
     assert turns._client_events(
-        SimpleNamespace(event=RunEvent.tool_call_completed.value, tool=failed)
+        ToolEnded(call_id="c1", name="terminal", result="boom", is_error=True)
     ) == [
         {
             "type": "tool_end",
@@ -357,19 +394,8 @@ def test_tool_events_carry_the_call_id_and_whether_it_failed():
             "result": "boom",
         }
     ]
-    assert (
-        turns._client_events(
-            SimpleNamespace(
-                event=RunEvent.tool_call_error.value, tool=failed, error="boom"
-            )
-        )
-        == []
-    )
-    ok = ToolExecution(tool_call_id="c2", tool_name="terminal", result="a.txt")
-    (ended,) = turns._client_events(
-        SimpleNamespace(event=RunEvent.tool_call_completed.value, tool=ok)
-    )
-    assert ended["is_error"] is False
+    (ended,) = turns._client_events(ToolEnded(call_id="", name="terminal"))
+    assert ended["call_id"] is None and ended["is_error"] is False
 
 
 def test_the_transcript_takes_events_from_any_thread_and_loop(studio):
@@ -3414,7 +3440,7 @@ def test_cancel_stops_the_turn_and_keeps_it_in_memory(studio):
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
     chat_db = FakeChatDb()
-    session.agent.db = chat_db
+    session.driver.agent.db = chat_db
     from agno.run.base import RunStatus
 
     chat_db.record = SimpleNamespace(
@@ -3469,7 +3495,7 @@ def test_aborted_run_is_kept_in_memory_and_not_resumed(studio):
     exploding = ExplodingAgent()
     chat_db = FakeChatDb()
     exploding.db = chat_db
-    session.agent = exploding
+    _drive_with(session, exploding)
     # simulate agno having stored the errored run (as it really does)
     chat_db.record = SimpleNamespace(
         runs=[SimpleNamespace(run_id="run-1", status=RunStatus.error, messages=[])]
@@ -3528,7 +3554,7 @@ def test_a_provider_error_the_resume_cannot_clear_is_kept_in_memory(studio):
     erroring = RunErrorAgent()
     chat_db = FakeChatDb()
     erroring.db = chat_db
-    session.agent = erroring
+    _drive_with(session, erroring)
     chat_db.record = SimpleNamespace(
         runs=[SimpleNamespace(run_id="run-1", status=RunStatus.error, messages=[])]
     )
@@ -3598,7 +3624,7 @@ def test_keeping_leaves_healthy_runs_alone(studio):
     chat_db.record = SimpleNamespace(
         runs=[SimpleNamespace(run_id="run-1", status=RunStatus.completed, messages=[])]
     )
-    session.agent.db = chat_db
+    session.driver.agent.db = chat_db
 
     turns._keep_aborted_run(session, "run-1", "whatever")
     assert chat_db.record.runs[0].messages == []  # untouched
@@ -3615,7 +3641,7 @@ def test_keeping_an_aborted_run_never_raises(studio, caplog):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
     session = registry.get("s1")
-    session.agent.db = BrokenDb()
+    session.driver.agent.db = BrokenDb()
 
     turns._keep_aborted_run(session, "run-1", "whatever")
     assert "could not keep aborted run run-1" in caplog.text
@@ -3714,7 +3740,7 @@ class LongExplodingAgent(FakeAgent):
 def test_error_event_tail_survives_capping(studio):
     client, registry = studio
     client.post("/api/sessions", json={"name": "s1"})
-    registry.get("s1").agent = LongExplodingAgent()
+    _drive_with(registry.get("s1"), LongExplodingAgent())
     client.post("/api/sessions/s1/chat", json={"message": "go"})
     events = _collect_until_done(client, "s1")
     error = next(e for e in events if e["type"] == "error")
@@ -7807,6 +7833,8 @@ def test_a_note_queued_mid_turn_rides_out_with_the_next_tool_result(scripted):
     # started, and with no `head` — the turn began before it was said,
     # so there is no pre-turn commit an edit could rewind to
     assert kinds.index("interject") > kinds.index("tool_start")
+    # and before the result it rode out on
+    assert "tool_end" in kinds[kinds.index("interject") :]
     assert "head" not in interject
 
     # the tool box shows the tool's own output, not the note
@@ -7943,7 +7971,7 @@ def test_a_stop_settles_what_was_delivered_and_keeps_what_was_not(tmp_path):
         started = client.post("/api/sessions/s1/chat", json={"message": "go"})
         events = _collect_until_done(client, "s1", since=started.json()["since"])
 
-        assert [n.id for n in session.agent.delivered] == [read.id]
+        assert [n.id for n in session.driver.agent.delivered] == [read.id]
         # settled: nothing will hand it to the model a second time
         assert session.inbox.delivered() == []
         # and the one that never reached it is still waiting, with no
