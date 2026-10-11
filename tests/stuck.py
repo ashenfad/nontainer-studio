@@ -50,6 +50,34 @@ def _tasks(loop: asyncio.AbstractEventLoop) -> str:
         return f"({e})"
 
 
+def _sandboxes() -> str:
+    """Every sandbox a local executor is running code in: its worker's
+    pid and, on Linux, the worker's state and signal masks, which say
+    whether an interrupt (SIGUSR1) can reach it."""
+    from nontainer.executor import LocalExecutor
+
+    out = []
+    for executor in gc.get_objects():
+        if not isinstance(executor, LocalExecutor):
+            continue
+        for sb in list(executor._running.values()):
+            process = getattr(sb, "_process", None)
+            pid = getattr(process, "pid", None)
+            line = f"--- {type(sb).__name__} worker pid={pid}"
+            if process is not None:
+                line += f" alive={process.is_alive()}"
+            try:
+                with open(f"/proc/{pid}/status") as f:
+                    keep = ("State", "SigBlk", "SigIgn", "SigCgt", "SigPnd", "ShdPnd")
+                    line += "\n" + "".join(
+                        row for row in f if row.split(":")[0] in keep
+                    )
+            except OSError:
+                pass
+            out.append(line)
+    return "\n".join(out) or "(none running)"
+
+
 def report(why: str) -> None:
     loops = [
         o
@@ -59,4 +87,5 @@ def report(why: str) -> None:
     parts = [f"===== stuck: {why}", _threads()]
     for loop in loops:
         parts.append(f"===== tasks on {loop!r}\n{_tasks(loop)}")
+    parts.append(f"===== sandboxes running code\n{_sandboxes()}")
     print("\n\n".join(parts), file=sys.stderr, flush=True)
