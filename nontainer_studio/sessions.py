@@ -818,6 +818,12 @@ class Registry(
                 # what this session already has cost nothing and are
                 # how it finishes with them.
                 return _depth_refusal(self.delegate_depth)
+            # A delegate asked before a restart has no job to resume,
+            # and saying only "no job named" reads as never having been.
+            target = resume or (name if action == "resume" else "")
+            parted = self.parted_by_restart(owner, delegates, target)
+            if parted is not None:
+                return parted
             # An action that can hand back an answer goes through a
             # helper that notes it: the answer reaches the model as this
             # call's result, and the transcript has to say so.

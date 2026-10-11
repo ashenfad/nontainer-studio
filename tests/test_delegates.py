@@ -2025,6 +2025,39 @@ def _asked_before_a_restart(tmp_path):
         registry.close()
 
 
+def test_a_resume_of_a_delegate_from_before_a_restart_says_why_it_cant(tmp_path):
+    """A resume continues a job, and the restart took the job: nontainer
+    finds no job of the name and would say only that, which reads as a
+    delegate that never was. The tool says what became of it instead,
+    whichever way the resume is spelled."""
+    _asked_before_a_restart(tmp_path)
+
+    registry = _reborn(tmp_path)
+    try:
+        parent = registry.open("boss")
+        for call in (
+            {"action": "resume", "name": "scout", "task": "!text more"},
+            {"action": "ask", "resume": "boss.scout", "task": "!text more"},
+        ):
+            events = _turn(
+                parent, f"!tool sessions {json.dumps(call)}\n!text ok", registry
+            )
+            (said,) = _tool_results(events, "sessions")
+            assert said.startswith("sessions resume: `boss.scout` was asked before")
+            assert "ws-git merge boss.scout" in said
+            assert "sessions ask" in said
+        # a name the studio never recorded is nontainer's to answer
+        events = _turn(
+            parent,
+            '!tool sessions {"action": "resume", "name": "nobody", "task": "x"}\n'
+            "!text ok",
+            registry,
+        )
+        assert "no job named" in _tool_results(events, "sessions")[0]
+    finally:
+        registry.close()
+
+
 def test_a_delegate_from_before_a_restart_is_named_on_the_next_turn(tmp_path):
     """The job table is per process and the branch is in the store, so
     a restart parts them: the answer is gone and the branch is not.

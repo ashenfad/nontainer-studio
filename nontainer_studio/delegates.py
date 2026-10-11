@@ -253,6 +253,24 @@ def orphan_message(name: str, *, versioning: bool) -> str:
     )
 
 
+def parted_message(name: str, *, versioning: bool) -> str:
+    """The `sessions` tool's answer to a resume of ``name``, a delegate
+    asked before the studio restarted.
+
+    A resume continues a job, and the job table a restart takes is where
+    the job lived, so nontainer finds no job of that name and says only
+    that. The delegate is still recorded and its branch still there, and
+    a model told only "no job named" concludes it never existed.
+    """
+    return (
+        f"sessions resume: `{name}` was asked before the studio restarted, "
+        "and a restart takes the job a resume continues, so it can't be "
+        "resumed.\n"
+        + (ORPHAN_VERSIONING.format(name=name) if versioning else "")
+        + "To put more work to a delegate, ask afresh with `sessions ask`."
+    )
+
+
 WAKE_MESSAGE = (
     "[the studio's delegation mechanism speaking, not the person at the "
     "keyboard: they have said nothing new. This turn started because the "
@@ -774,6 +792,23 @@ class DelegationMixin:
         the delegate's worker thread, so a hook hands the name over to
         wherever it does its work rather than doing it there."""
         self._wake_hook = hook
+
+    def parted_by_restart(self, owner: str, delegates: Any, target: str) -> str | None:
+        """What a resume of ``target`` gets when a restart parted it from
+        its job (:func:`parted_message`): one of ``owner``'s delegates
+        the studio recorded, which its helper holds no job for. ``None``
+        for any other name, which nontainer answers itself."""
+        target = target.strip()
+        if not target or delegates is None:
+            return None
+        full = target if target.startswith(f"{owner}.") else f"{owner}.{target}"
+        if any(job.name == full for job in delegates.list()):
+            return None
+        entry = self._manifest()["delegates"].get(full)
+        if entry is None or entry.get("parent") != owner:
+            return None
+        session = self.get(owner)
+        return parted_message(full, versioning=bool(session and session.wsgit))
 
     def answers_returned(self, owner: str, result: str, answers: list[Answer]) -> None:
         """``answers``, which ``owner``'s `sessions` tool is returning
