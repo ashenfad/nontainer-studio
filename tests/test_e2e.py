@@ -351,6 +351,10 @@ def test_stop_button_cancels_the_turn(page, server):
     stop = page.locator(".send-btn.stop")
     expect(stop).to_be_visible(timeout=5000)
     stop.click()
+    # time.sleep runs out though interrupted, so the stop says what it waits on
+    expect(
+        page.locator(".notice", has_text="stopping after the running call finishes")
+    ).to_be_visible(timeout=10000)
     expect(page.locator(".notice", has_text="turn stopped")).to_be_visible(
         timeout=20000
     )
