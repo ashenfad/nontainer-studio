@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -62,6 +63,54 @@ by then. The waits grow so a later resume lands after the outage
 rather than inside it. A stop pressed during any wait is honored and
 the run is not resumed.
 """
+
+
+INTERRUPT_EVERY = 0.25
+"""Seconds between interrupts of the call a stop is waiting on. The
+first can miss a call that has not reached its sandbox yet; a later
+one stops it once it gets there."""
+
+STOP_NOTICE_AFTER = 2.0
+"""Seconds a stop waits on a running call before the transcript says
+what it is waiting on. An interrupted call stops well inside this; one
+that does not (a single long blocking call, or a tool that runs outside
+the sandbox) would otherwise leave the human looking at a stop that
+did nothing."""
+
+
+async def stop(session: Any) -> None:
+    """Stop the running turn: the driver cancels the run, and the tool
+    call running is interrupted (``ws.runtime.interrupt()``) until the
+    turn ends, rather than waited out."""
+    await session.driver.cancel(session.run_id)
+    task = session.turn_task
+    watch = session.stop_watch
+    if task is not None and not task.done() and (watch is None or watch.done()):
+        session.stop_watch = asyncio.create_task(_interrupt_until_done(session, task))
+
+
+async def _interrupt_until_done(session: Any, task: asyncio.Task) -> None:
+    stopped = time.monotonic()
+    told = False
+    while not task.done():
+        session.ws.runtime.interrupt()
+        call = session.running_call
+        if (
+            call is not None
+            and not told
+            and time.monotonic() - stopped >= STOP_NOTICE_AFTER
+        ):
+            name, since = call
+            took = int(time.monotonic() - since)
+            await session.emit(
+                {
+                    "type": "notice",
+                    "text": f"stopping after the running call finishes "
+                    f"({name}, {took}s so far)",
+                }
+            )
+            told = True
+        await asyncio.wait({task}, timeout=INTERRUPT_EVERY)
 
 
 def _gave_up(failures: int, last: str) -> str:
@@ -306,7 +355,12 @@ async def _follow_run(
     :class:`_RunFailed`.
     """
     session.drop_returned()
+    session.running_call = None
     async for ev in stream:
+        if isinstance(ev, ToolStarted):
+            session.running_call = (ev.name, time.monotonic())
+        elif isinstance(ev, ToolEnded):
+            session.running_call = None
         if isinstance(ev, ToolEnded) and ev.name == "sessions":
             # An answer the call returned is delivered once the run
             # reports the call ended, with its result in the run: one
@@ -662,6 +716,7 @@ async def _one_turn(
         # turn end — the commit <-> conversation mapping that lets a
         # rewind put the agent's memory back in sync with the files.
         session.run_id = None
+        session.running_call = None
         await session.emit(
             {"type": "done", "run_id": state.run_id, "head": session.ws.head}
         )

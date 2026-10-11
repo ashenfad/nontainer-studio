@@ -8226,6 +8226,65 @@ def test_a_stopped_turn_is_kept_and_not_resumed(scripted):
     assert "stopped by the user" in runs[0].messages[-1].content
 
 
+FOREVER = '!tool run_python {"code": "while True:\\n    pass"}\n!text never said'
+
+
+def _no_tick_limit(monkeypatch):
+    """Code that only a stop ends: no tick limit to end it first."""
+    from dataclasses import replace
+
+    config = sessions_mod.Registry._python_config
+    monkeypatch.setattr(
+        sessions_mod.Registry,
+        "_python_config",
+        staticmethod(lambda *a, **kw: replace(config(*a, **kw), tick_limit=None)),
+    )
+
+
+def test_a_stop_interrupts_the_call_running(scripted, monkeypatch):
+    """The tool call is stopped where it runs, not waited out: code
+    that would never end does, and the turn ends stopped."""
+    _no_tick_limit(monkeypatch)
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    started = client.post("/api/sessions/s1/chat", json={"message": FOREVER})
+    _await(lambda: session.running_call is not None)
+    t0 = time.monotonic()
+    assert client.post("/api/sessions/s1/cancel", json={}).status_code == 200
+    events = _collect_until_done(client, "s1", since=started.json()["since"])
+
+    assert time.monotonic() - t0 < 5
+    assert _notices(events) == ["turn stopped"]  # nothing to wait on
+    runs = _stored_runs(registry, "s1")
+    assert "stopped by the user" in runs[-1].messages[-1].content
+
+
+def test_a_stop_says_what_it_is_waiting_on(scripted, monkeypatch):
+    """A single blocking call runs out though interrupted; the
+    transcript says what the stop waits on rather than look ignored."""
+    monkeypatch.setattr(turns, "STOP_NOTICE_AFTER", 0.3)
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    started = client.post(
+        "/api/sessions/s1/chat",
+        json={"message": '!tool run_python {"code": "import time; time.sleep(3)"}'},
+    )
+    _await(lambda: session.running_call is not None)
+    assert client.post("/api/sessions/s1/cancel", json={}).status_code == 200
+    events = _collect_until_done(client, "s1", since=started.json()["since"])
+
+    waiting, stopped = _notices(events)
+    assert re.fullmatch(
+        r"stopping after the running call finishes \(run_python, \ds so far\)",
+        waiting,
+    ), waiting
+    assert stopped == "turn stopped"
+
+
 def test_a_stop_during_the_wait_is_not_resumed(scripted, monkeypatch):
     """The wait before a resume is part of the turn, and the stop button
     reaches it: the run is kept as stopped by the user instead of being
