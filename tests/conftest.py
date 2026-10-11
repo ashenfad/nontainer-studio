@@ -47,3 +47,11 @@ def no_resume_backoff(monkeypatch):
     outage; a test's failures are scripted and clear at once. A test of
     the wait itself sets its own."""
     monkeypatch.setattr(turns, "RESUME_BACKOFFS", (0, 0, 0))
+
+
+@pytest.fixture(autouse=True)
+def no_stop_notice(monkeypatch):
+    """Whether a stop's call outlasts its notice delay is timing; a
+    test that stops a blocking call would see the notice on a slow
+    runner only. A test of the notice sets its own delay."""
+    monkeypatch.setattr(turns, "STOP_NOTICE_AFTER", 3600.0)
