@@ -211,6 +211,10 @@ class Session:
     """The running turn's run id, as soon as the stream reveals it —
     the handle the stop button cancels by."""
 
+    cut_reason: str | None = None
+    """Why the running turn's task is being cut, when that is a stop
+    rather than the studio shutting down: what its run is kept with."""
+
     turn_started: float = 0.0
     """When the session's latest turn began (``time.time()``): the
     delegates a stop takes with it are the ones asked for since."""
