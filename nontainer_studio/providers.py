@@ -351,13 +351,44 @@ def agex_model(spec: str) -> Any:
     """The model agex's ``Agent`` takes for ``spec``: its name in
     pydantic-ai's ``provider:model`` form, which agex resolves itself
     (each provider through its own extra), or the scripted test model's
-    provider."""
+    provider. An OpenRouter ``@slug`` tag is routing, not part of the
+    name (see :func:`agex_extra`)."""
     provider, model = parse_spec(spec)
     if provider == "dummy":
         from .agex_dummy import DummyProvider
 
         return DummyProvider()
+    if provider == "openrouter":
+        model = _split_openrouter_tag(model)[0]
     return f"{provider}:{model}"
+
+
+def agex_extra(spec: str) -> dict[str, Any]:
+    """The pydantic-ai model settings an agex session sends for ``spec``
+    beyond its thinking: what :func:`build_model` gives the same model
+    on agno.
+
+    - OpenRouter's provider routing (``openrouter_provider``): an
+      ``@slug`` pin, or the routing a model needs (gemma's).
+    - Prompt caching for Claude (``cache``), directly or through
+      OpenRouter: Claude caches only when asked (see ``_CLAUDE_CACHE``).
+
+    Empty for a spec it can't read, as for the scripted model.
+    """
+    try:
+        provider, model = parse_spec(spec)
+    except ValueError:
+        return {}
+    extra: dict[str, Any] = {}
+    if provider == "openrouter":
+        model, routing = _openrouter_routing(model)
+        if routing:
+            extra["openrouter_provider"] = routing
+    if provider == "anthropic" or (
+        provider == "openrouter" and model.startswith("anthropic/")
+    ):
+        extra["cache"] = True
+    return extra
 
 
 def supports_vision(spec: str | None) -> bool:
@@ -422,6 +453,30 @@ def compaction_policy(spec: str | None) -> Any:
     if window is not None and window <= budget:
         window = None  # an override past the window: no window to promise
     return Policy(budget=budget, window=window)
+
+
+# gemma-4's native tool-call format (token-level, not JSON) needs a
+# provider-side parser, and quality varies wildly (surveyed 2026-07 with
+# 10-15KB file_write calls): Novita doubled token pairs (`<div>` ->
+# `<<divdiv>`, ~50%); google-vertex silently truncates args at ~3.6KB
+# while reporting finish_reason=tool_calls; DeepInfra, Cloudflare, and
+# Venice were clean at 10-15KB.
+_GEMMA_ROUTING: dict[str, Any] = {
+    "order": ["deepinfra", "cloudflare"],
+    "ignore": ["novita", "google-vertex"],
+}
+
+
+def _openrouter_routing(model: str) -> tuple[str, dict | None]:
+    """``model``'s base id and the provider routing OpenRouter gets for
+    it: an ``@slug`` pin, which outranks curated routing, else the
+    routing a model needs (gemma's), else none."""
+    base, pin = _split_openrouter_tag(model)
+    if pin:
+        return base, pin
+    if base.startswith("google/gemma"):
+        return base, dict(_GEMMA_ROUTING)
+    return base, None
 
 
 def _split_openrouter_tag(model: str) -> tuple[str, dict | None]:
@@ -654,8 +709,9 @@ def _construct_model(spec: str | None = None, *, stream: bool = True) -> Any:
 
         return OpenAIChat(id=model)
     if provider == "openrouter":
-        # optional `@slug[/quant]` tag: pin the upstream provider
-        model, pin = _split_openrouter_tag(model)
+        # an optional `@slug[/quant]` tag pins the upstream provider;
+        # some models get curated routing instead
+        model, routing = _openrouter_routing(model)
         # gpt-5.6 rejects tools + reasoning on chat-completions (and
         # OpenRouter injects a default reasoning effort) — those models
         # ride OpenRouter's Responses endpoint instead.
@@ -667,7 +723,7 @@ def _construct_model(spec: str | None = None, *, stream: bool = True) -> Any:
                 id=model,
                 max_output_tokens=16384,
                 reasoning_summary="auto",
-                extra_body={"provider": pin} if pin else None,
+                extra_body={"provider": routing} if routing else None,
             )
         extra_body = None
         max_tokens = 16384  # the agno default (1024) truncates real coding turns
@@ -683,23 +739,8 @@ def _construct_model(spec: str | None = None, *, stream: bool = True) -> Any:
             # direct path sends, from the same setting.
             extra_body = {"reasoning": {"effort": _effort()}, **_CLAUDE_CACHE}
             max_tokens = _claude_max_tokens(_openrouter_max_output(model))
-        if model.startswith("google/gemma"):
-            # gemma-4's native tool-call format (token-level, not JSON)
-            # needs a provider-side parser, and quality varies wildly
-            # (surveyed 2026-07 with 10-15KB file_write calls): Novita
-            # doubled token pairs (`<div>` -> `<<divdiv>`, ~50%);
-            # google-vertex silently truncates args at ~3.6KB while
-            # reporting finish_reason=tool_calls; DeepInfra, Cloudflare,
-            # and Venice were clean at 10-15KB.
-            extra_body = {
-                "provider": {
-                    "order": ["deepinfra", "cloudflare"],
-                    "ignore": ["novita", "google-vertex"],
-                }
-            }
-        if pin:
-            # an explicit @tag outranks curated routing (gemma defaults)
-            extra_body = {**(extra_body or {}), "provider": pin}
+        if routing:
+            extra_body = {**(extra_body or {}), "provider": routing}
         return _safe_openrouter()(
             id=model, max_tokens=max_tokens, extra_body=extra_body
         )

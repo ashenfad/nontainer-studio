@@ -225,6 +225,31 @@ def test_openrouter_at_tag_pins_the_upstream_provider():
     assert model.extra_body["provider"]["order"] == ["anthropic"]
 
 
+def test_an_agex_session_gets_the_routing_and_caching_agno_does():
+    """agex is handed the model by name, and the rest of what agno's
+    model is built with as pydantic-ai settings: the pin (its tag kept
+    out of the name), gemma's curated routing, and caching for Claude,
+    which caches only when asked."""
+    from nontainer_studio.providers import agex_extra, agex_model
+
+    pinned = "openrouter:qwen/qwen3.6-35b-a3b@wandb/fp8"
+    assert agex_model(pinned) == "openrouter:qwen/qwen3.6-35b-a3b"
+    assert agex_extra(pinned) == {
+        "openrouter_provider": _shape(pinned).extra_body["provider"]
+    }
+    gemma = "openrouter:google/gemma-4-26b-a4b-it"
+    assert agex_extra(gemma) == {
+        "openrouter_provider": _shape(gemma).extra_body["provider"]
+    }
+    assert agex_extra("anthropic:claude-sonnet-5-5") == {"cache": True}
+    assert agex_extra("openrouter:anthropic/claude-sonnet-5@anthropic") == {
+        "openrouter_provider": {"order": ["anthropic"], "allow_fallbacks": False},
+        "cache": True,
+    }
+    assert agex_extra("openrouter:meta/muse-spark-1.3-contributor") == {}
+    assert agex_extra("dummy") == {}
+
+
 def test_openrouter_tag_is_ignored_for_catalog_metadata(monkeypatch):
     from nontainer_studio import providers
 

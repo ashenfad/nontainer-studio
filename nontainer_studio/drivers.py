@@ -317,7 +317,7 @@ class AgexDriver:
         from nontainer.adapters.render import PYTHON_UI_NOTE, resolve_tools_mode
         from nontainer.adapters.tools import Toolset
 
-        from .providers import _effort
+        from .providers import _effort, agex_extra
 
         ws = spec.ws
         primer = spec.python_primer
@@ -336,7 +336,7 @@ class AgexDriver:
         agent = Agent(
             model,
             primer=spec.instructions,
-            settings=Settings(thinking=_effort()),
+            settings=Settings(thinking=_effort(), extra=agex_extra(spec.model)),
             # counted per call, as agno's tool_call_limit is, however
             # many calls a reply makes
             max_tool_calls=spec.tool_calls,

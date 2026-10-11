@@ -463,6 +463,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bad key was resumed three times, over a minute and a half, before the
   turn failed; a resume sends the same request again.
 
+- **An agex session gets the routing and caching an agno one does.** An
+  OpenRouter `@slug` pin, gemma's curated routing and Claude's prompt
+  caching now reach agex too; Claude on agex had cached nothing.
+
 - **An agex run the studio stops resuming is closed with its note.** When
   every resume fails, or a stop lands while it waits, the run ends with
   the note agno's gets, so the next turn's model knows where its work

@@ -157,6 +157,20 @@ def test_a_text_only_model_is_offered_no_view_image(studio):
     assert "view_image" not in offered and "test_app" in offered
 
 
+def test_an_agex_session_sends_its_models_settings(studio):
+    """What the studio sends a model on agno beyond its thinking reaches
+    the agex session too: caching for Claude, a pin for OpenRouter."""
+    client, registry, scripts = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    registry.set_model(session, "anthropic:claude-sonnet-5-5")
+    assert session.driver.session.agent.settings.extra == {"cache": True}
+    registry.set_model(session, "openrouter:qwen/qwen3.6-35b-a3b@deepinfra")
+    assert session.driver.session.agent.settings.extra == {
+        "openrouter_provider": {"order": ["deepinfra"], "allow_fallbacks": False}
+    }
+
+
 def test_a_session_stays_on_the_loop_that_wrote_its_conversation(studio, monkeypatch):
     """The knob picks a new session's loop; one holding a conversation
     stays on the loop that wrote it, whatever the knob says."""
