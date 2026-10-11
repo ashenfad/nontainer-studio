@@ -463,6 +463,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A stop no longer waits out a long tool call.** The running call is
+  interrupted on both loops, and one that keeps the stop waiting (a
+  single long blocking call) has the transcript say what it waits on.
+
 - **A request the provider refuses ends the turn at once.** A 400 or a
   bad key was resumed three times, over a minute and a half, before the
   turn failed; a resume sends the same request again.
