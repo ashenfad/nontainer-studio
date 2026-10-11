@@ -70,12 +70,21 @@ nontainer-studio = "nontainer_studio.server:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv.sources]
+[tool.uv]
 # Until nontainer's next release the studio runs on a commit of its
 # main, so the studio's use shakes out what is unreleased there. The
 # lock isn't committed, so the commit is pinned here, and moved on by
-# hand. At the release this goes, and the floor above rises to it.
-nontainer = { git = "https://github.com/ashenfad/nontainer", rev = "59fe19349264f83d34caeb2fd839713ab266fd89" }
+# hand. At the release this goes, and the floor above rises to it. An
+# override rather than a source: agex names nontainer's main as its own
+# source, which uv reads from a git dependency, and the two would
+# conflict; an override is the one nontainer for the whole tree. It
+# replaces every nontainer requirement, extras and all, so it names the
+# extras the dependencies above ask for.
+override-dependencies = [
+    "nontainer[agno,apps] @ git+https://github.com/ashenfad/nontainer@59fe19349264f83d34caeb2fd839713ab266fd89",
+]
+
+[tool.uv.sources]
 # agex is unreleased until its shape freeze; a commit of its rebuild
 # branch, moved on by hand, as nontainer's above is.
 agex = { git = "https://github.com/ashenfad/agex", rev = "4d78576c535042b4379f0ff372a7acc8263ad4d9" }
