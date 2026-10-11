@@ -651,13 +651,54 @@ class StudioRunner:
         while not child.turn_lock.acquire(blocking=False):  # _run_turn releases it
             await asyncio.sleep(_LOCK_POLL)
         since = child.next_seq
-        await _run_turn(child, prompt, self._registry)
+        # A task of its own, held where a human's turn is, so a cancel of
+        # this run stops the turn the way the stop button does: its run
+        # ended with a note, its running call interrupted, its own
+        # delegates stopped. Only the studio shutting down cuts it.
+        turn = asyncio.ensure_future(_run_turn(child, prompt, self._registry))
+        child.turn_task = turn
+        cancelled = False
+        stopping: asyncio.Future | None = None
+        while True:
+            try:
+                await asyncio.shield(turn)
+                break
+            except asyncio.CancelledError:
+                if turn.done():
+                    raise  # the turn itself was cut, and has said so
+                cancelled = True
+                if self._registry.stopping:
+                    turn.cancel()
+                elif stopping is None:
+                    stopping = asyncio.ensure_future(_stop_turn(child, turn))
+        if cancelled:
+            raise asyncio.CancelledError
         return _reply(child, since)
 
 
 #: How often a delegate's turn looks again for its session's turn lock
 #: while something else holds it, in seconds.
 _LOCK_POLL = 0.05
+
+#: How long a stopped delegate's turn may take to name its run before
+#: it is cut instead, in seconds.
+_RUN_ID_WAIT = 2.0
+
+
+async def _stop_turn(child: "Session", turn: asyncio.Future) -> None:
+    """Stop ``child``'s turn as the stop button would, once its run has
+    an id to cancel by; one that never gets one is cut."""
+    from .turns import stop
+
+    deadline = asyncio.get_running_loop().time() + _RUN_ID_WAIT
+    while child.run_id is None and not turn.done():
+        if asyncio.get_running_loop().time() >= deadline:
+            turn.cancel()
+            return
+        await asyncio.sleep(_LOCK_POLL)
+    if not turn.done():
+        await stop(child)
+
 
 SHUT_DOWN = "the studio shut down"
 """Why a delegate asked for as the studio stopped did nothing."""

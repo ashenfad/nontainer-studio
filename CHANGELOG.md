@@ -463,6 +463,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A stop takes the turn's delegates with it.** The delegates the stopped turn asked for that are still at work are stopped too, each its own running call and delegates as well, so a turn waiting on one ends at once; the transcript and the run's note name them, and delegates from earlier turns go on.
+
+- **A stopped call ends in the transcript, saying why.** On agno it had no ending and read as a finished call; on both loops its result now names the stop rather than reading like a time limit.
+
 - **A stop no longer waits out a long tool call.** The running call is
   interrupted on both loops, and one that keeps the stop waiting (a
   single long blocking call) has the transcript say what it waits on.
