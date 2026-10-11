@@ -559,10 +559,27 @@ _RETRIES = 2
 _RETRY_DELAY = 2
 
 
+class RequestRefused(Exception):
+    """A provider error agno declines to retry: a request the provider
+    refused (a 400, a bad key, a prompt past the context window).
+
+    Raised in place of agno's ``ModelProviderError``, whose ``error_type``
+    names every provider error alike, so the run's error says the
+    request was refused. Resuming the run would send the same request,
+    and the provider would refuse it again.
+    """
+
+    type = "model_request_refused"
+    """agno's ``error_type`` for it on the run's error event."""
+
+
 def _with_retries(model: Any) -> Any:
     """Apply the model-call retry policy. Set as attributes rather than
     constructor kwargs: every branch below builds a different class, and
-    these are plain ``Model`` dataclass fields on all of them."""
+    these are plain ``Model`` dataclass fields on all of them.
+
+    agno's own check of which errors are worth retrying stays the rule,
+    and an error it won't retry is raised as :class:`RequestRefused`."""
     for field, value in (
         ("retries", _RETRIES),
         ("delay_between_retries", _RETRY_DELAY),
@@ -570,6 +587,19 @@ def _with_retries(model: Any) -> Any:
     ):
         if hasattr(model, field):
             setattr(model, field, value)
+    retryable = getattr(model, "_is_retryable_error", None)
+    if retryable is not None:
+
+        def is_retryable(error: Any) -> bool:
+            if retryable(error):
+                return True
+            code = getattr(error, "status_code", None)
+            said = f" ({code})" if code else ""
+            raise RequestRefused(
+                f"the model provider refused the request{said}: {error}"
+            ) from error
+
+        model._is_retryable_error = is_retryable
     return model
 
 
