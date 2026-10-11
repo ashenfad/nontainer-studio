@@ -82,13 +82,13 @@ build-backend = "hatchling.build"
 # replaces every nontainer requirement, extras and all, so it names the
 # extras the dependencies above ask for.
 override-dependencies = [
-    "nontainer[agno,apps] @ git+https://github.com/ashenfad/nontainer@b09a62a94a4950bdefc81fafce48b00b4a5e7554",
+    "nontainer[agno,apps] @ git+https://github.com/ashenfad/nontainer@50a97513dffd3ea603bd347f51b3c6c2cd66ee7a",
 ]
 
 [tool.uv.sources]
 # agex is unreleased until its shape freeze; a commit of its rebuild
 # branch, moved on by hand, as nontainer's above is.
-agex = { git = "https://github.com/ashenfad/agex", rev = "fd61c6c474102085e74df27ed66a2f54f0106118" }
+agex = { git = "https://github.com/ashenfad/agex", rev = "ff331866d0db79b83efd03ab5b9e145e4516fa90" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["nontainer_studio"]

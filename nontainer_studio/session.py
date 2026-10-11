@@ -211,6 +211,10 @@ class Session:
     """The running turn's run id, as soon as the stream reveals it —
     the handle the stop button cancels by."""
 
+    turn_started: float = 0.0
+    """When the session's latest turn began (``time.time()``): the
+    delegates a stop takes with it are the ones asked for since."""
+
     running_call: tuple[str, float] | None = None
     """The tool call in flight, by name and when it started
     (``time.monotonic()``): what a stop waits on when it waits."""

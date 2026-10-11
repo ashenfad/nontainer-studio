@@ -8257,6 +8257,9 @@ def test_a_stop_interrupts_the_call_running(scripted, monkeypatch):
 
     assert time.monotonic() - t0 < 5
     assert _notices(events) == ["turn stopped"]  # nothing to wait on
+    # the call ends in the transcript, failed, and says why, on agno too
+    (end,) = [e for e in events if e["type"] == "tool_end"]
+    assert end["is_error"] and "(stopped by the user)" in end["result"]
     runs = _stored_runs(registry, "s1")
     assert "stopped by the user" in runs[-1].messages[-1].content
 

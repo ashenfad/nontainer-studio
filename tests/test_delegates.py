@@ -2911,3 +2911,110 @@ def test_a_delegates_answer_is_its_final_reply_not_its_narration():
     )
     assert _reply(ended_on_a_tool, 0) == ("Half done.", "provider error")
     assert _reply(turn({"type": "tool_start"}), 0) == ("", None)
+
+
+# -- a stop takes the turn's delegates with it --------------------------------
+
+#: A minute of work that a stop can interrupt: a loop that checks in
+#: every 10ms, so a stop that never reaches it shows as a minute.
+SLOW_MINUTE = json.dumps(
+    {"code": "import time\nfor i in range(6000):\n    time.sleep(0.01)\nprint('done')"}
+)
+
+
+def _studio(registry):
+    from starlette.testclient import TestClient
+
+    from nontainer_studio import server
+
+    return TestClient(server.build_app(registry))
+
+
+def _until_done(client, name, since, timeout=30):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        events = client.get(f"/api/sessions/{name}/events?since={since}&wait=0").json()[
+            "events"
+        ]
+        if any(e["type"] == "done" for e in events):
+            return events
+        time.sleep(0.05)
+    raise AssertionError(f"{name}: no done within {timeout}s")
+
+
+def _until(predicate, timeout=30):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.05)
+    raise AssertionError("condition never held")
+
+
+def test_a_stop_stops_the_delegate_the_turn_waits_on(registry):
+    """A stop while the turn waits on its delegate ends the turn at once
+    and the delegate's work with it: its job is cancelled, its own
+    running call interrupted, and both runs say why."""
+    task = f"!tool run_python {SLOW_MINUTE}\n!text never said"
+    ask = (
+        "!tool sessions "
+        + json.dumps({"action": "ask", "name": "scout", "wait": True, "task": task})
+        + "\n!text never said either"
+    )
+    with _studio(registry) as client:
+        client.post("/api/sessions", json={"name": "boss"})
+        boss = registry.get("boss")
+        since = client.post("/api/sessions/boss/chat", json={"message": ask}).json()[
+            "since"
+        ]
+
+        def scout_running():
+            scout = registry.get("boss.scout")
+            return scout is not None and scout.running_call is not None
+
+        _until(scout_running)
+        scout = registry.get("boss.scout")
+        t0 = time.monotonic()
+        assert client.post("/api/sessions/boss/cancel", json={}).status_code == 200
+        events = _until_done(client, "boss", since)
+        assert time.monotonic() - t0 < 15  # not the scout's minute
+
+        notices = [e["text"] for e in events if e["type"] == "notice"]
+        assert notices == ["stopping its delegate `scout`", "turn stopped"]
+        assert [j.status for j in boss.delegates.list()] == ["cancelled"]
+        # the scout's turn ended too, its call stopped rather than run out
+        _until(lambda: not scout.busy, timeout=15)
+        assert time.monotonic() - t0 < 20
+        (scout_run,) = loops.stored_runs(scout)
+        assert "stopped by the user" in scout_run.messages[-1].content
+    (boss_run,) = loops.stored_runs(registry.open("boss"))
+    assert "and with it its delegate `scout`" in boss_run.messages[-1].content
+
+
+def test_a_stop_leaves_an_earlier_turns_delegate_at_work(registry):
+    """A delegate asked for by a turn that has ended is no part of the
+    one stopped, and goes on."""
+    task = f"!tool run_python {SLOW_MINUTE}\n!text Done."
+    ask = (
+        "!tool sessions "
+        + json.dumps({"action": "ask", "name": "scout", "task": task})
+        + "\n!text Sent a scout."
+    )
+    with _studio(registry) as client:
+        client.post("/api/sessions", json={"name": "boss"})
+        boss = registry.get("boss")
+        first = client.post("/api/sessions/boss/chat", json={"message": ask}).json()
+        _until_done(client, "boss", first["since"])
+
+        since = client.post(
+            "/api/sessions/boss/chat",
+            json={"message": f"!tool run_python {SLOW_MINUTE}\n!text never said"},
+        ).json()["since"]
+        _until(lambda: boss.running_call is not None)
+        assert client.post("/api/sessions/boss/cancel", json={}).status_code == 200
+        events = _until_done(client, "boss", since)
+
+        assert [e["text"] for e in events if e["type"] == "notice"] == ["turn stopped"]
+        assert [j.status for j in boss.delegates.list()] == ["running"]
+        for job in boss.delegates.list():
+            boss.delegates.cancel(job.name)  # done with it

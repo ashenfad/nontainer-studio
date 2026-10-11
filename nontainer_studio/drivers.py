@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from agno.run.cancel import ais_cancelled
-from nontainer.adapters.agno import keep_aborted_run
+from nontainer.adapters.agno import cut_off, keep_aborted_run
 from nontainer.inbox import Inbox, Note, split
 from nontainer.turns import (
     Compacted,
@@ -94,9 +94,10 @@ class TurnDriver(Protocol):
         """Run ``run_id`` on from where it was interrupted, in place."""
         ...
 
-    async def cancel(self, run_id: str) -> None:
-        """Stop ``run_id`` at its next chance. Idempotent, and a run not
-        running now records the intent (:meth:`is_cancelled`)."""
+    async def cancel(self, run_id: str, reason: str = STOPPED_BY_USER) -> None:
+        """Stop ``run_id`` at its next chance, ``reason`` saying why in
+        the run's closing note. Idempotent, and a run not running now
+        records the intent (:meth:`is_cancelled`)."""
         ...
 
     async def is_cancelled(self, run_id: str) -> bool:
@@ -124,6 +125,8 @@ class AgnoDriver:
         self.agent = agent
         self.session = session
         self._side: Callable[[TurnEvent], None] | None = None
+        # why the last stop stopped the run, for its ending's note
+        self._stop_reason = STOPPED_BY_USER
         inbox.on_delivered = self._delivered
 
     # -- the driver ---------------------------------------------------------
@@ -144,7 +147,8 @@ class AgnoDriver:
             )
         )
 
-    async def cancel(self, run_id: str) -> None:
+    async def cancel(self, run_id: str, reason: str = STOPPED_BY_USER) -> None:
+        self._stop_reason = reason
         await self.agent.acancel_run(run_id)
 
     async def is_cancelled(self, run_id: str) -> bool:
@@ -178,16 +182,19 @@ class AgnoDriver:
         queue: asyncio.Queue[Any] = asyncio.Queue()
         ended = object()
         self._side = lambda event: loop.call_soon_threadsafe(queue.put_nowait, event)
-        events = _AgnoEvents()
+        events = _AgnoEvents(lambda: self._stop_reason)
 
         async def pump() -> None:
             try:
-                async for raw in start():
-                    for event in events.feed(raw):
-                        queue.put_nowait(event)
-                queue.put_nowait(events.end())
-            except Exception as e:  # noqa: BLE001 - the run's ending, not ours
-                queue.put_nowait(events.end(failed=str(e)))
+                try:
+                    async for raw in start():
+                        for event in events.feed(raw):
+                            queue.put_nowait(event)
+                    ending = events.end()
+                except Exception as e:  # noqa: BLE001 - the run's ending, not ours
+                    ending = events.end(failed=str(e))
+                for event in ending:
+                    queue.put_nowait(event)
             finally:
                 # after whatever a thread handed over before the stream
                 # ended, which is already queued behind it
@@ -213,10 +220,19 @@ class _AgnoEvents:
     :class:`~nontainer_studio.providers.RequestRefused`), which a resume
     would send again: that run fails. An exception out of the stream
     fails a run outright too.
+
+    A stop that cuts a tool call off ends the run with no
+    ``ToolCallCompleted`` for it, so a cancelled or failed run's
+    ending answers each call still open, as the kept run does.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, stop_reason: Callable[[], str] = lambda: STOPPED_BY_USER
+    ) -> None:
         self.run_id: str | None = None
+        self._stop_reason = stop_reason
+        # the calls started and not yet ended, by id, with their names
+        self._open: dict[str, str] = {}
         self._cancelled = False
         self._error: str | None = None
         self._refused = False
@@ -254,12 +270,14 @@ class _AgnoEvents:
                     args=args if isinstance(args, dict) else {},
                 )
             )
+            self._open[out[-1].call_id] = out[-1].name
         elif kind == "ToolCallCompleted":
             # A call that raised completes too, its error as the result,
             # and agno follows it with a ToolCallError: the flag on the
             # completed call is what says so.
             tool = getattr(ev, "tool", None)
             result = getattr(tool, "result", "")
+            self._open.pop(str(getattr(tool, "tool_call_id", None) or ""), None)
             out.append(
                 ToolEnded(
                     call_id=str(getattr(tool, "tool_call_id", None) or ""),
@@ -288,12 +306,26 @@ class _AgnoEvents:
             self._refused = getattr(ev, "error_type", None) == RequestRefused.type
         return out
 
-    def end(self, failed: str | None = None) -> RunEnded:
-        """How the run ended."""
+    def end(self, failed: str | None = None) -> list[TurnEvent]:
+        """How the run ended: a :class:`RunEnded`, after an ending for
+        each call it cut off."""
+        ended = self._ending(failed)
+        if ended.status not in ("cancelled", "failed"):
+            # an interrupted run resumes in place, and may yet end the call
+            return [ended]
+        note = ended.message or ended.status
+        cut = [
+            ToolEnded(call_id=call, name=name, result=cut_off(note), is_error=True)
+            for call, name in self._open.items()
+        ]
+        self._open.clear()
+        return [*cut, ended]
+
+    def _ending(self, failed: str | None) -> RunEnded:
         if failed is not None:
             return RunEnded(status="failed", message=failed)
         if self._cancelled:
-            return RunEnded(status="cancelled", message=STOPPED_BY_USER)
+            return RunEnded(status="cancelled", message=self._stop_reason())
         if self._error is not None:
             status = "failed" if self._refused else "interrupted"
             return RunEnded(status=status, message=str(self._error))
@@ -363,13 +395,13 @@ class AgexDriver:
         # agex continues the last turn, which is the interrupted one
         return self._follow(self.session.stream(resume=True))
 
-    async def cancel(self, run_id: str) -> None:
+    async def cancel(self, run_id: str, reason: str = STOPPED_BY_USER) -> None:
         # recorded, so a stop pressed while no turn runs (between a
         # provider error and its resume) is still seen
         self._cancelled.add(run_id)
         # the run's closing note says who stopped it: told only that it
         # stopped, the next turn's model guesses why
-        self.session.cancel(STOPPED_BY_USER)
+        self.session.cancel(reason)
 
     async def is_cancelled(self, run_id: str) -> bool:
         return run_id in self._cancelled

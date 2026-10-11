@@ -79,17 +79,57 @@ did nothing."""
 
 
 async def stop(session: Any) -> None:
-    """Stop the running turn: the driver cancels the run, and the tool
-    call running is interrupted (``ws.runtime.interrupt()``) until the
-    run's turn ends, rather than waited out."""
+    """Stop the running turn and what it set going: the delegates it
+    asked for that are still at work are cancelled (and each stops its
+    own turn the same way), the driver cancels the run, saying which
+    delegates went with it, and the tool call running is interrupted
+    (``ws.runtime.interrupt()``) until the run's turn ends, rather than
+    waited out. Delegates asked for by an earlier turn go on: they are
+    no part of this one."""
     run_id = session.run_id
-    await session.driver.cancel(run_id)
+    stopped = await asyncio.to_thread(_stop_delegates, session)
+    reason = STOPPED_BY_USER
+    if stopped:
+        reason += f", and with it {_naming(stopped)}"
+        await session.emit({"type": "notice", "text": f"stopping {_naming(stopped)}"})
+    await session.driver.cancel(run_id, reason)
     task = session.turn_task
     watch = session.stop_watch
     if task is not None and not task.done() and (watch is None or watch.done()):
         session.stop_watch = asyncio.create_task(
             _interrupt_until_done(session, task, run_id)
         )
+
+
+def _stop_delegates(session: Any) -> list[str]:
+    """Cancel the delegates ``session``'s turn asked for that are still
+    at work; their names. A wait on one ends with it, as the job does."""
+    helper = session.delegates
+    if helper is None:
+        return []
+    try:
+        jobs = helper.list()
+    except Exception:  # noqa: BLE001 - a closed helper runs nothing
+        return []
+    stopped = []
+    for job in jobs:
+        if job.status != "running" or job.started < session.turn_started:
+            continue
+        try:
+            helper.cancel(job.name)
+        except Exception as e:  # noqa: BLE001 - the rest still stop
+            log.info("delegates: %s could not be stopped (%s)", job.name, e)
+            continue
+        stopped.append(job.name)
+    return sorted(stopped)
+
+
+def _naming(delegates: list[str]) -> str:
+    """``its delegate `a``` or ``its delegates `a` and `b```."""
+    names = [f"`{name.rsplit('.', 1)[-1]}`" for name in delegates]
+    if len(names) == 1:
+        return f"its delegate {names[0]}"
+    return f"its delegates {', '.join(names[:-1])} and {names[-1]}"
 
 
 async def _interrupt_until_done(
@@ -342,6 +382,8 @@ class _RunState:
     def __init__(self) -> None:
         self.run_id: str | None = None
         self.cancelled = False
+        # why the run was stopped, as its ending said
+        self.stopped_why: str | None = None
         self.errored: str | None = None
 
 
@@ -384,6 +426,7 @@ async def _follow_run(
         elif isinstance(ev, RunEnded):
             if ev.status == "cancelled":
                 state.cancelled = True
+                state.stopped_why = ev.message
                 await session.emit({"type": "notice", "text": "turn stopped"})
             elif ev.status == "interrupted":
                 state.errored = ev.message or "provider error"
@@ -618,6 +661,8 @@ async def _one_turn(
             # and nothing spent.
             return None
         session.wakes_left -= 1
+    # what a stop takes with it: the delegates asked for since
+    session.turn_started = time.time()
     state = _RunState()
     try:
         # head here = the workspace BEFORE this turn: the user event's
@@ -683,7 +728,10 @@ async def _one_turn(
             # a loop's history may leave a cancelled run out; keeping
             # it keeps the partial work in the agent's memory
             await asyncio.to_thread(
-                _keep_aborted_run, session, state.run_id, STOPPED_BY_USER
+                _keep_aborted_run,
+                session,
+                state.run_id,
+                state.stopped_why or STOPPED_BY_USER,
             )
             _settle_inbox(session)
         elif state.errored is not None:
