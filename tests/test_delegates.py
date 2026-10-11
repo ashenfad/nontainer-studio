@@ -610,6 +610,24 @@ def test_a_delegates_answer_reaches_the_parent_on_its_next_turn(registry):
     assert not any(e["type"] == "delegate" for e in _turn(parent, "!text ok"))
 
 
+def test_an_answer_the_tool_waited_for_is_delivered_with_its_result(registry):
+    """`wait=True` hands the answer back as the tool's result, so that
+    is where the transcript records it: nothing is left to deliver, and
+    reading it again with `result` is not a second delivery."""
+    parent = registry.open("boss")
+    asked = _turn(parent, ASK)
+    (delivered,) = [e for e in asked if e["type"] == "delegate"]
+    assert delivered["name"] == "boss.scout"
+    assert "Found it." in delivered["text"]
+    assert parent.answered_delegates() == []
+
+    again = _turn(
+        parent, '!tool sessions {"action": "result", "name": "scout"}\n!text ok'
+    )
+    assert "Found it." in _tool_results(again, "sessions")[0]
+    assert not any(e["type"] == "delegate" for e in again)
+
+
 def _edit(registry, session, seq, message):
     """The /edit route's sequence: rewind, cut the transcript, re-run."""
     session.turn_lock.acquire()  # _run_turn releases it

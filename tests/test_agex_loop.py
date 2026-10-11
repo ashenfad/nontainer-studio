@@ -232,10 +232,12 @@ def test_a_delegate_runs_on_its_parents_loop(studio, monkeypatch):
     ]
     scripts.steps = {"SCOUT": scripts.steps["SCOUT"], "s1": scripts.steps["s1"]}
     events = _chat(client, "s1", "s1: get it written")
-    # the parent's own turn (what follows it is the wake below)
-    events = events[: [e["type"] for e in events].index("done") + 1]
     text = "".join(e["delta"] for e in events if e["type"] == "text")
     assert text == "the scout wrote it"
+    # the answer came back as the tool's result, which delivered it: no
+    # turn is woken to deliver it again
+    assert [e["type"] for e in events].count("delegate") == 1
+    assert registry.get("s1").answered_delegates() == []
     (child,) = [n for n in registry._manifest()["delegates"] if n.startswith("s1.")]
     # its conversation is one agex wrote: reopened, it stays on agex
     assert registry.open(child).loop == "agex"

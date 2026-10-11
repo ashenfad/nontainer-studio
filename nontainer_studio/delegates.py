@@ -283,6 +283,44 @@ def answer_run(answer: Answer) -> dict:
     return run
 
 
+def answer_event(name: str, answer: Answer) -> dict:
+    """The `delegate` event for ``name``'s ``answer``: the record that
+    it reached the session, however it did (collected for a turn, on a
+    tool result, or as the `sessions` tool's own result)."""
+    return {
+        "type": "delegate",
+        "name": name,
+        "status": answer.status,
+        "text": answer_message(name, answer),
+        **answer_run(answer),
+    }
+
+
+class ReadsAnswers:
+    """A session's ``Sessions`` helper, noting each answer it hands
+    back. ``ask`` with ``wait`` and ``result`` return one, and the
+    `sessions` tool returns it to the model as the call's result, which
+    delivers it as surely as a turn that collects it."""
+
+    def __init__(self, helper: Any) -> None:
+        self._helper = helper
+        self.answers: list[Answer] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._helper, name)
+
+    def ask(self, *args: Any, **kwargs: Any) -> Any:
+        out = self._helper.ask(*args, **kwargs)
+        if isinstance(out, Answer):
+            self.answers.append(out)
+        return out
+
+    def result(self, name: str) -> Answer:
+        answer = self._helper.result(name)
+        self.answers.append(answer)
+        return answer
+
+
 def answer_message(name: str, answer: Answer) -> str:
     """A delegate's answer as it reaches the session that asked.
 
@@ -735,6 +773,23 @@ class DelegationMixin:
         the delegate's worker thread, so a hook hands the name over to
         wherever it does its work rather than doing it there."""
         self._wake_hook = hook
+
+    def answered_inline(self, owner: str, answers: list[Answer]) -> None:
+        """Record ``answers`` as delivered to ``owner``: its `sessions`
+        tool returned them as the call's result. The record is the
+        transcript's `delegate` event, as for every other delivery;
+        without one an answer still counts as unread, and a woken turn
+        would hand the model an answer it already has. One the
+        transcript already shows (``result`` read it again) is not
+        recorded twice."""
+        session = self.get(owner)
+        if session is None or session.delegates is None:
+            return
+        jobs = {job.name: job for job in session.delegates.list()}
+        for answer in answers:
+            job = jobs.get(answer.branch or "")
+            if job is not None and not session.shows_answer(job):
+                session.publish(answer_event(job.name, answer))
 
     def _answer_landed(self, parent: str) -> None:
         """nontainer's ``on_answer`` for ``parent``'s delegates. Never

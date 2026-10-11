@@ -436,6 +436,10 @@ class Session:
         unread = self._unshown(done)
         return [job for job in done if job.name in unread]
 
+    def shows_answer(self, job: Any) -> bool:
+        """Whether the transcript shows ``job``'s current answer."""
+        return not self._unshown([job])
+
     def _unshown(self, jobs: list) -> set:
         """Names of those of ``jobs`` whose current answer the
         transcript does not show — the tail, then the whole log when
