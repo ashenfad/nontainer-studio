@@ -12,6 +12,8 @@ import importlib.util
 
 import pytest
 
+from nontainer_studio import turns
+
 LOOPS = ["agno"] + (["agex"] if importlib.util.find_spec("agex") else [])
 
 
@@ -37,3 +39,11 @@ def loop(request, monkeypatch):
         request.node.add_marker(pytest.mark.xfail(reason=gap.args[0], strict=True))
     monkeypatch.setenv("NONTAINER_STUDIO_LOOP", request.param)
     return request.param
+
+
+@pytest.fixture(autouse=True)
+def no_resume_backoff(monkeypatch):
+    """A provider error resumes its turn after a wait meant for a real
+    outage; a test's failures are scripted and clear at once. A test of
+    the wait itself sets its own."""
+    monkeypatch.setattr(turns, "RESUME_BACKOFFS", (0, 0, 0))

@@ -46,6 +46,7 @@ dev = [
     "ruff",
     "pytest",
     "pytest-asyncio",
+    "pytest-xdist",  # `pytest -n auto`: the suite runs a test per core
     "httpx2",  # starlette TestClient
     # the browser tests; run `uv run playwright install chromium` once
     "playwright",

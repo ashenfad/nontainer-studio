@@ -73,7 +73,7 @@ default, and a `.env` beside where you launch is loaded at startup.
 ```sh
 uv sync --extra dev
 uv run playwright install chromium   # once, for the browser tests
-uv run pytest
+uv run pytest -n auto   # a test per core; plain `uv run pytest` runs them one by one
 ```
 
 No LLM key is needed anywhere in the suite: the server tests drive a fake

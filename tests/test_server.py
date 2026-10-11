@@ -108,13 +108,6 @@ def dummy_on_agex(loop, monkeypatch):
         monkeypatch.setattr(sessions_mod, "_agex_model", lambda spec: DummyProvider())
 
 
-@pytest.fixture(autouse=True)
-def no_resume_backoff(monkeypatch):
-    """A provider error resumes its turn after a wait meant for a real
-    outage; a test's failures are scripted and clear at once."""
-    monkeypatch.setattr(turns, "RESUME_BACKOFFS", (0, 0, 0))
-
-
 @pytest.fixture
 def studio(tmp_path):
     """A real Registry over a tmp store, with the agent faked out —
