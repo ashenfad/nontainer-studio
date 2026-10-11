@@ -38,6 +38,8 @@ from nontainer.turns import (
     Usage,
 )
 
+from .providers import RequestRefused
+
 log = logging.getLogger(__name__)
 
 __all__ = ["AgexDriver", "AgnoDriver", "DriverSpec", "TurnDriver"]
@@ -201,15 +203,18 @@ class AgnoDriver:
 class _AgnoEvents:
     """agno's stream events as turn events, for one run.
 
-    A ``RunError`` ends the run interrupted, whatever its kind: the
-    studio resumes it in place, and an exception out of the stream is
-    what fails a run outright.
+    A ``RunError`` ends the run interrupted, so the studio resumes it in
+    place, unless the provider refused the request (a
+    :class:`~nontainer_studio.providers.RequestRefused`), which a resume
+    would send again: that run fails. An exception out of the stream
+    fails a run outright too.
     """
 
     def __init__(self) -> None:
         self.run_id: str | None = None
         self._cancelled = False
         self._error: str | None = None
+        self._refused = False
 
     def feed(self, ev: Any) -> list[TurnEvent]:
         out: list[TurnEvent] = []
@@ -275,6 +280,7 @@ class _AgnoEvents:
             self._cancelled = True
         elif kind == "RunError":
             self._error = getattr(ev, "content", None) or "provider error"
+            self._refused = getattr(ev, "error_type", None) == RequestRefused.type
         return out
 
     def end(self, failed: str | None = None) -> RunEnded:
@@ -284,7 +290,8 @@ class _AgnoEvents:
         if self._cancelled:
             return RunEnded(status="cancelled", message="stopped by the user")
         if self._error is not None:
-            return RunEnded(status="interrupted", message=str(self._error))
+            status = "failed" if self._refused else "interrupted"
+            return RunEnded(status=status, message=str(self._error))
         return RunEnded(status="completed")
 
 

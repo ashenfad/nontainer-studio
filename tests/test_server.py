@@ -8176,6 +8176,43 @@ def test_an_edit_rerunning_a_failing_turn_fails_afresh(scripted):
     assert _prose(events) == "wrote a"
 
 
+@pytest.mark.agno_only("agno's check of what is worth retrying; agex has its own")
+def test_a_request_the_provider_refuses_is_not_resumed(tmp_path):
+    """A 400 is the provider refusing the request, and a resume would
+    send the same request again: the turn ends in an error at once, the
+    run kept with what it did."""
+    from agno.exceptions import ModelProviderError
+
+    from nontainer_studio import providers
+    from nontainer_studio.dummy import DummyModel
+
+    class Refusing(DummyModel):
+        def _maybe_fail(self, messages, offered):
+            try:
+                super()._maybe_fail(messages, offered)
+            except ModelProviderError as e:
+                raise ModelProviderError(str(e), status_code=400) from None
+
+    registry = sessions_mod.Registry(
+        model_factory=lambda spec=None: providers._with_retries(Refusing()),
+        store=tmp_path,
+    )
+    with TestClient(server.build_app(registry)) as client:
+        client.post("/api/sessions", json={"name": "s1"})
+        session = registry.get("s1")
+        events = _run(client, "s1", WRITE_FAIL_ANSWER)
+        files = session.ws.files.fs
+        assert files.read("/workspace/a.txt") == b"A"
+        (run,) = _stored_runs(registry, "s1")
+    registry.close()
+
+    assert _notices(events) == []
+    (error,) = [e["message"] for e in events if e["type"] == "error"]
+    assert error.startswith("the model provider refused the request (400): ")
+    assert "provider overloaded" in error
+    assert "the model provider refused the request" in run.messages[-1].content
+
+
 def test_a_stopped_turn_is_kept_and_not_resumed(scripted):
     """A stop stays a stop: the run is cancelled at the tool it was
     running, nothing resumes it, and it is kept as stopped by the

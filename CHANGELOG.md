@@ -459,6 +459,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A request the provider refuses ends the turn at once.** A 400 or a
+  bad key was resumed three times, over a minute and a half, before the
+  turn failed; a resume sends the same request again.
+
 - **An agex run the studio stops resuming is closed with its note.** When
   every resume fails, or a stop lands while it waits, the run ends with
   the note agno's gets, so the next turn's model knows where its work
