@@ -35,6 +35,7 @@ from nontainer.turns import (
 
 from . import delegates
 from .config import _delegate_wakes
+from .drivers import STOPPED_BY_USER
 
 log = logging.getLogger(__name__)
 
@@ -619,7 +620,7 @@ async def _one_turn(
             # a loop's history may leave a cancelled run out; keeping
             # it keeps the partial work in the agent's memory
             await asyncio.to_thread(
-                _keep_aborted_run, session, state.run_id, "stopped by the user"
+                _keep_aborted_run, session, state.run_id, STOPPED_BY_USER
             )
             _settle_inbox(session)
         elif state.errored is not None:

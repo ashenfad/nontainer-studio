@@ -8230,7 +8230,7 @@ def test_a_stopped_turn_is_kept_and_not_resumed(scripted):
     assert _prose(events) == ""
     runs = _stored_runs(registry, "s1")
     assert len(runs) == 1
-    assert "stopped" in runs[0].messages[-1].content
+    assert "stopped by the user" in runs[0].messages[-1].content
 
 
 def test_a_stop_during_the_wait_is_not_resumed(scripted, monkeypatch):
@@ -8264,7 +8264,7 @@ def test_a_stop_during_the_wait_is_not_resumed(scripted, monkeypatch):
     assert _prose(events) == ""
     runs = _stored_runs(registry, "s1")
     assert len(runs) == 1
-    assert "stopped" in runs[0].messages[-1].content
+    assert "stopped by the user" in runs[0].messages[-1].content
     assert session.ws.files.fs.read("/workspace/a.txt") == b"A"
 
 

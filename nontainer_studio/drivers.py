@@ -45,6 +45,11 @@ log = logging.getLogger(__name__)
 __all__ = ["AgexDriver", "AgnoDriver", "DriverSpec", "TurnDriver"]
 
 
+STOPPED_BY_USER = "stopped by the user"
+"""Why a run the stop button ended stopped, as its closing note says on
+either loop."""
+
+
 @dataclass
 class DriverSpec:
     """What a session's loop is built from, whichever loop it is."""
@@ -288,7 +293,7 @@ class _AgnoEvents:
         if failed is not None:
             return RunEnded(status="failed", message=failed)
         if self._cancelled:
-            return RunEnded(status="cancelled", message="stopped by the user")
+            return RunEnded(status="cancelled", message=STOPPED_BY_USER)
         if self._error is not None:
             status = "failed" if self._refused else "interrupted"
             return RunEnded(status=status, message=str(self._error))
@@ -362,7 +367,9 @@ class AgexDriver:
         # recorded, so a stop pressed while no turn runs (between a
         # provider error and its resume) is still seen
         self._cancelled.add(run_id)
-        self.session.cancel()
+        # the run's closing note says who stopped it: told only that it
+        # stopped, the next turn's model guesses why
+        self.session.cancel(STOPPED_BY_USER)
 
     async def is_cancelled(self, run_id: str) -> bool:
         return run_id in self._cancelled
