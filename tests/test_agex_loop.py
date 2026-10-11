@@ -284,3 +284,56 @@ def test_a_delegates_tool_calls_are_capped_per_call(studio, monkeypatch):
     files = registry.open(child).ws.files
     assert files.exists("/workspace/a.txt") and files.exists("/workspace/b.txt")
     assert not files.exists("/workspace/c.txt")
+
+
+def test_the_dummy_reads_the_same_script_on_agex():
+    """The scripted test model as agex's provider: the request that
+    would call the tools does, each ``!fail`` costs the reply one
+    attempt, as an overloaded provider (agex resumes it), the reply
+    comes next, and a request offered no tools never fails. agex's
+    notice that a turn has made its tool calls is read past."""
+    import asyncio
+
+    from agex.agent import _notice
+    from agex.providers import Reply, ToolSpec
+    from agex.record import Message, Text, ToolResult
+    from agex.record import ToolCall as Call
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    from nontainer_studio.agex_dummy import DummyProvider
+
+    def said(text):
+        return Message(id=text[:8], role="user", parts=(Text(text=text),))
+
+    async def reply(provider, messages, tools):
+        async for event in provider.stream(messages, tools):
+            if isinstance(event, Reply):
+                return event.message
+
+    provider = DummyProvider()
+    tools = [ToolSpec(name="file_write", description="", parameters={})]
+    script = said(
+        '!tool file_write {"path": "/a", "content": "A"}\n'
+        "!fail one\n!fail two\n!text done"
+    )
+    (call,) = asyncio.run(reply(provider, [script], tools)).parts
+    assert isinstance(call, Call) and call.name == "file_write"
+    ran = [
+        script,
+        Message(id="m2", role="assistant", parts=(call,)),
+        Message(
+            id="m3",
+            role="tool",
+            parts=(ToolResult(call_id=call.call_id, name=call.name, content="ok"),),
+        ),
+    ]
+    for expected in ("one", "two"):
+        with pytest.raises(ModelHTTPError, match=expected):
+            asyncio.run(reply(provider, ran, tools))
+    done = asyncio.run(reply(provider, [*ran, said(_notice(1))], tools))
+    assert [p.text for p in done.parts] == ["done"]
+    assert done.usage is None
+    # a request offered no tools: a summary, a title
+    fresh = said("!fail one\n!text done")
+    quiet = asyncio.run(reply(DummyProvider(), [fresh], []))
+    assert [p.text for p in quiet.parts] == ["done"]

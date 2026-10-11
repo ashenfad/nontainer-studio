@@ -43,18 +43,49 @@ without retries, where one does. A model offered no tools never fails,
 for the reason it never calls one: the naming pass hands a tool-less
 agent the whole transcript, directives and all.
 
-Select it with ``NONTAINER_STUDIO_MODEL=dummy``.
+Select it with ``NONTAINER_STUDIO_MODEL=dummy``. On the agex loop the
+same script runs through ``agex_dummy.DummyProvider``.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Iterator, List
 
 from agno.exceptions import ModelProviderError
 from agno.models.base import Model
 from agno.models.message import Message
 from agno.models.response import ModelResponse
+
+
+@dataclass
+class Script:
+    """A message's directives, in the order they were written."""
+
+    tool_calls: list[tuple[str, str]] = field(default_factory=list)
+    """``(name, arguments as JSON)``, one per ``!tool`` line."""
+    reply: list[str] = field(default_factory=list)
+    thinking: list[str] = field(default_factory=list)
+    fails: list[str] = field(default_factory=list)
+
+
+def read_script(text: str) -> Script:
+    """The directives in ``text``; a bad ``!tool`` argument raises, so
+    a mistyped script fails loudly rather than calling nothing."""
+    script = Script()
+    for line in text.splitlines():
+        if line.startswith("!tool "):
+            name, _, args = line[len("!tool ") :].partition(" ")
+            json.loads(args or "{}")
+            script.tool_calls.append((name, args or "{}"))
+        elif line.startswith("!text "):
+            script.reply.append(line[len("!text ") :])
+        elif line.startswith("!think "):
+            script.thinking.append(line[len("!think ") :])
+        elif line.startswith("!fail "):
+            script.fails.append(line[len("!fail ") :])
+    return script
 
 
 class DummyModel(Model):
@@ -84,24 +115,16 @@ class DummyModel(Model):
             else False
         )
 
-        tool_calls: list[dict] = []
-        reply: list[str] = []
-        thinking: list[str] = []
-        for line in text.splitlines():
-            if line.startswith("!tool "):
-                name, _, args = line[len("!tool ") :].partition(" ")
-                json.loads(args or "{}")  # fail loudly on a bad script
-                tool_calls.append(
-                    {
-                        "id": f"call_{len(tool_calls)}",
-                        "type": "function",
-                        "function": {"name": name, "arguments": args or "{}"},
-                    }
-                )
-            elif line.startswith("!text "):
-                reply.append(line[len("!text ") :])
-            elif line.startswith("!think "):
-                thinking.append(line[len("!think ") :])
+        script = read_script(text)
+        tool_calls = [
+            {
+                "id": f"call_{i}",
+                "type": "function",
+                "function": {"name": name, "arguments": args},
+            }
+            for i, (name, args) in enumerate(script.tool_calls)
+        ]
+        reply, thinking = script.reply, script.thinking
 
         response = ModelResponse(role="assistant")
         if thinking and not tools_ran:
@@ -122,11 +145,7 @@ class DummyModel(Model):
         if last_user is None:
             return
         text = str(getattr(last_user, "content", "") or "")
-        fails = [
-            line[len("!fail ") :]
-            for line in text.splitlines()
-            if line.startswith("!fail ")
-        ]
+        fails = read_script(text).fails
         if not fails or self._plan(messages, offered=offered).tool_calls:
             return
         spent = self._failed.get(last_user.id, 0)

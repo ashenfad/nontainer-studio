@@ -1,9 +1,10 @@
 """Browser E2E: a real server + a real browser + a scripted LLM.
 
-The whole stack runs for real — uvicorn, SSE, the Svelte bundle, agno's
-run loop, WorkspaceTools, the workspace — except the model, which is
-the DummyModel (NONTAINER_STUDIO_MODEL=dummy) scripted by !tool / !text
-directives embedded in the messages the tests type.
+The whole stack runs for real — uvicorn, SSE, the Svelte bundle, the
+agent's loop, its tools, the workspace — except the model, which is the
+scripted dummy (NONTAINER_STUDIO_MODEL=dummy) driven by !tool / !text
+directives embedded in the messages the tests type. Each test runs on
+both loops, agno's and agex's, a server for each.
 
 Needs the committed frontend build and playwright's chromium
 (`playwright install chromium`); both skip cleanly when absent.
@@ -56,17 +57,28 @@ class _Server(str):
 
 
 @pytest.fixture(scope="module")
-def server(tmp_path_factory):
+def loop(request):
+    """The loop the servers below run sessions on (see conftest): one
+    server per loop, not per test."""
+    return request.param
+
+
+@pytest.fixture(scope="module")
+def server(tmp_path_factory, loop):
     # Waking off: the rail tests below are about an answer that waits
     # for the human, which is what it does when its budget is spent or
     # the knob is 0. With waking on, it would be delivered within a
     # second and there would be nothing waiting to show.
-    yield from _studio(tmp_path_factory, NONTAINER_STUDIO_DELEGATE_WAKES="0")
+    yield from _studio(
+        tmp_path_factory,
+        NONTAINER_STUDIO_LOOP=loop,
+        NONTAINER_STUDIO_DELEGATE_WAKES="0",
+    )
 
 
 @pytest.fixture(scope="module")
-def waking_server(tmp_path_factory):
-    yield from _studio(tmp_path_factory)
+def waking_server(tmp_path_factory, loop):
+    yield from _studio(tmp_path_factory, NONTAINER_STUDIO_LOOP=loop)
 
 
 def _studio(tmp_path_factory, store=None, **extra_env):
@@ -1596,13 +1608,16 @@ def test_an_answer_card_is_one_line_that_opens_its_delegate(page, server):
     expect(page.locator("textarea")).to_have_count(1)
 
 
-def test_a_swept_delegates_card_unfolds_its_answer_in_place(browser, tmp_path_factory):
+def test_a_swept_delegates_card_unfolds_its_answer_in_place(
+    browser, tmp_path_factory, loop
+):
     """Once the retention sweep takes a delegate there is no view to
     open, and opening its name would make a new, empty session of it.
     So its card says it expired and unfolds the answer it left in the
     parent's transcript instead. The sweep runs when the studio starts,
     so a restart past a tiny TTL takes it."""
     env = {
+        "NONTAINER_STUDIO_LOOP": loop,
         "NONTAINER_STUDIO_DELEGATE_TTL": "0.0002",
         "NONTAINER_STUDIO_DELEGATE_WAKES": "0",
     }
@@ -1784,13 +1799,17 @@ def test_deleting_the_parent_moves_the_view_off_its_delegate(page, server):
 
 
 def test_a_compacted_conversation_shows_a_marker_that_opens_to_the_summary(
-    browser, tmp_path_factory
+    browser, tmp_path_factory, loop
 ):
     """Past the budget, the earlier turns reach the agent as one summary.
     The transcript keeps them, and a marker where the fold happened says
     how many turns it covers and opens to what the agent now remembers.
     It is an event in the log, so a reload shows it again."""
-    started = _studio(tmp_path_factory, NONTAINER_STUDIO_COMPACT_TOKENS="1000")
+    started = _studio(
+        tmp_path_factory,
+        NONTAINER_STUDIO_LOOP=loop,
+        NONTAINER_STUDIO_COMPACT_TOKENS="1000",
+    )
     server = next(started)
     page = browser.new_page()
     try:

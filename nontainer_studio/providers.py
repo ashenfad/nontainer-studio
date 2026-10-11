@@ -347,16 +347,16 @@ def _effort() -> str:
     return os.getenv("NONTAINER_STUDIO_EFFORT") or _DEFAULT_EFFORT
 
 
-def agex_model(spec: str) -> str:
+def agex_model(spec: str) -> Any:
     """The model agex's ``Agent`` takes for ``spec``: its name in
     pydantic-ai's ``provider:model`` form, which agex resolves itself
-    (each provider through its own extra)."""
+    (each provider through its own extra), or the scripted test model's
+    provider."""
     provider, model = parse_spec(spec)
     if provider == "dummy":
-        raise ValueError(
-            "the dummy model runs on the agno loop only for now; open the "
-            "session with NONTAINER_STUDIO_LOOP=agno"
-        )
+        from .agex_dummy import DummyProvider
+
+        return DummyProvider()
     return f"{provider}:{model}"
 
 

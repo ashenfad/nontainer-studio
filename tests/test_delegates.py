@@ -11,8 +11,8 @@ import json
 import threading
 import time
 
+import loops
 import pytest
-from agno.models.response import ModelResponse
 from nontainer import conversation
 from nontainer.errors import BranchExpired
 from nontainer.planes import LEGACY_RUN_PREFIX, LEGACY_SESSION_KEY
@@ -23,6 +23,8 @@ from nontainer_studio import session as session_mod
 from nontainer_studio import sessions as sessions_mod
 from nontainer_studio import summaries as summaries_mod
 from nontainer_studio.dummy import DummyModel
+
+pytestmark = pytest.mark.usefixtures("loop")
 
 WRITE_A_NOTE = (
     '!tool file_write {"path": "/workspace/from_delegate.md", '
@@ -178,6 +180,7 @@ def test_a_full_delegate_is_told_whose_conversation_it_opens_on(registry):
     assert asked["text"].endswith(WRITE_A_NOTE)
 
 
+@pytest.mark.agno_only("the old plane is agno's conversation format")
 def test_a_parent_still_on_the_old_plane_is_named_as_the_conversations_owner(
     registry,
 ):
@@ -527,9 +530,10 @@ def _turn(session, message, registry=None):
 
 
 def _run_ids(registry, name: str) -> list[str]:
-    """The agent's memory on that branch, as the chat db holds it."""
-    record = registry.db.get_session(name)
-    return [run.run_id for run in (record.runs or [])] if record is not None else []
+    """The agent's memory on that branch: the runs its conversation
+    holds, which is where either loop keeps them."""
+    index = conversation.index_of(registry.open(name).ws)
+    return list(index.runs) if index is not None else []
 
 
 def _tool_results(events, name):
@@ -1072,12 +1076,11 @@ def test_the_tool_is_nontainers_shape_under_nontainers_name(registry):
     # beside it. The toolkit still KNOWS the helper — that is what lets
     # it hand a delegate's answer over mid-turn — but it learned it
     # after construction, which is the half that registers no tool.
-    toolkit = boss.driver.agent.tools[0]
-    assert toolkit.sessions is boss.delegates
-    assert [f for f in toolkit.functions if f == "sessions"] == []
-    assert [getattr(t, "__name__", None) for t in boss.driver.agent.tools].count(
-        "sessions"
-    ) == 1
+    if boss.loop == "agno":
+        toolkit = boss.driver.agent.tools[0]
+        assert toolkit.sessions is boss.delegates
+        assert [f for f in toolkit.functions if f == "sessions"] == []
+    assert loops.tool_names(boss).count("sessions") == 1
 
 
 NOTE = "the CSV comes in UTF-16, which is why the loader decodes"
@@ -1162,19 +1165,17 @@ def test_an_agent_starts_from_an_app_whose_session_is_gone(registry, tmp_path):
     assert child.ws.files.fs.read("/workspace/notes/loader.md").decode() == NOTE
 
 
-class FailingModel(DummyModel):
-    """Streams a sentence, then the provider dies mid-run."""
-
-    async def ainvoke_stream(self, messages, **kwargs):
-        yield ModelResponse(role="assistant", content="Got part of the way. ")
-        raise RuntimeError("provider exploded")
+async def _dies_partway():
+    """A sentence, then the provider dies mid-run."""
+    yield "Got part of the way. "
+    raise RuntimeError("provider exploded")
 
 
 def test_a_failure_after_partial_prose_is_failed_not_answered(tmp_path):
     """Prose that simply stops reads as a complete answer. A run that
     died says so, and keeps what the delegate managed to say."""
     registry = sessions_mod.Registry(
-        model_factory=lambda *a, **k: FailingModel(),
+        **loops.replying(_dies_partway),
         store=tmp_path,
         default_model="dummy",
     )
@@ -1277,7 +1278,7 @@ def test_no_verb_no_delegation_half(registry, monkeypatch):
     primer = prompts._delegation_primer(True, False)
     assert primer is prompts.NO_VERSIONING_PRIMER
     assert "ws-git" not in primer
-    assert "ws-git" not in session.driver.agent.instructions
+    assert "ws-git" not in loops.instructions(session)
     # and a delegate of that session opens with the same honesty
     assert delegates.VERSIONING not in delegates.brief("boss", None, versioning=False)
     assert delegates.VERSIONING in delegates.brief("boss", None, versioning=True)
@@ -1771,7 +1772,7 @@ def test_the_primer_says_the_number_and_the_verb(registry, tmp_path):
     assert "24 hours" in primer
     assert "sessions keep" in primer
     assert prompts._retention_primer(0) == ""
-    assert primer in registry.open("boss").driver.agent.instructions
+    assert primer in loops.instructions(registry.open("boss"))
 
     off = sessions_mod.Registry(
         model_factory=lambda *a, **k: DummyModel(),
@@ -1780,7 +1781,7 @@ def test_the_primer_says_the_number_and_the_verb(registry, tmp_path):
         delegate_ttl=0,
     )
     try:
-        assert "is swept" not in off.open("boss").driver.agent.instructions
+        assert "is swept" not in loops.instructions(off.open("boss"))
     finally:
         off.close()
 
@@ -1791,7 +1792,7 @@ def test_the_primer_says_what_a_delegate_starts_from(registry):
     contract into the task for want of knowing that. The primer says
     what a delegate starts from, that it shares the db, and which
     `inherit` to choose."""
-    instructions = registry.open("boss").driver.agent.instructions
+    instructions = loops.instructions(registry.open("boss"))
     assert "starts from your tree as it is the moment you ask" in instructions
     assert "It shares your `db`" in instructions
     assert '"full" is this conversation up to your last finished turn' in instructions
@@ -1802,11 +1803,7 @@ def test_the_primer_says_what_a_delegate_starts_from(registry):
 
 def _tool(session):
     """The `sessions` tool as the agent holds it."""
-    return next(
-        t
-        for t in session.driver.agent.tools
-        if getattr(t, "__name__", "") == "sessions"
-    )
+    return loops.tool(session, "sessions")
 
 
 def _nest(registry, *names):
@@ -1909,11 +1906,9 @@ def test_only_the_session_at_the_cap_is_told_about_it(registry):
     for in prompt, so it is told to the one it binds."""
     grandchild = _nest(registry, "boss", "boss.scout", "boss.scout.finch")
 
-    assert prompts.DEPTH_CAP_PRIMER in grandchild.driver.agent.instructions
+    assert prompts.DEPTH_CAP_PRIMER in loops.instructions(grandchild)
     for name in ("boss", "boss.scout"):
-        assert prompts.DEPTH_CAP_PRIMER not in (
-            registry.open(name).driver.agent.instructions
-        )
+        assert prompts.DEPTH_CAP_PRIMER not in (loops.instructions(registry.open(name)))
 
 
 # -- the tool-call cap: a delegate's loop has nobody watching it ------------
@@ -1939,8 +1934,8 @@ def test_only_a_delegates_agent_carries_the_cap(registry):
     parent = registry.open("boss")
     child = registry.open_delegate("boss", "boss.scout")
 
-    assert parent.driver.agent.tool_call_limit is None
-    assert child.driver.agent.tool_call_limit == registry.delegate_tool_calls == 60
+    assert loops.tool_call_cap(parent) is None
+    assert loops.tool_call_cap(child) == registry.delegate_tool_calls == 60
 
 
 def test_no_cap_no_limit(tmp_path):
@@ -1955,7 +1950,7 @@ def test_no_cap_no_limit(tmp_path):
     try:
         registry.open("boss")
         child = registry.open_delegate("boss", "boss.scout")
-        assert child.driver.agent.tool_call_limit is None
+        assert loops.tool_call_cap(child) is None
     finally:
         registry.close()
 
@@ -2166,7 +2161,7 @@ def test_a_delegate_with_a_live_job_is_not_named(registry):
 # -- shutdown does not wait out a delegate ----------------------------------
 
 
-class BlockingModel(DummyModel):
+def _blocks(entered):
     """A model whose turn never ends on its own.
 
     The wait is on the turn's own loop, so only a cancel arriving
@@ -2174,14 +2169,12 @@ class BlockingModel(DummyModel):
     on a worker thread would outlive the loop it was started from.
     """
 
-    def __init__(self, entered):
-        super().__init__()
-        self._entered = entered
-
-    async def ainvoke_stream(self, messages, **kwargs):
-        self._entered.set()
+    async def reply():
+        entered.set()
         await asyncio.Event().wait()
-        yield ModelResponse(role="assistant", content="unreachable")
+        yield "unreachable"
+
+    return reply
 
 
 def test_closing_the_registry_does_not_wait_out_a_delegates_turn(tmp_path):
@@ -2190,7 +2183,7 @@ def test_closing_the_registry_does_not_wait_out_a_delegates_turn(tmp_path):
     runs are stopped first."""
     entered = threading.Event()
     registry = sessions_mod.Registry(
-        model_factory=lambda *a, **k: BlockingModel(entered),
+        **loops.replying(_blocks(entered)),
         store=tmp_path,
         default_model="dummy",
     )
@@ -2324,15 +2317,12 @@ def thinking_model(monkeypatch):
     closes a window a real session always has open: the stretch of a
     turn between the message and the first tool result, where a
     delegate can land."""
-    plain = DummyModel.ainvoke_stream
 
-    async def slow_first_call(self, messages, **kwargs):
-        if DummyModel._plan(messages).tool_calls:
+    async def slow_first_call(plan):
+        if plan.calls:
             await asyncio.sleep(0.5)
-        async for chunk in plain(self, messages, **kwargs):
-            yield chunk
 
-    monkeypatch.setattr(DummyModel, "ainvoke_stream", slow_first_call)
+    loops.patch_reply(monkeypatch, slow_first_call)
 
 
 def test_an_answer_that_lands_mid_turn_is_delivered_once(
@@ -2348,16 +2338,12 @@ def test_an_answer_that_lands_mid_turn_is_delivered_once(
     # turn that asked for it has ended, and the answer then waits for
     # the next turn instead of landing inside it.
     release = threading.Event()
-    thinking = DummyModel.ainvoke_stream
 
-    async def held_scout(self, messages, **kwargs):
-        last_user = next((m for m in reversed(messages) if m.role == "user"), None)
-        if str(getattr(last_user, "content", "")).startswith("[delegated by"):
+    async def held_scout(plan):
+        if plan.text.startswith("[delegated by"):
             await asyncio.to_thread(release.wait, 30)
-        async for chunk in thinking(self, messages, **kwargs):
-            yield chunk
 
-    monkeypatch.setattr(DummyModel, "ainvoke_stream", held_scout)
+    loops.patch_reply(monkeypatch, held_scout)
 
     parent = registry.open("boss")
     _turn(parent, ASK_A_SCOUT, registry)
@@ -2387,13 +2373,7 @@ def test_an_answer_that_lands_mid_turn_is_delivered_once(
         if event["type"] == "tool_end":
             assert "---- inbox ----" not in event["result"]
     # the model read it where the transcript says it arrived
-    stored = registry.db.get_session("boss")
-    carried = [
-        str(m.content)
-        for run in (stored.runs or [])
-        for m in (run.messages or [])
-        if m.role == "tool" and "---- inbox ----" in str(m.content)
-    ]
+    carried = [r for r in loops.tool_results(parent) if "---- inbox ----" in r]
     assert len(carried) == 1
     assert "Found it." in carried[0]
     assert "the delegation mechanism speaking" in carried[0]
@@ -2451,10 +2431,7 @@ def test_an_answer_wakes_an_idle_parent(registry, monkeypatch):
     # the human's (the dummy echoes what it was sent)
     reply = "".join(e["delta"] for e in events if e["type"] == "text")
     assert reply.startswith("dummy: [delegate `boss.scout` answered")
-    stored = registry.db.get_session("boss")
-    sent = next(
-        str(m.content) for m in stored.runs[-1].messages or [] if m.role == "user"
-    )
+    sent = loops.sent(parent)
     assert "Found it." in sent
     assert sent.endswith(delegates.WAKE_MESSAGE)
     assert parent.wakes_left == 9
@@ -2519,18 +2496,14 @@ def test_an_answer_after_the_last_tool_call_wakes_the_same_chain(registry, monke
     own chain picks it up as soon as the turn ends."""
     monkeypatch.setenv("NONTAINER_STUDIO_DELEGATE_WAKES", "10")
     parent = registry.open("boss")
-    plain = DummyModel.ainvoke_stream
 
-    async def reply_once_answered(self, messages, **kwargs):
-        plan = DummyModel._plan(messages)
-        if not plan.tool_calls and "SLOW-REPLY" in str(plan.content or ""):
+    async def reply_once_answered(plan):
+        if not plan.calls and "SLOW-REPLY" in plan.reply:
             deadline = time.monotonic() + 20
             while not parent.answered_delegates() and time.monotonic() < deadline:
                 await asyncio.sleep(0.02)
-        async for chunk in plain(self, messages, **kwargs):
-            yield chunk
 
-    monkeypatch.setattr(DummyModel, "ainvoke_stream", reply_once_answered)
+    loops.patch_reply(monkeypatch, reply_once_answered)
     events = _turn(
         parent,
         '!tool sessions {"action": "ask", "name": "scout", "task": "!text Found it."}\n'
