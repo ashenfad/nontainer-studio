@@ -8160,6 +8160,26 @@ def test_a_resume_that_fails_is_followed_by_another(scripted):
     assert session.ws.files.fs.read("/workspace/a.txt") == b"A"
 
 
+def test_an_edit_rerunning_a_failing_turn_fails_afresh(scripted):
+    """The scripted failure is spent per message, not per text: an edit
+    that reruns the turn word for word sends a new message, and the
+    provider fails on it again, as it would on any new message."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+
+    assert _notices(_run(client, "s1", WRITE_FAIL_ANSWER)) == [RESUMING]
+    (seq,) = [e["seq"] for e in session.events if e["type"] == "user"]
+    r = client.post(
+        "/api/sessions/s1/edit", json={"seq": seq, "message": WRITE_FAIL_ANSWER}
+    )
+    assert r.status_code == 200, r.text
+    events = _collect_until_done(client, "s1", since=r.json()["since"])
+
+    assert _notices(events) == [RESUMING]
+    assert _prose(events) == "wrote a"
+
+
 def test_a_stopped_turn_is_kept_and_not_resumed(scripted):
     """A stop stays a stop: the run is cancelled at the tool it was
     running, nothing resumes it, and it is kept as stopped by the
