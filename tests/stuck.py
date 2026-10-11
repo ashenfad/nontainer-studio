@@ -12,6 +12,8 @@ import asyncio
 import concurrent.futures
 import gc
 import io
+import shutil
+import subprocess
 import sys
 import threading
 import traceback
@@ -74,8 +76,28 @@ def _sandboxes() -> str:
                     )
             except OSError:
                 pass
+            line += _py_spy(pid)
             out.append(line)
     return "\n".join(out) or "(none running)"
+
+
+def _py_spy(pid: int | None) -> str:
+    """The worker's own Python stack, where py-spy is installed (CI's
+    Linux jobs): what the code in the sandbox is doing, or that none
+    is running."""
+    spy = shutil.which("py-spy")
+    if spy is None or pid is None:
+        return ""
+    try:
+        done = subprocess.run(
+            [spy, "dump", "--pid", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"\n(py-spy: {e})"
+    return f"\n{done.stdout}{done.stderr}"
 
 
 def report(why: str) -> None:
