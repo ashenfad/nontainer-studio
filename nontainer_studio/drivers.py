@@ -361,8 +361,17 @@ class AgexDriver:
         return run_id in self._cancelled
 
     def keep(self, run_id: str | None, note: str) -> None:
-        """agex keeps a cancelled or failed run with its closing note,
-        and an interrupted one as it stood; nothing to do."""
+        """agex keeps a cancelled or failed run with its closing note.
+        An interrupted one the turn stops resuming (its resumes spent,
+        or a stop pressed while it waited) would stay interrupted, with
+        nothing saying it stopped, so it is closed here with ``note``:
+        cancelled when the stop was pressed, failed otherwise."""
+        runs = self.session.runs
+        if not runs or runs[-1].run_id != run_id or runs[-1].status != "interrupted":
+            return
+        self.session.abandon(
+            note, status="cancelled" if run_id in self._cancelled else "failed"
+        )
 
     def folded(self, fold: Any) -> None:
         """agex streams its own folds; nothing reaches it from outside."""
