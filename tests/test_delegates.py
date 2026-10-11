@@ -628,6 +628,25 @@ def test_an_answer_the_tool_waited_for_is_delivered_with_its_result(registry):
     assert not any(e["type"] == "delegate" for e in again)
 
 
+def test_an_answer_whose_result_the_run_dropped_stays_unread(registry, monkeypatch):
+    """The answer is recorded when the run reports the call ended. A
+    run cut short before then can drop the result the tool returned, so
+    the model never read the answer, and the next turn delivers it."""
+    parent = registry.open("boss")
+    # the end of the call never reaches the turn, as a run cut short
+    # between the tool returning and its result landing
+    monkeypatch.setattr(parent, "take_returned", lambda result: [])
+    asked = _turn(parent, ASK)
+    assert not any(e["type"] == "delegate" for e in asked)
+    assert [job.name for job in parent.answered_delegates()] == ["boss.scout"]
+
+    monkeypatch.undo()
+    events = _turn(parent, "!text ok")
+    (delivered,) = [e for e in events if e["type"] == "delegate"]
+    assert "Found it." in delivered["text"]
+    assert parent.answered_delegates() == []
+
+
 def _edit(registry, session, seq, message):
     """The /edit route's sequence: rewind, cut the transcript, re-run."""
     session.turn_lock.acquire()  # _run_turn releases it

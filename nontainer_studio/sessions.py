@@ -835,7 +835,7 @@ class Registry(
                 wait=wait,
             )
             if reads and helper.answers:
-                self.answered_inline(owner, helper.answers)
+                self.answers_returned(owner, out, helper.answers)
             return out
 
         sessions_tool.__name__ = "sessions"

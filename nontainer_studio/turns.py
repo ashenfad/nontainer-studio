@@ -304,7 +304,16 @@ async def _follow_run(
     knows whether the run resumed. A failed one raises
     :class:`_RunFailed`.
     """
+    session.drop_returned()
     async for ev in stream:
+        if isinstance(ev, ToolEnded) and ev.name == "sessions":
+            # An answer the call returned is delivered once the run
+            # reports the call ended, with its result in the run: one
+            # cut short before then can drop the result, and the answer
+            # has to stay unread for the next turn.
+            for job, answer in session.take_returned(ev.result):
+                if not session.shows_answer(job):
+                    await session.emit(delegates.answer_event(job.name, answer))
         if isinstance(ev, RunStarted):
             state.run_id = ev.run_id
             session.run_id = ev.run_id

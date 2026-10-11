@@ -263,6 +263,45 @@ class Session:
         self.wakes_left = _delegate_wakes()
         self.wake_cap_noted = False
 
+    returned_answers: list = field(default_factory=list, repr=False)
+    """Delegates' answers the `sessions` tool has returned as a call's
+    result, held as ``(result, job, answer)`` until the run reports
+    that call ended (see :meth:`take_returned`)."""
+
+    _returned: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    """Guards ``returned_answers``: the tool adds to it on its worker
+    thread while the turn takes from it on the loop."""
+
+    def hold_returned(self, result: str, answers: list[tuple[Any, Any]]) -> None:
+        """Hold ``answers`` (job, answer pairs) the `sessions` tool is
+        returning as ``result``. They are not delivered yet: a run cut
+        short can drop the result it was handed, and the model would
+        never read an answer the transcript calls delivered."""
+        with self._returned:
+            self.returned_answers.extend(
+                (result, job, answer) for job, answer in answers
+            )
+
+    def take_returned(self, result: str) -> list[tuple[Any, Any]]:
+        """The answers held for a `sessions` call that ended with
+        ``result``, no longer held. The run reporting the call's end is
+        what says the model got its result. A loop may send the result
+        on with delivered notes after it, so a held result is matched
+        within the one reported."""
+        with self._returned:
+            taken = [(j, a) for r, j, a in self.returned_answers if r in result]
+            self.returned_answers = [
+                held for held in self.returned_answers if held[0] not in result
+            ]
+        return taken
+
+    def drop_returned(self) -> None:
+        """Forget the answers held for calls no run reported ending:
+        their results were dropped with the run, and the answers are
+        still unread."""
+        with self._returned:
+            self.returned_answers = []
+
     inbox: Inbox = field(default_factory=Inbox)
     """Messages queued while a turn runs, delivered to the model with
     its next tool result.
