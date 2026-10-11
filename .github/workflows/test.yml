@@ -39,7 +39,7 @@ jobs:
 
     - name: Run tests
       run: |
-        pytest tests/ -v
+        pytest tests/ -n auto -v
 
     - name: Run linter
       run: |
@@ -76,7 +76,7 @@ jobs:
 
     - name: Run the browser tests against the committed bundle
       run: |
-        pytest tests/test_e2e.py tests/test_server.py -v
+        pytest tests/test_e2e.py tests/test_server.py -n auto -v
 
   # The frontend is committed as a built bundle, so "forgot to rebuild"
   # is this repo's standing footgun: the source says one thing and the

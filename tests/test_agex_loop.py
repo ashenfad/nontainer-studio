@@ -27,7 +27,6 @@ def knobs(monkeypatch):
     monkeypatch.setenv("NONTAINER_STUDIO_LOOP", "agex")
     monkeypatch.delenv("NONTAINER_STUDIO_WSGIT", raising=False)
     monkeypatch.delenv("NONTAINER_STUDIO_SESSIONS", raising=False)
-    monkeypatch.setattr(turns, "RESUME_BACKOFFS", (0, 0, 0))
 
 
 class Scripts:

@@ -121,7 +121,7 @@ event carries its sequence number as its cursor.
 ```sh
 uv sync --extra dev
 uv run playwright install chromium   # once, for the browser tests
-uv run pytest
+uv run pytest -n auto   # a test per core; plain `uv run pytest` runs them one by one
 ```
 
 No LLM key is needed anywhere in the suite.

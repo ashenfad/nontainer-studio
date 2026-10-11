@@ -189,6 +189,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The suite runs a test per core.** CI and the docs run it with
+  pytest-xdist's `-n auto`, and no test waits out a real resume backoff;
+  a local run fell from about eight minutes to ninety seconds.
+
 - **Turns drive the agent through a `TurnDriver`.** `turns.py` reads
   nontainer's turn events from a session's driver (`drivers.py`), and
   `AgnoDriver` is the agno loop, so a second loop can sit behind the
