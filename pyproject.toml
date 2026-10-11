@@ -82,7 +82,7 @@ build-backend = "hatchling.build"
 # replaces every nontainer requirement, extras and all, so it names the
 # extras the dependencies above ask for.
 override-dependencies = [
-    "nontainer[agno,apps] @ git+https://github.com/ashenfad/nontainer@75a75871e39a3ad7433988aaba63c2288585b9ce",
+    "nontainer[agno,apps] @ git+https://github.com/ashenfad/nontainer@d3892070796dc0e945ac3450e4fbdc85325a6aa7",
 ]
 
 [tool.uv.sources]
