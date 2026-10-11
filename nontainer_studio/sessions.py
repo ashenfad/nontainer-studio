@@ -74,7 +74,7 @@ from .config import (
     sessions_tool_enabled,
     wsgit_enabled,
 )
-from .delegates import DELEGATE_TURNS, DelegationMixin, StudioRunner
+from .delegates import DELEGATE_TURNS, DelegationMixin, ReadsAnswers, StudioRunner
 from .drivers import DriverSpec
 from .manifest import ManifestMixin
 from .prompts import (
@@ -818,8 +818,13 @@ class Registry(
                 # what this session already has cost nothing and are
                 # how it finishes with them.
                 return _depth_refusal(self.delegate_depth)
-            return run_action(
-                delegates,
+            # An action that can hand back an answer goes through a
+            # helper that notes it: the answer reaches the model as this
+            # call's result, and the transcript has to say so.
+            reads = action in ("ask", "resume", "result")
+            helper = ReadsAnswers(delegates) if reads else delegates
+            out = run_action(
+                helper,
                 action,
                 task=task,
                 name=name,
@@ -829,6 +834,9 @@ class Registry(
                 resume=resume,
                 wait=wait,
             )
+            if reads and helper.answers:
+                self.answered_inline(owner, helper.answers)
+            return out
 
         sessions_tool.__name__ = "sessions"
         sessions_tool.__doc__ = SESSIONS_TOOL_DESCRIPTION

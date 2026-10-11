@@ -132,13 +132,7 @@ def _delivery_event(note: DeliveredNote) -> dict:
                 "status": "answered",
                 "text": note.text,
             }
-        return {
-            "type": "delegate",
-            "name": note.job,
-            "status": answer.status,
-            "text": delegates.answer_message(note.job, answer),
-            **delegates.answer_run(answer),
-        }
+        return delegates.answer_event(note.job, answer)
     return {"type": "interject", "id": note.id, "text": note.text}
 
 
@@ -580,15 +574,7 @@ async def _one_turn(
             )
         ]
         for name, answer in answers:
-            await session.emit(
-                {
-                    "type": "delegate",
-                    "name": name,
-                    "status": answer.status,
-                    "text": delegates.answer_message(name, answer),
-                    **delegates.answer_run(answer),
-                }
-            )
+            await session.emit(delegates.answer_event(name, answer))
         for name, note in notes:
             # The same event, because it is the same fact in the same
             # slot: what became of a delegate this session asked for.
