@@ -8261,6 +8261,48 @@ def test_a_stop_interrupts_the_call_running(scripted, monkeypatch):
     assert "stopped by the user" in runs[-1].messages[-1].content
 
 
+def test_a_stop_leaves_the_next_turn_alone(scripted, monkeypatch):
+    """The stopped turn's task goes on after its `done` (naming the
+    session, a second model run), and the next turn may start meanwhile:
+    the stop's interrupts end with its own run, not with that task."""
+    import threading
+
+    _no_tick_limit(monkeypatch)
+    naming = threading.Event()
+
+    async def slow_naming(session, registry):
+        await asyncio.to_thread(naming.wait, 30)
+
+    monkeypatch.setattr(turns, "_name_the_session", slow_naming)
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    try:
+        started = client.post("/api/sessions/s1/chat", json={"message": FOREVER})
+        _await(lambda: session.running_call is not None)
+        assert client.post("/api/sessions/s1/cancel", json={}).status_code == 200
+        _collect_until_done(client, "s1", since=started.json()["since"])
+        assert not session.turn_task.done()  # still naming the session
+
+        timed = (
+            "import time\nt = time.time()\n"
+            "while time.time() - t < 1.5:\n    pass\nprint('finished')"
+        )
+        message = f"!tool run_python {json.dumps({'code': timed})}\n!text done"
+        _await(lambda: not session.busy)
+        events = _collect_until_done(
+            client,
+            "s1",
+            since=client.post(
+                "/api/sessions/s1/chat", json={"message": message}
+            ).json()["since"],
+        )
+        (end,) = [e for e in events if e["type"] == "tool_end"]
+        assert "finished" in end["result"], end["result"]
+    finally:
+        naming.set()
+
+
 def test_a_stop_says_what_it_is_waiting_on(scripted, monkeypatch):
     """A single blocking call runs out though interrupted; the
     transcript says what the stop waits on rather than look ignored."""
