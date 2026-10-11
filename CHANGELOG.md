@@ -473,6 +473,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now says the job went with the session, where the branch is, and to
   ask afresh.
 
+- **A stopped agex turn says the user stopped it.** Its closing note said
+  only "stopped", and the next turn's model told the user its turn had
+  hit a time limit; agno's note already said who stopped it.
+
 - **An agex run the studio stops resuming is closed with its note.** When
   every resume fails, or a stop lands while it waits, the run ends with
   the note agno's gets, so the next turn's model knows where its work
