@@ -37,6 +37,12 @@ jobs:
         # extra's own marker keeps it off 3.10, where it importorskips.
         uv pip install --system -e ".[dev,dud]"
 
+    # For tests/stuck.py: a test whose wait for a turn gives up dumps the
+    # sandbox workers' own stacks too, which py-spy can read on Linux.
+    - name: Install py-spy
+      if: runner.os == 'Linux'
+      run: uv pip install --system py-spy
+
     - name: Run tests
       run: |
         pytest tests/ -n auto -v
@@ -69,7 +75,7 @@ jobs:
     - uses: astral-sh/setup-uv@v6
 
     - name: Install dependencies
-      run: uv pip install --system -e ".[dev]"
+      run: uv pip install --system -e ".[dev]" py-spy
 
     - name: Install Playwright browser
       run: python -m playwright install --with-deps chromium
