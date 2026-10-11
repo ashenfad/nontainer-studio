@@ -300,7 +300,8 @@ class ReadsAnswers:
     """A session's ``Sessions`` helper, noting each answer it hands
     back. ``ask`` with ``wait`` and ``result`` return one, and the
     `sessions` tool returns it to the model as the call's result, which
-    delivers it as surely as a turn that collects it."""
+    delivers it as surely as a turn that collects it once the run has
+    the result."""
 
     def __init__(self, helper: Any) -> None:
         self._helper = helper
@@ -774,22 +775,26 @@ class DelegationMixin:
         wherever it does its work rather than doing it there."""
         self._wake_hook = hook
 
-    def answered_inline(self, owner: str, answers: list[Answer]) -> None:
-        """Record ``answers`` as delivered to ``owner``: its `sessions`
-        tool returned them as the call's result. The record is the
-        transcript's `delegate` event, as for every other delivery;
-        without one an answer still counts as unread, and a woken turn
-        would hand the model an answer it already has. One the
-        transcript already shows (``result`` read it again) is not
-        recorded twice."""
+    def answers_returned(self, owner: str, result: str, answers: list[Answer]) -> None:
+        """``answers``, which ``owner``'s `sessions` tool is returning
+        to the model as ``result``. Held on the session until the run
+        reports the call ended, and then recorded as delivered (see
+        ``turns._follow_run``): the record is the transcript's
+        `delegate` event, as for every other delivery, and without one
+        an answer still counts as unread, so a woken turn would hand
+        the model an answer it already has."""
         session = self.get(owner)
         if session is None or session.delegates is None:
             return
         jobs = {job.name: job for job in session.delegates.list()}
-        for answer in answers:
-            job = jobs.get(answer.branch or "")
-            if job is not None and not session.shows_answer(job):
-                session.publish(answer_event(job.name, answer))
+        session.hold_returned(
+            result,
+            [
+                (jobs[answer.branch], answer)
+                for answer in answers
+                if answer.branch in jobs
+            ],
+        )
 
     def _answer_landed(self, parent: str) -> None:
         """nontainer's ``on_answer`` for ``parent``'s delegates. Never
