@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   parent's; an agex session has the same tools as an agno one. Needs
   the `agex` extra.
 
+- **The dummy test model runs on agex too.** `NONTAINER_STUDIO_MODEL=dummy`
+  reads the same script on either loop, and the server, delegation and
+  browser tests run on both.
+
 - **Agents can find and ask the human's other sessions.** A new
   `sessions others` action lists every session but the asker's, most
   recently active first: the name `fork_from` takes, the title, when it
