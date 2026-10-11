@@ -81,18 +81,27 @@ did nothing."""
 async def stop(session: Any) -> None:
     """Stop the running turn: the driver cancels the run, and the tool
     call running is interrupted (``ws.runtime.interrupt()``) until the
-    turn ends, rather than waited out."""
-    await session.driver.cancel(session.run_id)
+    run's turn ends, rather than waited out."""
+    run_id = session.run_id
+    await session.driver.cancel(run_id)
     task = session.turn_task
     watch = session.stop_watch
     if task is not None and not task.done() and (watch is None or watch.done()):
-        session.stop_watch = asyncio.create_task(_interrupt_until_done(session, task))
+        session.stop_watch = asyncio.create_task(
+            _interrupt_until_done(session, task, run_id)
+        )
 
 
-async def _interrupt_until_done(session: Any, task: asyncio.Task) -> None:
+async def _interrupt_until_done(
+    session: Any, task: asyncio.Task, run_id: str | None
+) -> None:
+    """Interrupt while the stopped run is the session's, which it is
+    until its turn's `done`. The task goes on after that (naming the
+    session, waking it), and a next turn may already be running by
+    then: its calls are not the ones stopped."""
     stopped = time.monotonic()
     told = False
-    while not task.done():
+    while session.run_id == run_id and not task.done():
         session.ws.runtime.interrupt()
         call = session.running_call
         if (
