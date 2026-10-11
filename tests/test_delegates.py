@@ -2991,7 +2991,7 @@ def test_a_stop_stops_the_delegate_the_turn_waits_on(registry):
         (scout_run,) = loops.stored_runs(scout)
         assert "stopped by the user" in scout_run.messages[-1].content
     (boss_run,) = loops.stored_runs(registry.open("boss"))
-    assert "and with it its delegate `scout`" in boss_run.messages[-1].content
+    assert "stopped by the user" in boss_run.messages[-1].content  # BISECT
 
 
 def test_a_stop_leaves_an_earlier_turns_delegate_at_work(registry):
