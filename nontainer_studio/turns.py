@@ -87,12 +87,11 @@ async def stop(session: Any) -> None:
     waited out. Delegates asked for by an earlier turn go on: they are
     no part of this one."""
     run_id = session.run_id
+    # BISECT: the run cancelled first, as before #105, then the delegates
+    await session.driver.cancel(run_id, STOPPED_BY_USER)
     stopped = await asyncio.to_thread(_stop_delegates, session)
-    reason = STOPPED_BY_USER
     if stopped:
-        reason += f", and with it {_naming(stopped)}"
         await session.emit({"type": "notice", "text": f"stopping {_naming(stopped)}"})
-    await session.driver.cancel(run_id, reason)
     task = session.turn_task
     watch = session.stop_watch
     if task is not None and not task.done() and (watch is None or watch.done()):
