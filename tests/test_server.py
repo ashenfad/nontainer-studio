@@ -8098,10 +8098,6 @@ def test_a_provider_error_resumes_the_run_where_it_stopped(scripted, caplog):
     assert "agno restarted run" not in caplog.text
 
 
-@pytest.mark.agex_gap(
-    "agex has no way to close a run it was interrupted in with the studio's "
-    "note, so a run the studio stops resuming stays interrupted, unannotated"
-)
 def test_resumes_that_all_fail_end_the_turn_and_keep_the_run(scripted):
     """A bounded number of resumes. When every one fails the turn ends
     in an error that says it was the provider, how often, and how to go
@@ -8200,10 +8196,6 @@ def test_a_stopped_turn_is_kept_and_not_resumed(scripted):
     assert "stopped" in runs[0].messages[-1].content
 
 
-@pytest.mark.agex_gap(
-    "agex has no way to close a run it was interrupted in with the studio's "
-    "note, so a run the studio stops resuming stays interrupted, unannotated"
-)
 def test_a_stop_during_the_wait_is_not_resumed(scripted, monkeypatch):
     """The wait before a resume is part of the turn, and the stop button
     reaches it: the run is kept as stopped by the user instead of being

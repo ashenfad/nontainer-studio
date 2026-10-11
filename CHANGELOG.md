@@ -459,6 +459,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **An agex run the studio stops resuming is closed with its note.** When
+  every resume fails, or a stop lands while it waits, the run ends with
+  the note agno's gets, so the next turn's model knows where its work
+  stopped.
+
 - **Tool calls pair by id, and a failed one says so.** Parallel calls
   of one tool no longer swap results (`call_id`), and a call that
   raised shows as failed (`is_error`).
