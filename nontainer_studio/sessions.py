@@ -810,6 +810,14 @@ class Registry(
                 return _render_published(self.list_apps())
             if action == "others":
                 return _render_others(self.others(owner), time.time())
+            # A delegate whose job is gone (its asker's session closed
+            # since) can't be resumed, and saying only "no job named"
+            # reads as never having been. Before the depth cap: an `ask`
+            # that resumes forks nothing, so the cap isn't its answer.
+            target = resume or (name if action == "resume" else "")
+            parted = self.parted_from_job(owner, delegates, target)
+            if parted is not None:
+                return parted
             if action == "ask" and self.at_depth_cap(owner):
                 # Before nontainer sees it: the fork is the expensive
                 # half, and a refusal the agent can read and act on
@@ -818,12 +826,6 @@ class Registry(
                 # what this session already has cost nothing and are
                 # how it finishes with them.
                 return _depth_refusal(self.delegate_depth)
-            # A delegate asked before a restart has no job to resume,
-            # and saying only "no job named" reads as never having been.
-            target = resume or (name if action == "resume" else "")
-            parted = self.parted_by_restart(owner, delegates, target)
-            if parted is not None:
-                return parted
             # An action that can hand back an answer goes through a
             # helper that notes it: the answer reaches the model as this
             # call's result, and the transcript has to say so.

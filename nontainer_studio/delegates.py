@@ -255,17 +255,22 @@ def orphan_message(name: str, *, versioning: bool) -> str:
 
 def parted_message(name: str, *, versioning: bool) -> str:
     """The `sessions` tool's answer to a resume of ``name``, a delegate
-    asked before the studio restarted.
+    whose job is gone.
 
-    A resume continues a job, and the job table a restart takes is where
-    the job lived, so nontainer finds no job of that name and says only
-    that. The delegate is still recorded and its branch still there, and
-    a model told only "no job named" concludes it never existed.
+    A resume continues a job, and a job lives in the asking session's
+    helper only while that session stays open. The session can close in
+    between: the studio restarts, or, for a delegate, its session closes
+    when it answers and is reopened when it is asked again. nontainer
+    then finds no job of that name and says only that, while the
+    delegate is still recorded and its branch still there, and a model
+    told only "no job named" concludes it never existed.
     """
     return (
-        f"sessions resume: `{name}` was asked before the studio restarted, "
-        "and a restart takes the job a resume continues, so it can't be "
-        "resumed.\n"
+        f"sessions resume: `{name}` can't be resumed, because its job is "
+        "gone. A resume continues a job, and a job lasts only while the "
+        "session that asked for it stays open; this session has been "
+        "closed since (the studio restarted, or, for a delegate, its "
+        "session closed when it answered).\n"
         + (ORPHAN_VERSIONING.format(name=name) if versioning else "")
         + "To put more work to a delegate, ask afresh with `sessions ask`."
     )
@@ -793,11 +798,11 @@ class DelegationMixin:
         wherever it does its work rather than doing it there."""
         self._wake_hook = hook
 
-    def parted_by_restart(self, owner: str, delegates: Any, target: str) -> str | None:
-        """What a resume of ``target`` gets when a restart parted it from
-        its job (:func:`parted_message`): one of ``owner``'s delegates
-        the studio recorded, which its helper holds no job for. ``None``
-        for any other name, which nontainer answers itself."""
+    def parted_from_job(self, owner: str, delegates: Any, target: str) -> str | None:
+        """What a resume of ``target`` gets when its job is gone
+        (:func:`parted_message`): one of ``owner``'s delegates the studio
+        recorded, which its helper holds no job for. ``None`` for any
+        other name, which nontainer answers itself."""
         target = target.strip()
         if not target or delegates is None:
             return None

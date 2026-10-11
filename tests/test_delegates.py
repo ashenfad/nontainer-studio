@@ -2025,6 +2025,11 @@ def _asked_before_a_restart(tmp_path):
         registry.close()
 
 
+def _sessions_call(**call) -> str:
+    """A scripted turn that makes one `sessions` call, then says ok."""
+    return f"!tool sessions {json.dumps(call)}\n!text ok"
+
+
 def test_a_resume_of_a_delegate_from_before_a_restart_says_why_it_cant(tmp_path):
     """A resume continues a job, and the restart took the job: nontainer
     finds no job of the name and would say only that, which reads as a
@@ -2039,21 +2044,72 @@ def test_a_resume_of_a_delegate_from_before_a_restart_says_why_it_cant(tmp_path)
             {"action": "resume", "name": "scout", "task": "!text more"},
             {"action": "ask", "resume": "boss.scout", "task": "!text more"},
         ):
-            events = _turn(
-                parent, f"!tool sessions {json.dumps(call)}\n!text ok", registry
-            )
+            events = _turn(parent, _sessions_call(**call), registry)
             (said,) = _tool_results(events, "sessions")
-            assert said.startswith("sessions resume: `boss.scout` was asked before")
+            assert said.startswith("sessions resume: `boss.scout` can't be resumed")
             assert "ws-git merge boss.scout" in said
             assert "sessions ask" in said
         # a name the studio never recorded is nontainer's to answer
         events = _turn(
             parent,
-            '!tool sessions {"action": "resume", "name": "nobody", "task": "x"}\n'
-            "!text ok",
+            _sessions_call(action="resume", name="nobody", task="x"),
             registry,
         )
         assert "no job named" in _tool_results(events, "sessions")[0]
+    finally:
+        registry.close()
+
+
+def test_a_resume_of_a_delegate_released_since_says_why_it_cant(registry):
+    """A delegate's session is closed when it answers, and its helper's
+    jobs with it, with no restart at all: asked again, a delegate that
+    had delegates of its own can't resume them, and is told why."""
+    parent = registry.open("boss")
+    nested = _sessions_call(
+        action="ask", name="leaf", task="!text leaf done", wait=True
+    )
+    _turn(parent, _sessions_call(action="ask", name="mid", task=nested, wait=True))
+    assert "boss.mid.leaf" in registry._manifest()["delegates"]
+
+    again = _sessions_call(action="resume", name="leaf", task="!text more")
+    _turn(parent, _sessions_call(action="resume", name="mid", task=again, wait=True))
+    mid = registry.open("boss.mid")
+    said = _tool_results(mid.snapshot(), "sessions")[-1]
+    assert said.startswith("sessions resume: `boss.mid.leaf` can't be resumed")
+
+
+def test_a_resume_at_the_depth_cap_is_not_refused_as_a_fork(tmp_path):
+    """An `ask` that resumes forks nothing, so the depth cap isn't its
+    answer: one whose job is gone says why it can't be resumed."""
+    before = _reborn(tmp_path)
+    try:
+        nested = _sessions_call(
+            action="ask", name="leaf", task="!text leaf done", wait=True
+        )
+        _turn(
+            before.open("boss"),
+            _sessions_call(action="ask", name="mid", task=nested, wait=True),
+            before,
+        )
+    finally:
+        before.close()
+
+    # the cap lowered since: the delegate now sits at it
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a, **k: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+        delegate_depth=1,
+    )
+    try:
+        assert registry.at_depth_cap("boss.mid")
+        events = _turn(
+            registry.open("boss.mid"),
+            _sessions_call(action="ask", resume="leaf", task="!text more"),
+            registry,
+        )
+        (said,) = _tool_results(events, "sessions")
+        assert said.startswith("sessions resume: `boss.mid.leaf` can't be resumed")
     finally:
         registry.close()
 
