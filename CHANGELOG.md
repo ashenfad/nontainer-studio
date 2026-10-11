@@ -467,6 +467,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   OpenRouter `@slug` pin, gemma's curated routing and Claude's prompt
   caching now reach agex too; Claude on agex had cached nothing.
 
+- **Resuming a delegate from before a restart says why it can't.** The
+  tool said only "no job named", which reads as a delegate that never
+  was; it now says the restart took the job, where its branch is, and
+  to ask afresh.
+
 - **An agex run the studio stops resuming is closed with its note.** When
   every resume fails, or a stop lands while it waits, the run ends with
   the note agno's gets, so the next turn's model knows where its work
