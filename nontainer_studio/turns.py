@@ -743,6 +743,14 @@ async def _one_turn(
             await asyncio.to_thread(_keep_aborted_run, session, state.run_id, said)
             _settle_inbox(session)
     except asyncio.CancelledError:
+        cut, session.cut_reason = session.cut_reason, None
+        if cut is not None:
+            # Cut by a stop that could not wait for the run to start
+            # (a delegate's, see StudioRunner): a stop, said as one.
+            await session.emit({"type": "notice", "text": "turn stopped"})
+            _keep_aborted_run(session, state.run_id, cut)
+            _settle_inbox(session)
+            raise
         # Cut from outside the loop, which is the studio shutting down
         # on a turn it cannot wait out. The `error` event is what the
         # human reads and what a delegate's runner reads its status

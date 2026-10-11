@@ -13,6 +13,7 @@ import time
 
 import loops
 import pytest
+import stuck
 from nontainer import conversation
 from nontainer.errors import BranchExpired
 from nontainer.planes import LEGACY_RUN_PREFIX, LEGACY_SESSION_KEY
@@ -2939,6 +2940,7 @@ def _until_done(client, name, since, timeout=30):
         if any(e["type"] == "done" for e in events):
             return events
         time.sleep(0.05)
+    stuck.report(f"{name}: no done within {timeout}s")
     raise AssertionError(f"{name}: no done within {timeout}s")
 
 
@@ -2948,6 +2950,7 @@ def _until(predicate, timeout=30):
         if predicate():
             return
         time.sleep(0.05)
+    stuck.report("a condition never held")
     raise AssertionError("condition never held")
 
 
@@ -3018,3 +3021,56 @@ def test_a_stop_leaves_an_earlier_turns_delegate_at_work(registry):
         assert [j.status for j in boss.delegates.list()] == ["running"]
         for job in boss.delegates.list():
             boss.delegates.cancel(job.name)  # done with it
+
+
+def test_a_delegate_with_no_run_yet_is_cut_as_a_stop(monkeypatch):
+    """A stopped delegate whose run has no id to cancel by in time is
+    cut, and the cut says it was a stop."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(delegates, "_RUN_ID_WAIT", 0.1)
+
+    reasons = []
+
+    class Driver:
+        async def cancel(self, run_id, reason):
+            reasons.append((run_id, reason))
+
+    async def go():
+        child = SimpleNamespace(run_id=None, cut_reason=None, driver=Driver())
+        turn = asyncio.get_running_loop().create_future()
+        await delegates._stop_turn(child, turn)
+        return child, turn
+
+    child, turn = asyncio.run(go())
+    assert turn.cancelled()
+    assert child.cut_reason == "stopped by the user"
+    assert reasons == [(None, "stopped by the user")]  # where the run reads it
+
+
+def test_a_turn_cut_for_a_stop_says_stopped_not_shut_down(registry):
+    boss = registry.open("boss")
+    nap = json.dumps({"code": "import time; time.sleep(0.5)"})
+
+    async def go():
+        boss.turn_lock.acquire()  # _run_turn releases it
+        task = asyncio.ensure_future(
+            turns._run_turn(boss, f"!tool run_python {nap}\n!text never said")
+        )
+        while boss.running_call is None:
+            await asyncio.sleep(0.02)
+        boss.cut_reason = "stopped by the user"
+        await boss.driver.cancel(None, "stopped by the user")  # as _stop_turn does
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(go())
+    assert boss.cut_reason is None  # spent
+    kinds = [(e["type"], e.get("text") or e.get("message")) for e in boss.events]
+    assert ("notice", "turn stopped") in kinds
+    assert not any(kind == "error" for kind, _ in kinds)
+    (run,) = loops.stored_runs(boss)
+    assert "stopped by the user" in run.messages[-1].content

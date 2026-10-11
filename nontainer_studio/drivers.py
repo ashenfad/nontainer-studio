@@ -94,10 +94,11 @@ class TurnDriver(Protocol):
         """Run ``run_id`` on from where it was interrupted, in place."""
         ...
 
-    async def cancel(self, run_id: str, reason: str = STOPPED_BY_USER) -> None:
+    async def cancel(self, run_id: str | None, reason: str = STOPPED_BY_USER) -> None:
         """Stop ``run_id`` at its next chance, ``reason`` saying why in
         the run's closing note. Idempotent, and a run not running now
-        records the intent (:meth:`is_cancelled`)."""
+        records the intent (:meth:`is_cancelled`). ``None``, for a run
+        not started yet, records the reason for whatever cuts it."""
         ...
 
     async def is_cancelled(self, run_id: str) -> bool:
@@ -147,9 +148,10 @@ class AgnoDriver:
             )
         )
 
-    async def cancel(self, run_id: str, reason: str = STOPPED_BY_USER) -> None:
+    async def cancel(self, run_id: str | None, reason: str = STOPPED_BY_USER) -> None:
         self._stop_reason = reason
-        await self.agent.acancel_run(run_id)
+        if run_id is not None:
+            await self.agent.acancel_run(run_id)
 
     async def is_cancelled(self, run_id: str) -> bool:
         return await ais_cancelled(run_id)
@@ -395,10 +397,11 @@ class AgexDriver:
         # agex continues the last turn, which is the interrupted one
         return self._follow(self.session.stream(resume=True))
 
-    async def cancel(self, run_id: str, reason: str = STOPPED_BY_USER) -> None:
+    async def cancel(self, run_id: str | None, reason: str = STOPPED_BY_USER) -> None:
         # recorded, so a stop pressed while no turn runs (between a
         # provider error and its resume) is still seen
-        self._cancelled.add(run_id)
+        if run_id is not None:
+            self._cancelled.add(run_id)
         # the run's closing note says who stopped it: told only that it
         # stopped, the next turn's model guesses why
         self.session.cancel(reason)

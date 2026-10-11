@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import loops
 import pytest
+import stuck
 from nontainer import conversation
 from nontainer.apps import render_test_app
 from nontainer.apps import request as nt_request
@@ -131,6 +132,7 @@ def _collect_until_done(client, session: str, since: int = 0) -> list[dict]:
         if any(e["type"] == "done" for e in events):
             return events
         time.sleep(0.02)
+    stuck.report(f"{session}: no done event within 10s")
     raise AssertionError(f"no done event within 10s: {events}")
 
 

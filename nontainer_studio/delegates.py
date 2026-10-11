@@ -687,12 +687,16 @@ _RUN_ID_WAIT = 2.0
 
 async def _stop_turn(child: "Session", turn: asyncio.Future) -> None:
     """Stop ``child``'s turn as the stop button would, once its run has
-    an id to cancel by; one that never gets one is cut."""
+    an id to cancel by; one that never gets one is cut, as a stop."""
+    from .drivers import STOPPED_BY_USER
     from .turns import stop
 
     deadline = asyncio.get_running_loop().time() + _RUN_ID_WAIT
     while child.run_id is None and not turn.done():
         if asyncio.get_running_loop().time() >= deadline:
+            # the reason first, where the run's note will read it
+            child.cut_reason = STOPPED_BY_USER
+            await child.driver.cancel(None, STOPPED_BY_USER)
             turn.cancel()
             return
         await asyncio.sleep(_LOCK_POLL)
