@@ -638,8 +638,10 @@ class Registry(
                 "testdb": Db(":memory:", live=db),
                 **extra,
             },
-            # A host call's wait counts against the timeout, and a deep
-            # search alone runs 20-40s.
+            # Longer where web and media are on, whose code does more
+            # around those calls. Time inside a host call (a deep search,
+            # a task's helper) is off the clock on every rung (sandtrap
+            # 0.4.2), so neither has to fit in this.
             **({"timeout": AGENT_PYTHON_TIMEOUT} if extra else {}),
             isolation=isolation,
             # Import the granted stack ONCE into sandtrap's forkserver
