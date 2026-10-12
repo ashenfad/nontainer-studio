@@ -198,8 +198,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `AgnoDriver` is the agno loop, so a second loop can sit behind the
   same turns; nothing a person sees changes.
 
-- **Runs on a pinned commit of nontainer's main until its next
-  release.** CI installs with uv, so it tests that commit too.
+- **Requires nontainer 0.11.0.** The stop's interrupt, the cut-off
+  call's reason and the turn events the transcript shows are in it, and
+  it brings sandtrap 0.4.4.
 
 - **Requires nontainer 0.10.0.** Its async delegate runners and
   `until_settled` are what the delegation below is built on.
