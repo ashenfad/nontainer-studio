@@ -88,13 +88,16 @@ def _py_spy(pid: int | None) -> str:
     spy = shutil.which("py-spy")
     if spy is None or pid is None:
         return ""
+    command = [spy, "dump", "--pid", str(pid)]
     try:
-        done = subprocess.run(
-            [spy, "dump", "--pid", str(pid)],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
+        done = subprocess.run(command, capture_output=True, text=True, timeout=20)
+        if "Permission Denied" in done.stdout + done.stderr and shutil.which("sudo"):
+            # a forkserver's worker is no descendant of py-spy, which a
+            # restricted ptrace (CI's Linux runners) refuses to trace;
+            # those runners have passwordless sudo
+            done = subprocess.run(
+                ["sudo", "-n", *command], capture_output=True, text=True, timeout=20
+            )
     except (OSError, subprocess.TimeoutExpired) as e:
         return f"\n(py-spy: {e})"
     return f"\n{done.stdout}{done.stderr}"
