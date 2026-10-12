@@ -10,10 +10,11 @@ handler) turns a function signature into a call a helper agent answers:
 
 ```python
 from dataclasses import dataclass
+from typing import Literal
 
 @dataclass
 class Verdict:
-    label: str        # "bug", "feature" or "question"
+    label: Literal["bug", "feature", "question"]
     confidence: float
 
 @agex.task
@@ -30,6 +31,10 @@ return value are values: str, numbers, lists and dicts of them, your
 own dataclasses and enums, tables and arrays, checked against the
 annotations. A helper that can't do it raises `agex.TaskFailed`; one
 that needs to ask raises `agex.TaskNeedsInput`.
+
+**A field with fixed choices gets a `Literal` (or an enum) type**, not
+`str` and a comment: the helper's answer is checked against it, so your
+code never sees a value outside the choices.
 
 **Use one for judgment, not for logic.** Classifying, extracting fields
 from free text, summarizing, rewriting, scoring: work whose answer is
@@ -63,10 +68,16 @@ long. So:
 - **Define the task at a handler module's top level, and call it from a
   POST** that a person's action sends (a button, a form). Never from a
   GET or on page load: the page would hang, and a reload would pay again.
+  Give it a leading underscore (`def _summarize`), as any helper in a
+  handler module has, or api.log notes it as a function that isn't an
+  HTTP verb.
 - **Show that it is working.** Disable the button and show a pending
   state until the response lands; say so if it fails.
-- **Keep what you got.** Store results in `cache`, keyed by the input,
-  and answer a repeat from there before calling the task.
+- **Keep what you got.** Store results in a `db` table keyed by the
+  input (a hash of it), and answer a repeat from there before calling
+  the task. Not `cache`: a published app can't write it. Let a failed
+  write raise; a `try`/`except: pass` around it hides that it never
+  stored anything.
 - **Batch with `.map`**, not a loop of calls: it runs them at once.
 - In the preview, requests are served one at a time, so other requests
   wait while a task runs. A published app does not have that limit.
@@ -75,8 +86,11 @@ long. So:
 
 A test shouldn't spend model calls. `agex_stand_in` answers every task
 call at once with the simplest value of its return type (`""`, `0`, `[]`,
-a record of such fields), which is enough to test what the handler does
-with an answer:
+the first choice of a `Literal` or enum, a record of such fields), which
+is enough to test what the handler does with an answer. If a check of
+yours rejects that answer, the check is right and the test is wrong:
+type the field (above) or assert the rejection; never loosen the check
+to suit the stand-in.
 
 - ws-pytest: `call('triage', 'POST', json={...}, agex=agex_stand_in)`,
   with `from host import call, agex_stand_in`.
