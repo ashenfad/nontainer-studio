@@ -20,7 +20,7 @@ from nontainer.apps import mint_token
 from nontainer.apps.dispatch import PUBLISH_EXCLUDE
 from nontainer.errors import WorkspaceError
 
-from .config import _ws_kwargs
+from .config import _agex_installed, _ws_kwargs
 from .session import (
     Db,
     Session,
@@ -701,11 +701,18 @@ class PublishingMixin:
             # pointer has been left behind. The open re-reads
             # nontainer's registry either way, so a version unpublished
             # since is refused rather than served.
-            snapshot = publication.open(
-                version,
-                python=self._python_config(self._app_db(entry)),
-                **_ws_kwargs(),
-            )
+            python = self._python_config(self._app_db(entry))
+            if _agex_installed() and self._default_model:
+                # An app built with agex's tasks calls them when served
+                # too, on the studio's default model: the one exception to
+                # serving no host object that spends the operator's key.
+                # A model that won't build costs the app its tasks, not
+                # its serving.
+                try:
+                    python = self._with_tasks(python, self._default_model)
+                except Exception:  # noqa: BLE001 - serve without them
+                    log.warning("app %s: agex tasks unavailable", token, exc_info=True)
+            snapshot = publication.open(version, python=python, **_ws_kwargs())
             self._published[token] = (version, snapshot)
             return snapshot
 

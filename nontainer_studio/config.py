@@ -287,6 +287,19 @@ LOOPS = ("agno", "agex")
 """The loops a session can run on: agno's, and agex's."""
 
 
+def _tasks_for(loop: str) -> bool:
+    """Whether a session on ``loop`` gets agex's agent-defined tasks:
+    on the agex loop, with agex installed. Their helpers are agex
+    agents, and the capability (and its skill) belong to that loop."""
+    return loop == "agex" and _agex_installed()
+
+
+def _agex_installed() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("agex") is not None
+
+
 def loop_choice() -> str:
     """``NONTAINER_STUDIO_LOOP``: the loop a NEW session runs on,
     ``agno`` (the default) or ``agex``.

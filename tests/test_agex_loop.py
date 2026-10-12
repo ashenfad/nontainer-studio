@@ -350,3 +350,95 @@ def test_the_dummy_reads_the_same_script_on_agex():
     fresh = said("!fail one\n!text done")
     quiet = asyncio.run(reply(DummyProvider(), [fresh], []))
     assert [p.text for p in quiet.parts] == ["done"]
+
+
+# -- agent-defined tasks (@agex.task), on the agex loop -------------------------------
+
+SHOUT = '''
+@agex.task
+def shout(word: str) -> str:
+    """HELPER Say the word in capitals."""
+
+print("loud:", shout("hi"))
+'''
+
+SHOUT_HANDLER = b'''
+from host import agex
+
+@agex.task(objects=())
+def shout(word: str) -> str:
+    """HELPER Say the word in capitals."""
+
+def post(req):
+    return {"loud": shout(req.json["word"])}
+'''
+
+
+def _runs(code: str) -> ModelStep:
+    return calls("run_python", code=code)
+
+
+def test_an_agex_session_holds_tasks_and_their_skill(studio):
+    """``agex``, with ``agex_stand_in`` for tests, and the skill that
+    teaches them, which building-apps points to."""
+    client, registry, _ = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    assert {"agex", "agex_stand_in"} <= set(ws.runtime.python_config.host_objects)
+    assert ws.files.fs.exists("/workspace/skills/agent-tasks/SKILL.md")
+    apps = ws.files.fs.read("/workspace/skills/building-apps/SKILL.md").decode()
+    assert "`agent-tasks`" in apps
+
+
+def test_a_turns_code_calls_a_task_a_helper_answers(studio):
+    client, registry, scripts = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    scripts.steps["s1"] = [_runs(SHOUT), says("done")]
+    scripts.steps["HELPER"] = [_runs("task.success(word.upper())")]
+    events = _chat(client, "s1", "s1: shout")
+    end = next(e for e in events if e["type"] == "tool_end")
+    assert "loud: HI" in end["result"], end["result"]
+
+
+def test_a_published_app_calls_a_task(studio):
+    """An app built with a task calls it when served, its helper on the
+    studio's default model, here holding none of the app's objects."""
+    client, registry, scripts = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    fs = session.ws.files.fs
+    fs.makedirs("/workspace/app/api", exist_ok=True)
+    fs.write("/workspace/app/index.html", b"<h1>shout</h1>")
+    fs.write("/workspace/app/api/shout.py", SHOUT_HANDLER)
+    session.ws.commit()
+    pub = client.post("/api/sessions/s1/publish").json()
+
+    scripts.steps["HELPER"] = [_runs("task.success(word.upper())")]
+    served = client.post(f"{pub['url']}api/shout", json={"word": "hi"})
+    assert served.status_code == 200, served.text
+    assert served.json() == {"loud": "HI"}
+
+
+def test_a_stop_stops_the_task_the_turns_code_waits_on(studio):
+    """The turn's code waits in a task call while its helper works for a
+    minute; the stop reaches the helper too, so the turn ends."""
+    client, registry, scripts = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    session = registry.get("s1")
+    scripts.steps["s1"] = [_runs(SHOUT), says("never said")]
+    scripts.steps["HELPER"] = [
+        _runs(
+            "import time\nfor i in range(6000):\n    time.sleep(0.01)\n"
+            "task.success('late')"
+        )
+    ]
+    started = client.post("/api/sessions/s1/chat", json={"message": "s1: shout"})
+    deadline = time.monotonic() + 10
+    while session.running_call is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    time.sleep(1.0)  # the helper is at work
+    t0 = time.monotonic()
+    assert client.post("/api/sessions/s1/cancel", json={}).status_code == 200
+    events = _until_done(client, "s1", since=started.json()["since"])
+    assert time.monotonic() - t0 < 8  # not the helper's minute
+    assert "turn stopped" in [e.get("text") for e in events if e["type"] == "notice"]

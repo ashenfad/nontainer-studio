@@ -38,6 +38,7 @@ import shutil
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -65,6 +66,7 @@ from .config import (
     _delegate_depth,
     _delegate_tool_calls,
     _delegate_ttl_hours,
+    _tasks_for,
     _unbind_host_objects,
     _view_workers,
     _ws_kwargs,
@@ -534,7 +536,9 @@ class Registry(
             db = self._db_handle(rel)
             ws = None
             try:
-                ws = self._open_workspace(name, self._python_config(db, agent=True))
+                ws = self._open_workspace(
+                    name, self._python_config(db, agent=True), model
+                )
                 _bind_host_objects(ws)
                 # Published before anything can ask: _build_agent
                 # constructs the toolkit, which checks that the store db
@@ -594,7 +598,9 @@ class Registry(
         ``agent`` is for a session an agent works in, as opposed to a
         published snapshot. Only an agent session gets the host objects
         that spend the operator's API key (see ``_agent_host_objects``):
-        a published app serves anyone holding its link."""
+        a published app serves anyone holding its link. agex's tasks are
+        the exception, added where they belong (``_with_tasks``): an app
+        built with them calls them when served."""
         from nontainer import presets
 
         modules = []
@@ -663,40 +669,76 @@ class Registry(
             warm_view_workers=_view_workers(),
         )
 
-    def _open_workspace(self, name: str, python: Any) -> Workspace:
+    def _open_workspace(self, name: str, python: Any, model: str) -> Workspace:
         """Open ``name``'s workspace with its starter skills mounted and
-        the studio's ignore patterns.
+        the studio's ignore patterns, and on the agex loop with agex's
+        agent-defined tasks (see ``_task_objects``) on ``model``.
 
-        The starter set depends on the executor and on whether the
-        session gets ``ws-git``, and mounts are fixed when a workspace
-        is built, so both are predicted from the configuration first.
-        The session's own answers are what decide (a gated skill reads
-        them), so where they differ from the prediction, which takes an
-        executor that cannot carry the verb, the workspace is opened
-        again with the right set. Opening is cheap: nothing runs until
-        the first tool call.
+        The starter set depends on the executor, on whether the session
+        gets ``ws-git`` and on whether it gets tasks, and mounts and host
+        objects are fixed when a workspace is built, so all three are
+        predicted from the configuration first. The session's own answers
+        are what decide (a gated skill reads them; the loop is the one its
+        conversation was written on), so where they differ from the
+        prediction, the workspace is opened again with the right set.
+        Opening is cheap: nothing runs until the first tool call.
         """
         modules = getattr(python, "modules", None) or ()
 
-        def opened(commands: bool, wsgit: bool) -> Workspace:
+        def opened(commands: bool, wsgit: bool, tasks: bool) -> Workspace:
             return self._store.open(
                 name,
-                python=python,
+                python=self._with_tasks(python, model) if tasks else python,
                 mounts=self._skill_mounts(
-                    commands=commands, wsgit=wsgit, modules=modules
+                    commands=commands, wsgit=wsgit, modules=modules, tasks=tasks
                 ),
                 ignore=WORKSPACE_IGNORE,
                 **_ws_kwargs(),
             )
 
-        guess = (executor_runs_commands(), wsgit_enabled())
+        guess = (
+            executor_runs_commands(),
+            wsgit_enabled(),
+            _tasks_for(self._loop_guess(name)),
+        )
         ws = opened(*guess)
-        got = (bool(ws.runtime.supports_commands), self._wsgit(ws))
+        got = (
+            bool(ws.runtime.supports_commands),
+            self._wsgit(ws),
+            _tasks_for(self._loop_of(name, ws)),
+        )
         if got != guess:
             ws.close()
             ws = opened(*got)
             self._wsgit(ws)
         return ws
+
+    def _task_objects(self, model: str) -> dict[str, Any]:
+        """agex's agent-defined tasks (``@agex.task``), as host objects:
+        ``agex``, whose helpers run on ``model`` with the studio's Python
+        primer and nothing more, each on a scratch world of its own, and
+        ``agex_stand_in``, which answers a call at once without a model,
+        for an app's tests and page checks."""
+        from agex import Agent, agent_tasks, stand_in_tasks
+        from agex.providers import Settings
+
+        from .providers import _effort, agex_extra
+
+        helper = Agent(
+            self._agex_model(model),
+            primer=_python_primer(),
+            settings=Settings(thinking=_effort(), extra=agex_extra(model)),
+        )
+        return {
+            "agex": agent_tasks(helper, scratch=True),
+            "agex_stand_in": stand_in_tasks(),
+        }
+
+    def _with_tasks(self, python: PythonConfig, model: str) -> PythonConfig:
+        """``python`` with agex's tasks on ``model`` among its host objects."""
+        return replace(
+            python, host_objects={**python.host_objects, **self._task_objects(model)}
+        )
 
     @staticmethod
     def _wsgit(ws: Workspace) -> bool:
@@ -950,6 +992,12 @@ class Registry(
         index = conversation.index_of(ws)
         if index is not None:
             return "agex" if index.harness == "agex" else "agno"
+        return self._loop_guess(name)
+
+    def _loop_guess(self, name: str) -> str:
+        """The loop session ``name`` runs on, short of reading its
+        conversation (``_loop_of``): a delegate's parent's, or the one
+        ``NONTAINER_STUDIO_LOOP`` picks."""
         parent = self._manifest()["delegates"].get(name, {}).get("parent")
         live = self._sessions.get(parent) if parent else None
         if live is not None:
@@ -1246,7 +1294,9 @@ class Registry(
             child_ws.close()
             with self._lock:
                 db = self._db_handle(rel)
-            ws = self._open_workspace(name, self._python_config(db, agent=True))
+            ws = self._open_workspace(
+                name, self._python_config(db, agent=True), session.model
+            )
             _bind_host_objects(ws)
             with self._lock:
                 self._opening[name] = ws

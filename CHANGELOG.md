@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Agent-defined tasks on the agex loop.** An agex session's code, and
+  its apps' handlers, can define a typed task with `@agex.task` that a
+  helper agent answers on a scratch world (`agex`, with `agex_stand_in`
+  for tests), and a published app keeps calling it; the `agent-tasks`
+  skill teaches when to use one and how to design around its latency.
+
 - **Sessions can run on agex: `NONTAINER_STUDIO_LOOP=agex`.** A new
   session runs on the loop the knob picks (agno by default), one with a
   conversation on the loop that wrote it, and a delegate on its

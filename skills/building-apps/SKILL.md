@@ -148,3 +148,9 @@ README may be two sections; it may not be missing.
 - If an assert fails, fix the app, not the assert. A weakened
   assertion (`x !== '0' || x === '0'`) verifies nothing.
 - Screenshot at the end; the human sees the preview live either way.
+
+<!--if:tasks-->
+**Asking a model from a handler:** `@agex.task` gets a typed answer
+from a helper agent (classify, extract, summarize). Read the
+`agent-tasks` skill first: it is slow, and needs a design for that.
+<!--endif-->

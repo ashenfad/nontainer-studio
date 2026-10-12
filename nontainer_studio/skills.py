@@ -29,7 +29,7 @@ from .config import sessions_tool_enabled
 log = logging.getLogger(__name__)
 
 
-def _can_start_from_published(wsgit: bool) -> bool:
+def _can_start_from_published(wsgit: bool, tasks: bool = False) -> bool:
     """Whether the ``starting-from-published`` skill can be followed in
     a session, given whether that session carries ``ws-git``.
 
@@ -41,6 +41,12 @@ def _can_start_from_published(wsgit: bool) -> bool:
     primer has already told that agent nothing brings files over.
     """
     return sessions_tool_enabled() and wsgit
+
+
+def _has_tasks(wsgit: bool, tasks: bool) -> bool:
+    """Whether the ``agent-tasks`` skill can be followed: the session
+    holds ``agex`` (on the agex loop, see ``config._tasks_for``)."""
+    return tasks
 
 
 def _can_delegate(wsgit: bool) -> bool:
@@ -57,11 +63,13 @@ def _can_delegate(wsgit: bool) -> bool:
 #: conditions of its own, so the gate is on the install rather than
 #: inside the skill — text teaching a tool or a verb the agent was not
 #: given costs it a turn to find that out. Each gate is asked the
-#: session's own ``ws-git`` answer, because an env knob says what was
-#: asked for and that flag says what the session got. Seeding happens
+#: session's own ``ws-git`` answer and whether it holds agex's tasks,
+#: because an env knob says what was asked for and those say what the
+#: session got. Seeding happens
 #: once, at session creation, so a session keeps what it was told then.
-_GATED_SKILLS: dict[str, Callable[[bool], bool]] = {
+_GATED_SKILLS: dict[str, Callable[[bool, bool], bool]] = {
     "starting-from-published": _can_start_from_published,
+    "agent-tasks": _has_tasks,
 }
 
 
@@ -184,7 +192,7 @@ class SkillsMixin:
         ).expanduser()
 
     @staticmethod
-    def _skill_seeds(*, wsgit: bool) -> list[Path]:
+    def _skill_seeds(*, wsgit: bool, tasks: bool = False) -> list[Path]:
         """The skill directories a session is given: each child of
         NONTAINER_STUDIO_SKILLS holding a SKILL.md, minus the gated ones
         it cannot follow."""
@@ -196,14 +204,14 @@ class SkillsMixin:
             if not (child.is_dir() and (child / "SKILL.md").is_file()):
                 continue
             gate = _GATED_SKILLS.get(child.name)
-            if gate is not None and not gate(wsgit):
+            if gate is not None and not gate(wsgit, tasks):
                 continue
             seeds.append(child)
         return seeds
 
     @staticmethod
     def _starter_files(
-        *, commands: bool, wsgit: bool, modules: Any = ()
+        *, commands: bool, wsgit: bool, modules: Any = (), tasks: bool = False
     ) -> dict[str, bytes]:
         """The starter set a session with this executor and ws-git
         answer is given, as ``{"<skill>/<path>": bytes}``: each seed's
@@ -215,7 +223,7 @@ class SkillsMixin:
         that will not read or generate is left out, not fatal."""
         delegation = _can_delegate(wsgit)
         out: dict[str, bytes] = {}
-        for seed in SkillsMixin._skill_seeds(wsgit=wsgit):
+        for seed in SkillsMixin._skill_seeds(wsgit=wsgit, tasks=tasks):
             for path in sorted(p for p in seed.rglob("*") if p.is_file()):
                 rel = f"{seed.name}/{path.relative_to(seed).as_posix()}"
                 try:
@@ -225,7 +233,7 @@ class SkillsMixin:
                 if rel.endswith(".md"):
                     text = data.decode("utf-8", "replace")
                     data = SkillsMixin._resolve_skill_text(
-                        text, commands=commands, delegation=delegation
+                        text, commands=commands, delegation=delegation, tasks=tasks
                     ).encode()
                 out[rel] = data
             make = _GENERATED_SKILL_FILES.get(seed.name)
@@ -248,19 +256,22 @@ class SkillsMixin:
                         data.decode("utf-8", "replace"),
                         commands=commands,
                         delegation=delegation,
+                        tasks=tasks,
                     ).encode()
                 out[f"{name}/{rel}"] = data
         return out
 
     def _starter_dir(
-        self, *, commands: bool, wsgit: bool, modules: Any = ()
+        self, *, commands: bool, wsgit: bool, modules: Any = (), tasks: bool = False
     ) -> Path | None:
         """The resolved starter set on disk, written once: its directory
         is named by a hash of what it holds, so an existing one is never
         rewritten (a session may have it mounted) and a changed set gets
         a directory of its own. ``None`` when there are no starter
         skills."""
-        files = self._starter_files(commands=commands, wsgit=wsgit, modules=modules)
+        files = self._starter_files(
+            commands=commands, wsgit=wsgit, modules=modules, tasks=tasks
+        )
         if not files:
             return None
         digest = hashlib.sha256()
@@ -293,6 +304,7 @@ class SkillsMixin:
         wsgit: bool,
         modules: Any = (),
         root: str = "/workspace",
+        tasks: bool = False,
     ) -> dict[str, Any]:
         """The read-only mounts a session is opened with: the starter
         set for its executor and ws-git answer, its granted modules'
@@ -302,7 +314,9 @@ class SkillsMixin:
         from nontainer import skills
 
         try:
-            starter = self._starter_dir(commands=commands, wsgit=wsgit, modules=modules)
+            starter = self._starter_dir(
+                commands=commands, wsgit=wsgit, modules=modules, tasks=tasks
+            )
             return skills.mounts(starter, root=root) if starter is not None else {}
         except Exception:
             log.warning("starter skills could not be built", exc_info=True)
@@ -321,18 +335,19 @@ class SkillsMixin:
     #   guest, so they answer on every rung and need no gate.
     # - `delegation`: the session can delegate and bring the work back
     #   (see `_can_delegate`).
+    # - `tasks`: the session holds agex's agent-defined tasks (`agex`).
     _IF_BLOCK = re.compile(
-        r"[ \t]*<!--if:(no-)?(commands|delegation)-->[ \t]*\n(.*?)[ \t]*<!--endif-->[ \t]*\n?",
+        r"[ \t]*<!--if:(no-)?(commands|delegation|tasks)-->[ \t]*\n(.*?)[ \t]*<!--endif-->[ \t]*\n?",
         re.DOTALL,
     )
 
     @staticmethod
     def _resolve_skill_text(
-        text: str, *, commands: bool, delegation: bool = False
+        text: str, *, commands: bool, delegation: bool = False, tasks: bool = False
     ) -> str:
         """Keep the blocks this session has what they teach for, drop
         the others."""
-        has = {"commands": commands, "delegation": delegation}
+        has = {"commands": commands, "delegation": delegation, "tasks": tasks}
 
         def _pick(m: "re.Match[str]") -> str:
             negated, key, body = m.group(1), m.group(2), m.group(3)

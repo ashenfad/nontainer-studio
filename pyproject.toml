@@ -83,7 +83,7 @@ override-dependencies = ["nontainer[agno,apps]>=0.11.0"]
 [tool.uv.sources]
 # agex is unreleased until its shape freeze; a commit of its rebuild
 # branch, moved on by hand, as nontainer's above is.
-agex = { git = "https://github.com/ashenfad/agex", rev = "8cbb6bfc4014973a8db34f32b553986ee2f56cd8" }
+agex = { git = "https://github.com/ashenfad/agex", rev = "cf6bf137d2e9cfb3935b2d915091bb0913e8e67c" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["nontainer_studio"]
