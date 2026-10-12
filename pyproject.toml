@@ -12,7 +12,7 @@ dependencies = [
     # Floors on nontainer are hard: the studio speaks the current
     # surface with no compatibility layer. What each release changed
     # is in nontainer's changelog.
-    "nontainer[agno,apps]>=0.10.0",
+    "nontainer[agno,apps]>=0.11.0",
     # A turn that hits a provider error resumes in place through agno
     # 3's continue of an errored run; agno 2 has no such path, and the
     # nontainer extra alone only guarantees agno 2.1.
@@ -72,18 +72,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
-# Until nontainer's next release the studio runs on a commit of its
-# main, so the studio's use shakes out what is unreleased there. The
-# lock isn't committed, so the commit is pinned here, and moved on by
-# hand. At the release this goes, and the floor above rises to it. An
-# override rather than a source: agex names nontainer's main as its own
-# source, which uv reads from a git dependency, and the two would
-# conflict; an override is the one nontainer for the whole tree. It
-# replaces every nontainer requirement, extras and all, so it names the
-# extras the dependencies above ask for.
-override-dependencies = [
-    "nontainer[agno,apps] @ git+https://github.com/ashenfad/nontainer@6cdb9c8d31c7c7c4142d2cd686e2c6b5fd42d491",
-]
+# agex, a git dependency during its rebuild, names nontainer's main as its
+# own source, and uv reads a git dependency's sources: without this the
+# studio would run whatever nontainer's main holds. The override makes the
+# released nontainer the one for the whole tree. It replaces every
+# nontainer requirement, extras and all, so it names the extras the
+# dependencies above ask for.
+override-dependencies = ["nontainer[agno,apps]>=0.11.0"]
 
 [tool.uv.sources]
 # agex is unreleased until its shape freeze; a commit of its rebuild
