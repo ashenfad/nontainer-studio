@@ -83,6 +83,9 @@ build-backend = "hatchling.build"
 # extras the dependencies above ask for.
 override-dependencies = [
     "nontainer[agno,apps] @ git+https://github.com/ashenfad/nontainer@89d521c483ce6037575ef4cb615ee7f520251dc5",
+    # Until sandtrap#61 is released: a cancel signalled during the flag's
+    # clear deadlocked a process worker (the stop tests' CI hangs).
+    "sandtrap @ git+https://github.com/ashenfad/sandtrap@6797554564a372b25d42d1b5466e6700e01c0d2c",
 ]
 
 [tool.uv.sources]
