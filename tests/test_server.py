@@ -8493,3 +8493,25 @@ def test_a_granted_modules_skill_joins_the_starter_set_resolved(tmp_path, monkey
     finally:
         sys.modules.pop("skilllib", None)
         sys.modules.pop("ziplib", None)
+
+
+def test_the_agent_tasks_skill_is_given_with_the_tasks_only():
+    """The skill teaches ``agex``, which only an agex session holds: a
+    session without it isn't told about it, here or in building-apps."""
+    without = sessions_mod.Registry._starter_files(commands=True, wsgit=False)
+    with_tasks = sessions_mod.Registry._starter_files(
+        commands=True, wsgit=False, tasks=True
+    )
+    assert "agent-tasks/SKILL.md" not in without
+    assert "agent-tasks/SKILL.md" in with_tasks
+    assert "`agent-tasks`" not in without["building-apps/SKILL.md"].decode()
+    assert "`agent-tasks`" in with_tasks["building-apps/SKILL.md"].decode()
+
+
+@pytest.mark.agno_only("an agno session holds no agex tasks")
+def test_an_agno_session_holds_no_agex_tasks(studio):
+    client, registry = studio
+    client.post("/api/sessions", json={"name": "s1"})
+    ws = registry.get("s1").ws
+    assert not {"agex", "agex_stand_in"} & set(ws.runtime.python_config.host_objects)
+    assert not ws.files.fs.exists("/workspace/skills/agent-tasks/SKILL.md")
