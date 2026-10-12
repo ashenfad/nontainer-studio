@@ -66,7 +66,6 @@ from .config import (
     _delegate_depth,
     _delegate_tool_calls,
     _delegate_ttl_hours,
-    _tasks_for,
     _unbind_host_objects,
     _view_workers,
     _ws_kwargs,
@@ -74,6 +73,7 @@ from .config import (
     executor_runs_commands,
     loop_choice,
     sessions_tool_enabled,
+    tasks_enabled,
     wsgit_enabled,
 )
 from .delegates import DELEGATE_TURNS, DelegationMixin, ReadsAnswers, StudioRunner
@@ -671,21 +671,24 @@ class Registry(
 
     def _open_workspace(self, name: str, python: Any, model: str) -> Workspace:
         """Open ``name``'s workspace with its starter skills mounted and
-        the studio's ignore patterns, and on the agex loop with agex's
-        agent-defined tasks (see ``_task_objects``) on ``model``.
+        the studio's ignore patterns, and, where the studio runs with
+        agex, with agex's agent-defined tasks (see ``_task_objects``) on
+        ``model``.
 
-        The starter set depends on the executor, on whether the session
-        gets ``ws-git`` and on whether it gets tasks, and mounts and host
-        objects are fixed when a workspace is built, so all three are
-        predicted from the configuration first. The session's own answers
-        are what decide (a gated skill reads them; the loop is the one its
-        conversation was written on), so where they differ from the
-        prediction, the workspace is opened again with the right set.
-        Opening is cheap: nothing runs until the first tool call.
+        The starter set depends on the executor and on whether the
+        session gets ``ws-git``, and mounts are fixed when a workspace
+        is built, so both are predicted from the configuration first.
+        The session's own answers are what decide (a gated skill reads
+        them), so where they differ from the prediction, which takes an
+        executor that cannot carry the verb, the workspace is opened
+        again with the right set. Opening is cheap: nothing runs until
+        the first tool call. Tasks follow ``NONTAINER_STUDIO_LOOP`` alone
+        (``tasks_enabled``), so they need no prediction.
         """
         modules = getattr(python, "modules", None) or ()
+        tasks = tasks_enabled()
 
-        def opened(commands: bool, wsgit: bool, tasks: bool) -> Workspace:
+        def opened(commands: bool, wsgit: bool) -> Workspace:
             return self._store.open(
                 name,
                 python=self._with_tasks(python, model) if tasks else python,
@@ -696,17 +699,9 @@ class Registry(
                 **_ws_kwargs(),
             )
 
-        guess = (
-            executor_runs_commands(),
-            wsgit_enabled(),
-            _tasks_for(self._loop_guess(name)),
-        )
+        guess = (executor_runs_commands(), wsgit_enabled())
         ws = opened(*guess)
-        got = (
-            bool(ws.runtime.supports_commands),
-            self._wsgit(ws),
-            _tasks_for(self._loop_of(name, ws)),
-        )
+        got = (bool(ws.runtime.supports_commands), self._wsgit(ws))
         if got != guess:
             ws.close()
             ws = opened(*got)
@@ -992,12 +987,6 @@ class Registry(
         index = conversation.index_of(ws)
         if index is not None:
             return "agex" if index.harness == "agex" else "agno"
-        return self._loop_guess(name)
-
-    def _loop_guess(self, name: str) -> str:
-        """The loop session ``name`` runs on, short of reading its
-        conversation (``_loop_of``): a delegate's parent's, or the one
-        ``NONTAINER_STUDIO_LOOP`` picks."""
         parent = self._manifest()["delegates"].get(name, {}).get("parent")
         live = self._sessions.get(parent) if parent else None
         if live is not None:

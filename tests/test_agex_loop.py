@@ -5,6 +5,7 @@ and which loop a session runs on.
 The model is agex's scripted provider, through the registry's
 ``agex_model`` hook; everything below it is real."""
 
+import json
 import time
 
 import pytest
@@ -442,3 +443,62 @@ def test_a_stop_stops_the_task_the_turns_code_waits_on(studio):
     events = _until_done(client, "s1", since=started.json()["since"])
     assert time.monotonic() - t0 < 8  # not the helper's minute
     assert "turn stopped" in [e.get("text") for e in events if e["type"] == "notice"]
+
+
+def test_tasks_follow_the_setting_and_a_stop_reaches_them_on_agno(
+    tmp_path, monkeypatch
+):
+    """``NONTAINER_STUDIO_LOOP=agex`` decides, not a session's own loop:
+    a session whose conversation agno wrote holds ``agex`` too, and the
+    studio's stop cancels its task's helper, as agex's cancel does on the
+    agex loop."""
+    from nontainer_studio.dummy import DummyModel
+
+    scripts = Scripts()
+
+    def studio_on(loop):
+        monkeypatch.setenv("NONTAINER_STUDIO_LOOP", loop)
+        registry = sessions_mod.Registry(
+            model_factory=lambda *a: DummyModel(),
+            store=tmp_path,
+            default_model="dummy",
+            agex_model=scripts.provider,
+        )
+        registry.retitle = lambda session: None
+        return registry
+
+    first = studio_on("agno")
+    with TestClient(server.build_app(first)) as client:
+        client.post("/api/sessions", json={"name": "s1"})
+        _chat(client, "s1", "!text hello")  # a conversation agno wrote
+    first.close()
+
+    registry = studio_on("agex")
+    try:
+        with TestClient(server.build_app(registry)) as client:
+            session = registry.open("s1")
+            assert session.loop == "agno"
+            assert "agex" in session.ws.runtime.python_config.host_objects
+
+            scripts.steps["HELPER"] = [
+                _runs(
+                    "import time\nfor i in range(6000):\n    time.sleep(0.01)\n"
+                    "task.success('late')"
+                )
+            ]
+            message = (
+                "!tool run_python " + json.dumps({"code": SHOUT}) + "\n!text never"
+            )
+            started = client.post("/api/sessions/s1/chat", json={"message": message})
+            deadline = time.monotonic() + 10
+            while session.running_call is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            time.sleep(1.0)  # the helper is at work
+            t0 = time.monotonic()
+            assert client.post("/api/sessions/s1/cancel", json={}).status_code == 200
+            events = _until_done(client, "s1", since=started.json()["since"])
+            assert time.monotonic() - t0 < 8  # not the helper's minute
+            notices = [e.get("text") for e in events if e["type"] == "notice"]
+            assert "turn stopped" in notices
+    finally:
+        registry.close()

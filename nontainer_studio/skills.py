@@ -45,7 +45,7 @@ def _can_start_from_published(wsgit: bool, tasks: bool = False) -> bool:
 
 def _has_tasks(wsgit: bool, tasks: bool) -> bool:
     """Whether the ``agent-tasks`` skill can be followed: the session
-    holds ``agex`` (on the agex loop, see ``config._tasks_for``)."""
+    holds ``agex`` (see ``config.tasks_enabled``)."""
     return tasks
 
 
