@@ -287,11 +287,14 @@ LOOPS = ("agno", "agex")
 """The loops a session can run on: agno's, and agex's."""
 
 
-def _tasks_for(loop: str) -> bool:
-    """Whether a session on ``loop`` gets agex's agent-defined tasks:
-    on the agex loop, with agex installed. Their helpers are agex
-    agents, and the capability (and its skill) belong to that loop."""
-    return loop == "agex" and _agex_installed()
+def tasks_enabled() -> bool:
+    """Whether sessions and published apps get agex's agent-defined
+    tasks (``agex``, its stand-in and the ``agent-tasks`` skill): when the
+    studio runs with agex (``NONTAINER_STUDIO_LOOP=agex``) and has it
+    installed. The setting decides, not a session's own loop, so a
+    session whose conversation an agno run wrote holds them too; their
+    helpers are agex agents either way."""
+    return loop_choice() == "agex" and _agex_installed()
 
 
 def _agex_installed() -> bool:

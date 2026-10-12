@@ -20,7 +20,7 @@ from nontainer.apps import mint_token
 from nontainer.apps.dispatch import PUBLISH_EXCLUDE
 from nontainer.errors import WorkspaceError
 
-from .config import _agex_installed, _ws_kwargs
+from .config import _ws_kwargs, tasks_enabled
 from .session import (
     Db,
     Session,
@@ -702,7 +702,7 @@ class PublishingMixin:
             # nontainer's registry either way, so a version unpublished
             # since is refused rather than served.
             python = self._python_config(self._app_db(entry))
-            if _agex_installed() and self._default_model:
+            if tasks_enabled() and self._default_model:
                 # An app built with agex's tasks calls them when served
                 # too, on the studio's default model: the one exception to
                 # serving no host object that spends the operator's key.

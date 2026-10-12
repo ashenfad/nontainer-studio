@@ -35,7 +35,7 @@ from nontainer.turns import (
 )
 
 from . import delegates
-from .config import _delegate_wakes
+from .config import _delegate_wakes, tasks_enabled
 from .drivers import STOPPED_BY_USER
 
 log = logging.getLogger(__name__)
@@ -124,6 +124,17 @@ def _stop_delegates(session: Any) -> list[str]:
     return sorted(stopped)
 
 
+def _cancel_tasks(ws: Any) -> None:
+    """Stop the helpers ``ws``'s agent-defined tasks have running: the
+    call a stop is waiting on may be waiting on one. On the agex loop
+    the session's cancel does this too; on agno it is the only way."""
+    if not tasks_enabled():
+        return
+    from agex.agent_tasks import cancel_tasks
+
+    cancel_tasks(ws)
+
+
 def _naming(delegates: list[str]) -> str:
     """``its delegate `a``` or ``its delegates `a` and `b```."""
     names = [f"`{name.rsplit('.', 1)[-1]}`" for name in delegates]
@@ -143,6 +154,7 @@ async def _interrupt_until_done(
     told = False
     while session.run_id == run_id and not task.done():
         session.ws.runtime.interrupt()
+        _cancel_tasks(session.ws)
         call = session.running_call
         if (
             call is not None
