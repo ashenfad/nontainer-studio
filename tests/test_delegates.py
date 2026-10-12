@@ -585,6 +585,7 @@ def _await_delegates(session, timeout=20):
         if session.answered_delegates():
             return
         time.sleep(0.02)
+    stuck.report("no delegate answered in time")
     raise AssertionError("no delegate answered in time")
 
 
