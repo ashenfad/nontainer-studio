@@ -22,7 +22,11 @@ dependencies = [
     "uvicorn>=0.30",
     # the agent's data stack, granted out of the box
     "numpy",
-    "pandas",
+    # <3.1: pandas 3.1 hands a local parquet path straight to pyarrow,
+    # whose native I/O skips the sandbox's filesystem, so an agent's
+    # to_parquet lands on the host's disk instead of the workspace. Lifted
+    # once nontainer's dataframes preset routes that I/O through the VFS.
+    "pandas<3.1",
     "pyarrow",
     "matplotlib",
     # no kaleido: plotly's write_image needs a real Chrome subprocess,
