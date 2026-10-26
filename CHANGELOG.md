@@ -206,6 +206,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Requires `pandas<3.1`.** pandas 3.1 reads and writes a parquet path
+  with pyarrow's own I/O, which doesn't see the workspace, so a session's
+  `to_parquet` wrote to the server's disk; the cap lifts when nontainer
+  routes that I/O through the workspace.
+
 - **The suite runs a test per core.** CI and the docs run it with
   pytest-xdist's `-n auto`, and no test waits out a real resume backoff;
   a local run fell from about eight minutes to ninety seconds.
