@@ -2833,6 +2833,24 @@ def scripted(tmp_path):
     registry.close()
 
 
+def test_a_command_that_fails_ends_as_a_failed_call(scripted):
+    """A command that exits non-zero is a failed call on either loop,
+    though the terminal tool itself ran: the outcome decides, as the
+    stored run (and its trace) says."""
+    client, registry = scripted
+    client.post("/api/sessions", json={"name": "s1"})
+    started = client.post(
+        "/api/sessions/s1/chat",
+        json={
+            "message": '!tool terminal {"command": "exit 3"}\n'
+            '!tool file_write {"path": "a.txt", "content": "a"}\n!text done'
+        },
+    )
+    events = _collect_until_done(client, "s1", since=started.json()["since"])
+    ended = {e["name"]: e["is_error"] for e in events if e["type"] == "tool_end"}
+    assert ended == {"terminal": True, "file_write": False}
+
+
 def _script(path: str, content: str, reply: str) -> str:
     """One scripted turn: write a file, then say so."""
     return f"!tool file_write {json.dumps({'path': path, 'content': content})}\n!text {reply}"
