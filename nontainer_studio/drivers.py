@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from agno.run.cancel import ais_cancelled
-from nontainer.adapters.agno import cut_off, keep_aborted_run
+from nontainer.adapters.agno import cut_off, keep_aborted_run, tool_failed
 from nontainer.inbox import Inbox, Note, split
 from nontainer.turns import (
     Compacted,
@@ -122,9 +122,12 @@ class AgnoDriver:
     a fold before the model call it is for.
     """
 
-    def __init__(self, agent: Any, inbox: Inbox, session: str) -> None:
+    def __init__(self, agent: Any, inbox: Inbox, session: str, ws: Any = None) -> None:
         self.agent = agent
         self.session = session
+        # the workspace the agent's toolkit works in, whose log says how
+        # each of its calls came out (see _AgnoEvents)
+        self.ws = ws
         self._side: Callable[[TurnEvent], None] | None = None
         # why the last stop stopped the run, for its ending's note
         self._stop_reason = STOPPED_BY_USER
@@ -184,7 +187,7 @@ class AgnoDriver:
         queue: asyncio.Queue[Any] = asyncio.Queue()
         ended = object()
         self._side = lambda event: loop.call_soon_threadsafe(queue.put_nowait, event)
-        events = _AgnoEvents(lambda: self._stop_reason)
+        events = _AgnoEvents(lambda: self._stop_reason, ws=self.ws)
 
         async def pump() -> None:
             try:
@@ -229,10 +232,14 @@ class _AgnoEvents:
     """
 
     def __init__(
-        self, stop_reason: Callable[[], str] = lambda: STOPPED_BY_USER
+        self,
+        stop_reason: Callable[[], str] = lambda: STOPPED_BY_USER,
+        *,
+        ws: Any = None,
     ) -> None:
         self.run_id: str | None = None
         self._stop_reason = stop_reason
+        self._ws = ws
         # the calls started and not yet ended, by id, with their names
         self._open: dict[str, str] = {}
         self._cancelled = False
@@ -276,7 +283,9 @@ class _AgnoEvents:
         elif kind == "ToolCallCompleted":
             # A call that raised completes too, its error as the result,
             # and agno follows it with a ToolCallError: the flag on the
-            # completed call is what says so.
+            # completed call says so. A call that came out failed without
+            # raising (a non-zero exit, python that raised) is failed too:
+            # the toolkit logged it, read here as the event arrives.
             tool = getattr(ev, "tool", None)
             result = getattr(tool, "result", "")
             self._open.pop(str(getattr(tool, "tool_call_id", None) or ""), None)
@@ -289,7 +298,9 @@ class _AgnoEvents:
                     result=split(result)[0]
                     if isinstance(result, str)
                     else repr(result),
-                    is_error=bool(getattr(tool, "tool_call_error", False)),
+                    is_error=tool_failed(self._ws, tool)
+                    if self._ws is not None
+                    else bool(getattr(tool, "tool_call_error", False)),
                 )
             )
         elif kind == "ModelRequestCompleted":

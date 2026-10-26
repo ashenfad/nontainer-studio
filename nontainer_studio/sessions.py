@@ -981,7 +981,7 @@ class Registry(
         agent = self._build_agent(
             name, ws, runtime, model, delegates, wsgit=wsgit, inbox=inbox
         )
-        return AgnoDriver(agent, inbox, name)
+        return AgnoDriver(agent, inbox, name, ws)
 
     def _loop_of(self, name: str, ws: Workspace) -> str:
         """The loop session ``name`` runs on. One holding a conversation

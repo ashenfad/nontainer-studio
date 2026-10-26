@@ -486,6 +486,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A command that fails is a failed call on the agno loop too.** A
+  command that exited non-zero, or python that raised, showed as a
+  success in the transcript on agno (agno flags only a tool that
+  raises), while agex, and the session's stored run, marked it failed.
+  Both loops now mark it the same way.
+
 - **A stop takes the turn's delegates with it.** The delegates the stopped turn asked for that are still at work are stopped too, each its own running call and delegates as well, so a turn waiting on one ends at once; the transcript and the run's note name them, and delegates from earlier turns go on.
 
 - **A stopped call ends in the transcript, saying why.** On agno it had no ending and read as a finished call; on both loops its result now names the stop rather than reading like a time limit.
