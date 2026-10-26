@@ -303,6 +303,22 @@ def _agex_installed() -> bool:
     return importlib.util.find_spec("agex") is not None
 
 
+def trace_sources() -> dict[str, Any]:
+    """How the store reads a stored conversation, by the harness that
+    wrote it, so ``ws-git worktree add --trace`` mounts any session's
+    conversation beside its files: agno's runs always, and agex's when
+    agex is installed, whatever loop new sessions run on, since a store
+    holds sessions both loops wrote."""
+    from nontainer.adapters.agno_traces import AgnoTraces
+
+    sources: dict[str, Any] = {"agno": AgnoTraces()}
+    if _agex_installed():
+        from agex.traces import AgexTraces
+
+        sources["agex"] = AgexTraces()
+    return sources
+
+
 def loop_choice() -> str:
     """``NONTAINER_STUDIO_LOOP``: the loop a NEW session runs on,
     ``agno`` (the default) or ``agex``.

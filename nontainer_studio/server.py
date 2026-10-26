@@ -86,6 +86,22 @@ _HELD: contextvars.ContextVar[list | None] = contextvars.ContextVar(
 )
 
 
+UPLOAD_TOOL = "upload"
+"""The ``tool`` an upload's commit carries: the human's file, told apart
+from anything the agent wrote."""
+
+
+def _upload(ws: Any, dest: str, data: bytes) -> str:
+    """Write an uploaded file and commit it as the human's; the commit's id.
+    ``ws.files.fs`` writes without a commit of its own, under the lock
+    every tool call takes."""
+    with ws.lock:
+        fs = ws.files.fs
+        fs.makedirs(dest.rsplit("/", 1)[0], exist_ok=True)
+        fs.write(dest, data)
+        return ws.commit(info={"tool": UPLOAD_TOOL, "path": dest})
+
+
 def _resolve_held(registry: Any) -> Callable[[str], Any]:
     """The router's resolve hook: acquire the snapshot for this request,
     so it is not closed under it (see ``Registry.acquire_snapshot``). Outside a
@@ -620,10 +636,13 @@ def build_app(registry: Registry) -> Starlette:
 
     # -- upload: browser file -> workspace write ---------------------------
     # Raw body, not multipart (the browser sends File bytes natively).
-    # Each upload is a workspace file write: committed, so an edit's rewind
-    # extends to uploads for free. Multi-file drops are N parallel requests —
-    # the workspace lock serializes them safely. Same-name uploads
-    # overwrite (idempotent re-drops).
+    # Each upload is committed, so an edit's rewind extends to uploads for
+    # free, and committed as an `upload`, not through `ws.files.write`,
+    # whose commit is the agent's `file_write`: a trace's changed.md names
+    # each commit's tool, and a curator reading it must not take the
+    # human's file for the agent's work. Multi-file drops are N parallel
+    # requests — the workspace lock serializes them safely. Same-name
+    # uploads overwrite (idempotent re-drops).
 
     @human_driven
     async def upload(request: Any, session: Any) -> JSONResponse:
@@ -646,11 +665,11 @@ def build_app(registry: Registry) -> Starlette:
                 status_code=413,
             )
         dest = f"{session.ws.root}/uploads/{filename}"
-        out = await anyio.to_thread.run_sync(session.ws.files.write, dest, data)
+        await anyio.to_thread.run_sync(_upload, session.ws, dest, data)
         await session.emit(
-            {"type": "notice", "text": f"uploaded {dest} ({out.size:,} bytes)"}
+            {"type": "notice", "text": f"uploaded {dest} ({len(data):,} bytes)"}
         )
-        return JSONResponse({"ok": True, "path": dest, "size": out.size})
+        return JSONResponse({"ok": True, "path": dest, "size": len(data)})
 
     # -- files: tree + raw bytes (the files tab; also inline chat images)
 

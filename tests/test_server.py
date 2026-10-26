@@ -2494,8 +2494,11 @@ def test_upload_lands_committed_with_notice(studio):
     assert r.status_code == 200
     assert r.json() == {"ok": True, "path": "/workspace/uploads/data.csv", "size": 8}
     assert session.ws.files.fs.read("/workspace/uploads/data.csv") == b"a,b\n1,2\n"
-    # committed: an edit's rewind extends to uploads
-    assert any(c.info.get("tool") == "file_write" for c in session.ws.log(limit=3))
+    # committed, so an edit's rewind extends to uploads; as the human's
+    # upload, not the agent's file_write, so a trace tells them apart
+    (commit,) = session.ws.log(limit=1)
+    assert commit.info == {"tool": "upload", "path": "/workspace/uploads/data.csv"}
+    assert commit.id == session.ws.head
     # transcript notice
     assert any(
         e["type"] == "notice" and "/workspace/uploads/data.csv" in e["text"]

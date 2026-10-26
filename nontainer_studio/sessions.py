@@ -74,6 +74,7 @@ from .config import (
     loop_choice,
     sessions_tool_enabled,
     tasks_enabled,
+    trace_sources,
     wsgit_enabled,
 )
 from .delegates import DELEGATE_TURNS, DelegationMixin, ReadsAnswers, StudioRunner
@@ -196,7 +197,9 @@ class Registry(
         # transcripts, agno's cross-session tables) sits BESIDE it
         # under the same directory, which is what `.path` is for —
         # nothing the store deletes ever reaches those files.
-        self._store = Store(Path(store) if store else DEFAULT_STORE)
+        self._store = Store(
+            Path(store) if store else DEFAULT_STORE, traces=trace_sources()
+        )
         # Public: the router mounts alongside `resolve`, so the serving
         # half reads the same object the authoring half was built with
         # (see apps_config).
