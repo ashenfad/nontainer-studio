@@ -11,8 +11,9 @@ requires-python = ">=3.10"
 dependencies = [
     # Floors on nontainer are hard: the studio speaks the current
     # surface with no compatibility layer. What each release changed
-    # is in nontainer's changelog. 0.11.6: the trace projection.
-    "nontainer[agno,apps]>=0.11.6",
+    # is in nontainer's changelog. 0.11.6: the trace projection. 0.11.7:
+    # pyarrow's file I/O (pandas 3.1's parquet too) stays in the workspace.
+    "nontainer[agno,apps]>=0.11.7",
     # A turn that hits a provider error resumes in place through agno
     # 3's continue of an errored run; agno 2 has no such path, and the
     # nontainer extra alone only guarantees agno 2.1.
@@ -22,11 +23,7 @@ dependencies = [
     "uvicorn>=0.30",
     # the agent's data stack, granted out of the box
     "numpy",
-    # <3.1: pandas 3.1 hands a local parquet path straight to pyarrow,
-    # whose native I/O skips the sandbox's filesystem, so an agent's
-    # to_parquet lands on the host's disk instead of the workspace. Lifted
-    # once nontainer's dataframes preset routes that I/O through the VFS.
-    "pandas<3.1",
+    "pandas",
     "pyarrow",
     "matplotlib",
     # no kaleido: plotly's write_image needs a real Chrome subprocess,
@@ -82,7 +79,7 @@ build-backend = "hatchling.build"
 # released nontainer the one for the whole tree. It replaces every
 # nontainer requirement, extras and all, so it names the extras the
 # dependencies above ask for.
-override-dependencies = ["nontainer[agno,apps]>=0.11.6"]
+override-dependencies = ["nontainer[agno,apps]>=0.11.7"]
 
 [tool.uv.sources]
 # agex is unreleased until its shape freeze; a commit of its rebuild
