@@ -502,3 +502,50 @@ def test_tasks_follow_the_setting_and_a_stop_reaches_them_on_agno(
             assert "turn stopped" in notices
     finally:
         registry.close()
+
+
+def test_a_session_reads_either_loops_conversation_as_a_trace(tmp_path, monkeypatch):
+    """The store reads agno's runs and agex's, so ``ws-git worktree add
+    --trace`` mounts a session's conversation whichever loop wrote it."""
+    from nontainer_studio.dummy import DummyModel
+
+    scripts = Scripts()
+    registry = sessions_mod.Registry(
+        model_factory=lambda *a: DummyModel(),
+        store=tmp_path,
+        default_model="dummy",
+        agex_model=scripts.provider,
+    )
+    registry.retitle = lambda session: None
+    try:
+        with TestClient(server.build_app(registry)) as client:
+            monkeypatch.setenv("NONTAINER_STUDIO_LOOP", "agno")
+            client.post("/api/sessions", json={"name": "by-agno"})
+            _chat(client, "by-agno", "!text hello from agno")
+
+            monkeypatch.setenv("NONTAINER_STUDIO_LOOP", "agex")
+            monkeypatch.setenv("NONTAINER_STUDIO_WSGIT", "1")
+            client.post("/api/sessions", json={"name": "by-agex"})
+            client.post("/api/sessions/by-agex/upload?name=data.csv", content=b"a\n")
+            scripts.steps["by-agex"] = [says("hello from agex")]
+            _chat(client, "by-agex", "by-agex: hi")
+
+            client.post("/api/sessions", json={"name": "reader"})
+            command = (
+                "ws-git worktree add a by-agno --trace"
+                " && ws-git worktree add x by-agex --trace"
+                " && cat a/.trace/index.md x/.trace/index.md"
+                " x/.trace/runs/*/changed.md"
+            )
+            scripts.steps["reader"] = [calls("terminal", command=command), says("ok")]
+            _chat(client, "reader", "reader: read them")
+            run = registry.get("reader").driver.session.runs[-1]
+            (result,) = run.messages[2].parts
+            assert not result.is_error, result.content
+            assert "written by agno" in result.content
+            assert "hello from agno" in result.content
+            assert "written by agex" in result.content
+            # the human's upload is the human's in the run's changes
+            assert " upload\n\n- A uploads/data.csv" in result.content
+    finally:
+        registry.close()

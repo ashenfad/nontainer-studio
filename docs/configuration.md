@@ -212,6 +212,12 @@ built — the retention sweep, the drill-down routes and the delegates
 listing all read it — and with no tool to fork through they simply find
 nothing.
 
+With `ws-git` on, an agent can read another session's conversation as
+well as its files: `ws-git worktree add <dir> <session> --trace` mounts
+the conversation at `<dir>/.trace`, as markdown, whichever loop wrote
+it. Every session in the store is readable from every other; the store
+is the boundary.
+
 ## The web
 
 | name | default | what it does |

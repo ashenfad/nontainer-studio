@@ -64,7 +64,7 @@ would rewrite a transcript the parent is still reading. Reading verbs,
 | `/api/sessions/{name}/cancel` | POST | stop the running turn gracefully; the run persists with its partial work |
 | `/api/sessions/{name}/events` | GET | the transcript feed: SSE replaying from `?since=N` then following live, or `?wait=0` for a JSON snapshot |
 | `/api/sessions/{name}/a2ui` | GET | the same feed projected into A2UI v0.9 (see [What owns what](design.md)) |
-| `/api/sessions/{name}/upload` | POST | **human** — write `?name=` into `uploads/`; 413 past 50 MB |
+| `/api/sessions/{name}/upload` | POST | **human** — write `?name=` into `uploads/`, committed as an `upload`; 413 past 50 MB |
 | `/api/sessions/{name}/files` | GET | every file in the workspace, walked |
 | `/api/sessions/{name}/file` | GET | one file's raw bytes by `?path=`, with a guessed media type |
 | `/api/sessions/{name}/app` | GET | the preview pane's probe: does this session have an `app/` tree |

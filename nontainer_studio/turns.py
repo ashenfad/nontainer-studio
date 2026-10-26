@@ -130,7 +130,7 @@ def _cancel_tasks(ws: Any) -> None:
     the session's cancel does this too; on agno it is the only way."""
     if not tasks_enabled():
         return
-    from agex.agent_tasks import cancel_tasks
+    from agex import cancel_tasks
 
     cancel_tasks(ws)
 

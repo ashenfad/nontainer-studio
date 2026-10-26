@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **An agent reads another session's conversation.** With `ws-git` on,
+  `ws-git worktree add <dir> <session> --trace` mounts that session's
+  runs as markdown beside its files (`index.md`, each run's events and
+  the files it changed), whether agno or agex wrote them. Requires
+  nontainer 0.11.6, and agex at a commit with `AgexTraces`.
+
+- **An upload is committed as the human's.** Its commit says `upload`,
+  not the agent's `file_write`, so a trace's `changed.md` doesn't credit
+  the agent with a file you dropped in.
+
 - **Agent-defined tasks when the studio runs with agex.** With
   `NONTAINER_STUDIO_LOOP=agex`, a session's code and its apps' handlers
   can define a typed task with `@agex.task` that a helper agent answers

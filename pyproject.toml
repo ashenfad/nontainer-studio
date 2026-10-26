@@ -11,8 +11,8 @@ requires-python = ">=3.10"
 dependencies = [
     # Floors on nontainer are hard: the studio speaks the current
     # surface with no compatibility layer. What each release changed
-    # is in nontainer's changelog.
-    "nontainer[agno,apps]>=0.11.0",
+    # is in nontainer's changelog. 0.11.6: the trace projection.
+    "nontainer[agno,apps]>=0.11.6",
     # A turn that hits a provider error resumes in place through agno
     # 3's continue of an errored run; agno 2 has no such path, and the
     # nontainer extra alone only guarantees agno 2.1.
@@ -78,12 +78,12 @@ build-backend = "hatchling.build"
 # released nontainer the one for the whole tree. It replaces every
 # nontainer requirement, extras and all, so it names the extras the
 # dependencies above ask for.
-override-dependencies = ["nontainer[agno,apps]>=0.11.0"]
+override-dependencies = ["nontainer[agno,apps]>=0.11.6"]
 
 [tool.uv.sources]
 # agex is unreleased until its shape freeze; a commit of its rebuild
 # branch, moved on by hand, as nontainer's above is.
-agex = { git = "https://github.com/ashenfad/agex", rev = "cf6bf137d2e9cfb3935b2d915091bb0913e8e67c" }
+agex = { git = "https://github.com/ashenfad/agex", rev = "821f72341a84a31d77b9ed3aa36645b0561e64cf" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["nontainer_studio"]
