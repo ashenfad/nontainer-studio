@@ -13,7 +13,8 @@ dependencies = [
     # surface with no compatibility layer. What each release changed
     # is in nontainer's changelog. 0.11.6: the trace projection. 0.11.7:
     # pyarrow's file I/O (pandas 3.1's parquet too) stays in the workspace.
-    "nontainer[agno,apps]>=0.11.7",
+    # 0.11.8: tool_failed, a streamed agno call's outcome.
+    "nontainer[agno,apps]>=0.11.8",
     # A turn that hits a provider error resumes in place through agno
     # 3's continue of an errored run; agno 2 has no such path, and the
     # nontainer extra alone only guarantees agno 2.1.
@@ -79,7 +80,7 @@ build-backend = "hatchling.build"
 # released nontainer the one for the whole tree. It replaces every
 # nontainer requirement, extras and all, so it names the extras the
 # dependencies above ask for.
-override-dependencies = ["nontainer[agno,apps]>=0.11.7"]
+override-dependencies = ["nontainer[agno,apps]>=0.11.8"]
 
 [tool.uv.sources]
 # agex is unreleased until its shape freeze; a commit of its rebuild
